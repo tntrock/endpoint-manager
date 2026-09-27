@@ -241,3 +241,17 @@ async fn nul_in_every_section_is_400(pool: PgPool) {
         assert_eq!(put(&s, &a, section, &upload(p)).await, 400, "{section}");
     }
 }
+
+#[sqlx::test(migrations = false)]
+async fn duplicate_patches_roundtrip_without_spurious_changes(pool: PgPool) {
+    let (s, a) = setup(pool).await;
+    let kb = |on: Option<&str>| protocol::PatchItem {
+        kb: "KB500".into(),
+        installed_on: on.map(Into::into),
+    };
+    let p = InventoryPayload::Patches(vec![kb(Some("1/1/2026")), kb(None)]);
+    for _ in 0..3 {
+        assert_eq!(put(&s, &a, "patches", &upload(p.clone())).await, 204);
+    }
+    assert_eq!(change_count(&s, &a).await, 0);
+}

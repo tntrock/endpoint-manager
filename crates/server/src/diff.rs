@@ -41,51 +41,58 @@ fn opt(s: &Option<String>) -> String {
     s.clone().unwrap_or_default()
 }
 
+/// 同一個 key 出現多次時（重複的軟體、KB、磁碟名稱），值排序後以 `, ` 串接，
+/// 結果與項目順序無關。
 pub fn items_of(p: &InventoryPayload) -> BTreeMap<String, String> {
-    let mut m = BTreeMap::new();
+    let mut pairs: Vec<(String, String)> = Vec::new();
     match p {
         InventoryPayload::Basic(b) => {
-            m.insert("hostname".into(), b.hostname.clone());
-            m.insert("domain".into(), opt(&b.domain));
-            m.insert("is_domain_joined".into(), b.is_domain_joined.to_string());
-            m.insert("os_caption".into(), b.os_caption.clone());
-            m.insert("os_build".into(), b.os_build.clone());
+            pairs.push(("hostname".into(), b.hostname.clone()));
+            pairs.push(("domain".into(), opt(&b.domain)));
+            pairs.push(("is_domain_joined".into(), b.is_domain_joined.to_string()));
+            pairs.push(("os_caption".into(), b.os_caption.clone()));
+            pairs.push(("os_build".into(), b.os_build.clone()));
         }
         InventoryPayload::Hardware(h) => {
-            m.insert("manufacturer".into(), opt(&h.manufacturer));
-            m.insert("model".into(), opt(&h.model));
-            m.insert("cpu".into(), opt(&h.cpu));
-            m.insert("ram_mb".into(), h.ram_mb.to_string());
+            pairs.push(("manufacturer".into(), opt(&h.manufacturer)));
+            pairs.push(("model".into(), opt(&h.model)));
+            pairs.push(("cpu".into(), opt(&h.cpu)));
+            pairs.push(("ram_mb".into(), h.ram_mb.to_string()));
             for d in &h.disks {
-                m.insert(format!("disk:{}", d.name), d.size_bytes.to_string());
+                pairs.push((format!("disk:{}", d.name), d.size_bytes.to_string()));
             }
         }
         InventoryPayload::Software(v) => {
-            let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
             for s in v {
                 let key = format!("{}|{}|{}", s.name, s.arch.as_str(), opt(&s.publisher));
-                grouped.entry(key).or_default().push(opt(&s.version));
-            }
-            for (k, mut versions) in grouped {
-                versions.sort();
-                m.insert(k, versions.join(", "));
+                pairs.push((key, opt(&s.version)));
             }
         }
         InventoryPayload::Patches(v) => {
             for p in v {
-                m.insert(p.kb.clone(), opt(&p.installed_on));
+                pairs.push((p.kb.clone(), opt(&p.installed_on)));
             }
         }
         InventoryPayload::Services(v) => {
             for s in v {
-                m.insert(
+                pairs.push((
                     s.name.clone(),
                     format!("{}|{}", s.start_mode, opt(&s.binary_path)),
-                );
+                ));
             }
         }
     }
-    m
+    let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (k, v) in pairs {
+        grouped.entry(k).or_default().push(v);
+    }
+    grouped
+        .into_iter()
+        .map(|(k, mut vs)| {
+            vs.sort();
+            (k, vs.join(", "))
+        })
+        .collect()
 }
 
 pub fn diff(old: &BTreeMap<String, String>, new: &BTreeMap<String, String>) -> Vec<Change> {
@@ -173,6 +180,37 @@ mod tests {
         let b = InventoryPayload::Software(vec![sw("Java", "17"), sw("Java", "8")]);
         assert_eq!(items_of(&a)["Java|x64|P"], "17, 8");
         assert!(diff(&items_of(&a), &items_of(&b)).is_empty());
+    }
+
+    #[test]
+    fn duplicate_patches_and_disks_are_stable() {
+        use protocol::{Disk, HardwareInfo, PatchItem};
+        let kb = |on: Option<&str>| PatchItem {
+            kb: "KB500".into(),
+            installed_on: on.map(Into::into),
+        };
+        let a = InventoryPayload::Patches(vec![kb(Some("1/1/2026")), kb(None)]);
+        let b = InventoryPayload::Patches(vec![kb(None), kb(Some("1/1/2026"))]);
+        assert!(diff(&items_of(&a), &items_of(&b)).is_empty());
+
+        let disk = |size| Disk {
+            name: "SSD".into(),
+            size_bytes: size,
+            free_bytes: 0,
+        };
+        let hw = |disks| {
+            InventoryPayload::Hardware(HardwareInfo {
+                manufacturer: None,
+                model: None,
+                cpu: None,
+                ram_mb: 1,
+                disks,
+            })
+        };
+        let a = hw(vec![disk(1), disk(2)]);
+        let b = hw(vec![disk(2), disk(1)]);
+        assert!(diff(&items_of(&a), &items_of(&b)).is_empty());
+        assert_eq!(items_of(&a)["disk:SSD"], "1, 2");
     }
 
     #[test]
