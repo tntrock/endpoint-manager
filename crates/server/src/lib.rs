@@ -105,7 +105,7 @@ pub async fn serve(cfg: config::Config) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(cfg.agent_listen).await?;
     tracing::info!(addr = %cfg.agent_listen, "agent API listening");
     tokio::select! {
-        r = tls::serve_mtls(listener, tls_cfg, agent_router(state.clone())) => r?,
+        r = tls::serve_mtls(listener, tls_cfg, agent_router(state.clone()), tls::ConnLimits::default()) => r?,
         _ = tokio::signal::ctrl_c() => tracing::info!("shutting down"),
     }
     state.heartbeat.flush(&pool).await?;

@@ -13,7 +13,7 @@ pub struct TestServer {
     pub addr: SocketAddr,
     pub pool: PgPool,
     pub state: AppState,
-    root_pem: String,
+    pub root_pem: String,
     _dir: tempfile::TempDir,
 }
 
@@ -35,6 +35,10 @@ pub fn make_csr() -> (String, String) {
 
 impl TestServer {
     pub async fn start(pool: PgPool) -> TestServer {
+        Self::start_with(pool, tls::ConnLimits::default()).await
+    }
+
+    pub async fn start_with(pool: PgPool, limits: tls::ConnLimits) -> TestServer {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let dir = tempfile::tempdir().unwrap();
         ca::init_ca(dir.path(), vec!["localhost".into()]).unwrap();
@@ -47,7 +51,12 @@ impl TestServer {
         let cfg = tls::server_config(dir.path()).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        tokio::spawn(tls::serve_mtls(listener, cfg, agent_router(state.clone())));
+        tokio::spawn(tls::serve_mtls(
+            listener,
+            cfg,
+            agent_router(state.clone()),
+            limits,
+        ));
 
         let root_pem = std::fs::read_to_string(dir.path().join("root.pem")).unwrap();
         TestServer {
