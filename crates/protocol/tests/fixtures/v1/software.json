@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "section": "software",
+  "data": [
+    { "name": "7-Zip 23.01 (x64)", "version": "23.01", "publisher": "Igor Pavlov", "install_date": "20240101", "arch": "x64" },
+    { "name": "Zoom", "version": null, "publisher": null, "install_date": null, "arch": "user" }
+  ]
+}

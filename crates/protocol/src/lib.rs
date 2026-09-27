@@ -1,1 +1,357 @@
 //! Agent 與伺服器之間的共用訊息格式。
+
+use std::collections::BTreeMap;
+
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
+
+pub const SCHEMA_VERSION: u32 = 1;
+pub const MAX_STRING_LEN: usize = 1024;
+pub const MAX_ITEMS: usize = 20_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Section {
+    Basic,
+    Hardware,
+    Software,
+    Patches,
+    Services,
+}
+
+impl Section {
+    pub const ALL: [Section; 5] = [
+        Section::Basic,
+        Section::Hardware,
+        Section::Software,
+        Section::Patches,
+        Section::Services,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Section::Basic => "basic",
+            Section::Hardware => "hardware",
+            Section::Software => "software",
+            Section::Patches => "patches",
+            Section::Services => "services",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Section> {
+        Section::ALL.into_iter().find(|x| x.as_str() == s)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EnrollRequest {
+    pub schema_version: u32,
+    pub enroll_token: String,
+    pub csr_pem: String,
+    pub hostname: String,
+    pub smbios_uuid: Option<String>,
+    pub bios_serial: Option<String>,
+    pub mac_addresses: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EnrollResponse {
+    pub device_id: Uuid,
+    /// 裝置憑證 + 中繼 CA + 根 CA，PEM 串接
+    pub certificate_chain_pem: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CheckinRequest {
+    pub schema_version: u32,
+    pub agent_version: String,
+    pub boot_time: DateTime<Utc>,
+    pub logged_on_user: Option<String>,
+    pub ip_addresses: Vec<String>,
+    pub section_hashes: BTreeMap<Section, String>,
+    pub section_errors: BTreeMap<Section, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CollectionIntervals {
+    pub software_secs: u32,
+    pub patches_secs: u32,
+    pub services_secs: u32,
+    pub hardware_secs: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CheckinResponse {
+    pub next_checkin_seconds: u32,
+    pub request_sections: Vec<Section>,
+    pub collection_intervals: CollectionIntervals,
+    pub renew_certificate: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct BasicInfo {
+    pub hostname: String,
+    pub domain: Option<String>,
+    pub is_domain_joined: bool,
+    pub os_caption: String,
+    pub os_build: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct Disk {
+    pub name: String,
+    pub size_bytes: u64,
+    pub free_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct HardwareInfo {
+    pub manufacturer: Option<String>,
+    pub model: Option<String>,
+    pub cpu: Option<String>,
+    pub ram_mb: u64,
+    pub disks: Vec<Disk>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Arch {
+    X64,
+    X86,
+    /// 安裝在使用者層級（HKU）
+    User,
+}
+
+impl Arch {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Arch::X64 => "x64",
+            Arch::X86 => "x86",
+            Arch::User => "user",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Arch> {
+        [Arch::X64, Arch::X86, Arch::User]
+            .into_iter()
+            .find(|a| a.as_str() == s)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct SoftwareItem {
+    pub name: String,
+    pub version: Option<String>,
+    pub publisher: Option<String>,
+    pub install_date: Option<String>,
+    pub arch: Arch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct PatchItem {
+    pub kb: String,
+    pub installed_on: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct ServiceItem {
+    pub name: String,
+    pub display_name: Option<String>,
+    pub start_mode: String,
+    pub state: String,
+    pub binary_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "section", content = "data", rename_all = "lowercase")]
+pub enum InventoryPayload {
+    Basic(BasicInfo),
+    Hardware(HardwareInfo),
+    Software(Vec<SoftwareItem>),
+    Patches(Vec<PatchItem>),
+    Services(Vec<ServiceItem>),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InventoryUpload {
+    pub schema_version: u32,
+    #[serde(flatten)]
+    pub payload: InventoryPayload,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RenewRequest {
+    pub csr_pem: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RenewResponse {
+    pub certificate_chain_pem: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ValidationError {
+    #[error("string too long: {len} chars")]
+    StringTooLong { len: usize },
+    #[error("too many items: {count}")]
+    TooManyItems { count: usize },
+}
+
+impl InventoryPayload {
+    pub fn section(&self) -> Section {
+        match self {
+            InventoryPayload::Basic(_) => Section::Basic,
+            InventoryPayload::Hardware(_) => Section::Hardware,
+            InventoryPayload::Software(_) => Section::Software,
+            InventoryPayload::Patches(_) => Section::Patches,
+            InventoryPayload::Services(_) => Section::Services,
+        }
+    }
+
+    /// 排序所有清單，讓相同內容產生相同的序列化結果。
+    pub fn normalize(&mut self) {
+        match self {
+            InventoryPayload::Basic(_) => {}
+            InventoryPayload::Hardware(h) => h.disks.sort(),
+            InventoryPayload::Software(v) => v.sort(),
+            InventoryPayload::Patches(v) => v.sort(),
+            InventoryPayload::Services(v) => v.sort(),
+        }
+    }
+
+    /// 正規化後 JSON 的 SHA-256（小寫 hex）。Agent 與伺服器都用這個函式。
+    pub fn canonical_hash(&self) -> String {
+        let mut c = self.clone();
+        c.normalize();
+        let bytes = serde_json::to_vec(&c).expect("payload serializes");
+        hex::encode(Sha256::digest(&bytes))
+    }
+
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        let count = match self {
+            InventoryPayload::Basic(_) => 1,
+            InventoryPayload::Hardware(h) => h.disks.len(),
+            InventoryPayload::Software(v) => v.len(),
+            InventoryPayload::Patches(v) => v.len(),
+            InventoryPayload::Services(v) => v.len(),
+        };
+        if count > MAX_ITEMS {
+            return Err(ValidationError::TooManyItems { count });
+        }
+        validate_strings(self)
+    }
+}
+
+/// 檢查任意可序列化值中所有字串（含 map key）不超過 MAX_STRING_LEN 字元。
+pub fn validate_strings<T: Serialize>(value: &T) -> Result<(), ValidationError> {
+    fn walk(v: &serde_json::Value) -> Result<(), ValidationError> {
+        match v {
+            serde_json::Value::String(s) => check(s),
+            serde_json::Value::Array(a) => a.iter().try_for_each(walk),
+            serde_json::Value::Object(o) => o.iter().try_for_each(|(k, v)| {
+                check(k)?;
+                walk(v)
+            }),
+            _ => Ok(()),
+        }
+    }
+    fn check(s: &str) -> Result<(), ValidationError> {
+        let len = s.chars().count();
+        if len > MAX_STRING_LEN {
+            Err(ValidationError::StringTooLong { len })
+        } else {
+            Ok(())
+        }
+    }
+    walk(&serde_json::to_value(value).expect("value serializes"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sw(name: &str, ver: &str) -> SoftwareItem {
+        SoftwareItem {
+            name: name.into(),
+            version: Some(ver.into()),
+            publisher: None,
+            install_date: None,
+            arch: Arch::X64,
+        }
+    }
+
+    #[test]
+    fn hash_is_independent_of_item_order() {
+        let a = InventoryPayload::Software(vec![sw("A", "1"), sw("B", "2")]);
+        let b = InventoryPayload::Software(vec![sw("B", "2"), sw("A", "1")]);
+        assert_eq!(a.canonical_hash(), b.canonical_hash());
+    }
+
+    #[test]
+    fn hash_changes_when_version_changes() {
+        let a = InventoryPayload::Software(vec![sw("A", "1")]);
+        let b = InventoryPayload::Software(vec![sw("A", "2")]);
+        assert_ne!(a.canonical_hash(), b.canonical_hash());
+    }
+
+    #[test]
+    fn hash_is_64_hex_chars() {
+        let h = InventoryPayload::Patches(vec![]).canonical_hash();
+        assert_eq!(h.len(), 64);
+        assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn validate_rejects_long_string() {
+        let p = InventoryPayload::Software(vec![sw(&"x".repeat(MAX_STRING_LEN + 1), "1")]);
+        assert_eq!(
+            p.validate(),
+            Err(ValidationError::StringTooLong {
+                len: MAX_STRING_LEN + 1
+            })
+        );
+    }
+
+    #[test]
+    fn validate_counts_chars_not_bytes() {
+        // 1024 個中文字 = 3072 bytes，仍應通過
+        let p = InventoryPayload::Software(vec![sw(&"軟".repeat(MAX_STRING_LEN), "1")]);
+        assert_eq!(p.validate(), Ok(()));
+    }
+
+    #[test]
+    fn validate_rejects_too_many_items() {
+        let items = (0..=MAX_ITEMS).map(|i| sw(&i.to_string(), "1")).collect();
+        assert_eq!(
+            InventoryPayload::Software(items).validate(),
+            Err(ValidationError::TooManyItems {
+                count: MAX_ITEMS + 1
+            })
+        );
+    }
+
+    #[test]
+    fn upload_serializes_with_section_tag() {
+        let u = InventoryUpload {
+            schema_version: SCHEMA_VERSION,
+            payload: InventoryPayload::Patches(vec![PatchItem {
+                kb: "KB500".into(),
+                installed_on: None,
+            }]),
+        };
+        let v = serde_json::to_value(&u).unwrap();
+        assert_eq!(v["section"], "patches");
+        assert_eq!(v["data"][0]["kb"], "KB500");
+        assert_eq!(v["schema_version"], 1);
+    }
+
+    #[test]
+    fn section_parse_roundtrip() {
+        for s in Section::ALL {
+            assert_eq!(Section::parse(s.as_str()), Some(s));
+        }
+        assert_eq!(Section::parse("nope"), None);
+    }
+}
