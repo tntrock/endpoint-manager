@@ -1,6 +1,7 @@
 //! Endpoint Manager 伺服器。
 
 pub mod ca;
+pub mod checkin;
 pub mod db;
 pub mod enroll;
 pub mod error;
@@ -56,6 +57,7 @@ pub fn agent_router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/v1/enroll", post(enroll::enroll))
+        .route("/v1/checkin", post(checkin::checkin))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
 }
