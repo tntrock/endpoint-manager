@@ -11,6 +11,7 @@ pub mod identity;
 pub mod inventory;
 pub mod partitions;
 pub mod ratelimit;
+pub mod renew;
 pub mod tls;
 pub mod tokens;
 
@@ -61,6 +62,7 @@ pub fn agent_router(state: AppState) -> Router {
         .route("/v1/enroll", post(enroll::enroll))
         .route("/v1/checkin", post(checkin::checkin))
         .route("/v1/inventory/{section}", put(inventory::upload))
+        .route("/v1/renew", post(renew::renew))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
 }
