@@ -132,3 +132,74 @@ async fn revoked_cert_is_401(pool: PgPool) {
         .unwrap();
     assert_eq!(r.status(), 401);
 }
+
+#[sqlx::test(migrations = false)]
+async fn nul_in_checkin_is_400(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(1).await;
+    let a = s.enroll_ok(&tok, None, None).await;
+    let mut b = body(BTreeMap::new());
+    b.section_errors = BTreeMap::from([(Section::Patches, "bad\0error".to_string())]);
+    let r = s
+        .client(Some(&a))
+        .post(s.url("/v1/checkin"))
+        .json(&b)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 400);
+}
+
+#[sqlx::test(migrations = false)]
+async fn absurd_boot_time_is_400(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(1).await;
+    let a = s.enroll_ok(&tok, None, None).await;
+    let mut b = body(BTreeMap::new());
+    b.boot_time = "+200000-01-01T00:00:00Z".parse().unwrap();
+    let r = s
+        .client(Some(&a))
+        .post(s.url("/v1/checkin"))
+        .json(&b)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 400);
+}
+
+#[sqlx::test(migrations = false)]
+async fn poisoned_row_does_not_block_other_devices(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(2).await;
+    let bad = s.enroll_ok(&tok, None, None).await;
+    let good = s.enroll_ok(&tok, None, None).await;
+    let hot = |user: &str| endpoint_server::heartbeat::HotFields {
+        seen_at: chrono::Utc::now(),
+        ip: None,
+        logged_on_user: Some(user.into()),
+        boot_time: chrono::Utc::now(),
+        agent_version: "0.1.0".into(),
+        section_errors: serde_json::json!({}),
+    };
+    // 繞過 API 驗證，直接塞入資料庫無法接受的值
+    s.state.heartbeat.record(bad.device_id, hot("x\0y"));
+    s.state.heartbeat.record(good.device_id, hot("alice"));
+    let _ = s.state.heartbeat.flush(&s.pool).await;
+    let _ = s.state.heartbeat.flush(&s.pool).await;
+
+    let seen: Option<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("SELECT last_seen_at FROM devices WHERE id = $1")
+            .bind(good.device_id)
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+    assert!(
+        seen.is_some(),
+        "good device must be updated despite a bad row"
+    );
+    assert_eq!(
+        s.state.heartbeat.flush(&s.pool).await.unwrap(),
+        0,
+        "bad row dropped, not requeued forever"
+    );
+}

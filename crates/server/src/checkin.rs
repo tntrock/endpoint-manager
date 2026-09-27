@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use axum::Json;
 use axum::extract::State;
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use protocol::{CheckinRequest, CheckinResponse, SCHEMA_VERSION, Section, validate_strings};
 
 use crate::AppState;
@@ -35,6 +35,11 @@ pub async fn checkin(
         return Err(AppError::BadRequest("unsupported schema_version".into()));
     }
     validate_strings(&req)?;
+    let now = Utc::now();
+    let earliest = DateTime::from_timestamp(946_684_800, 0).expect("2000-01-01");
+    if req.boot_time < earliest || req.boot_time > now + Duration::days(1) {
+        return Err(AppError::BadRequest("boot_time out of range".into()));
+    }
 
     st.heartbeat.record(
         device.device_id,

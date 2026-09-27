@@ -203,3 +203,41 @@ async fn upload_without_cert_is_401(pool: PgPool) {
         .unwrap();
     assert_eq!(r.status(), 401);
 }
+
+#[sqlx::test(migrations = false)]
+async fn nul_in_every_section_is_400(pool: PgPool) {
+    let (s, a) = setup(pool).await;
+    let nul = "a\0b".to_string();
+    let payloads = vec![
+        InventoryPayload::Basic(protocol::BasicInfo {
+            hostname: nul.clone(),
+            domain: None,
+            is_domain_joined: false,
+            os_caption: "W".into(),
+            os_build: "1".into(),
+        }),
+        InventoryPayload::Hardware(protocol::HardwareInfo {
+            manufacturer: Some(nul.clone()),
+            model: None,
+            cpu: None,
+            ram_mb: 1,
+            disks: vec![],
+        }),
+        InventoryPayload::Software(vec![sw(&nul, "1")]),
+        InventoryPayload::Patches(vec![protocol::PatchItem {
+            kb: nul.clone(),
+            installed_on: None,
+        }]),
+        InventoryPayload::Services(vec![protocol::ServiceItem {
+            name: nul.clone(),
+            display_name: None,
+            start_mode: "Auto".into(),
+            state: "Running".into(),
+            binary_path: None,
+        }]),
+    ];
+    for p in payloads {
+        let section = p.section().as_str();
+        assert_eq!(put(&s, &a, section, &upload(p)).await, 400, "{section}");
+    }
+}

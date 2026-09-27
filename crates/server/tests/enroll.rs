@@ -124,3 +124,21 @@ async fn future_schema_version_rejected(pool: PgPool) {
         .unwrap();
     assert_eq!(r.status(), 400);
 }
+
+#[sqlx::test(migrations = false)]
+async fn nul_in_hostname_is_400(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(1).await;
+    let (csr, _) = common::make_csr();
+    let r = s
+        .client(None)
+        .post(s.url("/v1/enroll"))
+        .json(&serde_json::json!({
+            "schema_version": 1, "enroll_token": tok, "csr_pem": csr, "hostname": "PC\u{0}1",
+            "smbios_uuid": null, "bios_serial": null, "mac_addresses": []
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 400);
+}
