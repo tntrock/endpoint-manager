@@ -102,7 +102,7 @@ docker exec em-postgres psql -U postgres -c "CREATE DATABASE endpoint_manager;"
 - [x] **Step 2: 設定測試用連線字串**（`#[sqlx::test]` 會在此伺服器上自動建立／刪除測試資料庫）
 
 ```powershell
-[Environment]::SetEnvironmentVariable("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/postgres", "User")
+[Environment]::SetEnvironmentVariable("DATABASE_URL", "postgres://postgres:postgres@127.0.0.1:5432/postgres", "User")
 ```
 
 - [ ] **Step 3: 建立 GitHub repo 並推送 main（僅含規格與授權）**
@@ -306,7 +306,7 @@ jobs:
           --health-cmd "pg_isready -U postgres"
           --health-interval 5s --health-timeout 5s --health-retries 10
     env:
-      DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -3463,7 +3463,7 @@ cargo test --workspace
 
 ```bash
 cargo run -p endpoint-server -- ca-init ./pki localhost
-export DATABASE_URL=postgres://postgres:postgres@localhost:5432/endpoint_manager
+export DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/endpoint_manager
 cargo run -p endpoint-server -- token-create pilot 10 IT 30
 cargo run -p endpoint-server -- serve
 ```
@@ -3476,8 +3476,8 @@ cargo run -p endpoint-server -- serve
 ```bash
 createdb -U postgres endpoint_manager   # 或用 psql 建立
 cargo run -p endpoint-server -- ca-init ./pki localhost
-DATABASE_URL=postgres://postgres:postgres@localhost:5432/endpoint_manager cargo run -p endpoint-server -- token-create smoke 1
-DATABASE_URL=postgres://postgres:postgres@localhost:5432/endpoint_manager cargo run -p endpoint-server -- serve
+DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/endpoint_manager cargo run -p endpoint-server -- token-create smoke 1
+DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/endpoint_manager cargo run -p endpoint-server -- serve
 # 另一個終端機：
 curl --cacert pki/root.pem https://localhost:8443/healthz -i
 ```
