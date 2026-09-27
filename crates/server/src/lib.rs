@@ -3,10 +3,12 @@
 pub mod ca;
 pub mod checkin;
 pub mod db;
+pub mod diff;
 pub mod enroll;
 pub mod error;
 pub mod heartbeat;
 pub mod identity;
+pub mod inventory;
 pub mod partitions;
 pub mod ratelimit;
 pub mod tls;
@@ -18,7 +20,7 @@ use std::time::Duration;
 use axum::Router;
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::StatusCode;
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use sqlx::PgPool;
 
 pub const MAX_BODY_BYTES: usize = 5 * 1024 * 1024;
@@ -58,6 +60,7 @@ pub fn agent_router(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .route("/v1/enroll", post(enroll::enroll))
         .route("/v1/checkin", post(checkin::checkin))
+        .route("/v1/inventory/{section}", put(inventory::upload))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
 }
