@@ -20,15 +20,17 @@ pub enum DeviceMatch {
     New,
 }
 
+/// 候選裝置：(id, bios_serial, 最近 10 分鐘內有報到)。
+/// 仍在線上的裝置不會被接管，避免硬體識別重複或被偽造時把正常電腦踢下線。
 pub fn match_device(
-    candidates: &[(Uuid, Option<String>)],
+    candidates: &[(Uuid, Option<String>, bool)],
     bios_serial: Option<&str>,
 ) -> DeviceMatch {
-    let serial = bios_serial.map(str::trim).filter(|s| !s.is_empty());
-    if let Some(serial) = serial
-        && let Some((id, _)) = candidates
+    if let Some(serial) = normalize_serial(bios_serial)
+        && let Some((id, _, recent)) = candidates
             .iter()
-            .find(|(_, s)| s.as_deref() == Some(serial))
+            .find(|(_, s, _)| s.as_deref() == Some(serial))
+        && !recent
     {
         return DeviceMatch::Reuse(*id);
     }
@@ -39,14 +41,44 @@ pub fn match_device(
     }
 }
 
+/// 白牌主機板常見的共用 SMBIOS UUID。
+const PLACEHOLDER_SMBIOS: &[&str] = &["03000200-0400-0500-0006-000700080009"];
+
+/// 常見的佔位序號（比對時忽略大小寫）。
+const PLACEHOLDER_SERIALS: &[&str] = &[
+    "0",
+    "default string",
+    "to be filled by o.e.m.",
+    "system serial number",
+    "chassis serial number",
+    "not specified",
+    "not applicable",
+    "none",
+    "n/a",
+    "123456789",
+];
+
 pub fn normalize_smbios(raw: Option<&str>) -> Option<String> {
     let s = raw?.trim().to_ascii_uppercase();
     let hex: String = s.chars().filter(|c| *c != '-').collect();
-    if hex.is_empty() || hex.chars().all(|c| c == '0') || hex.chars().all(|c| c == 'F') {
+    if hex.is_empty()
+        || hex.chars().all(|c| c == '0')
+        || hex.chars().all(|c| c == 'F')
+        || PLACEHOLDER_SMBIOS.contains(&s.as_str())
+    {
         None
     } else {
         Some(s)
     }
+}
+
+pub fn normalize_serial(raw: Option<&str>) -> Option<&str> {
+    let s = raw?.trim();
+    let placeholder = s.is_empty()
+        || PLACEHOLDER_SERIALS
+            .iter()
+            .any(|p| p.eq_ignore_ascii_case(s));
+    (!placeholder).then_some(s)
 }
 
 pub async fn enroll(
@@ -73,15 +105,13 @@ pub async fn enroll(
         .ok_or(AppError::Unauthorized)?;
 
     let smbios = normalize_smbios(req.smbios_uuid.as_deref());
-    let serial = req
-        .bios_serial
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-    let candidates: Vec<(Uuid, Option<String>)> = match &smbios {
+    let serial = normalize_serial(req.bios_serial.as_deref());
+    let candidates: Vec<(Uuid, Option<String>, bool)> = match &smbios {
         Some(u) => {
             sqlx::query_as(
-                "SELECT id, bios_serial FROM devices \
+                "SELECT id, bios_serial, \
+                        coalesce(last_seen_at > now() - interval '10 minutes', false) \
+                 FROM devices \
                  WHERE smbios_uuid = $1 AND status <> 'retired' FOR UPDATE",
             )
             .bind(u)
@@ -162,15 +192,23 @@ mod tests {
     fn same_serial_reuses() {
         let id = Uuid::new_v4();
         assert_eq!(
-            match_device(&[(id, Some("SN1".into()))], Some("SN1")),
+            match_device(&[(id, Some("SN1".into()), false)], Some("SN1")),
             DeviceMatch::Reuse(id)
+        );
+    }
+
+    #[test]
+    fn recently_seen_device_is_never_taken_over() {
+        assert_eq!(
+            match_device(&[(Uuid::new_v4(), Some("SN1".into()), true)], Some("SN1")),
+            DeviceMatch::NewDuplicateSuspect
         );
     }
 
     #[test]
     fn different_serial_is_duplicate_suspect() {
         assert_eq!(
-            match_device(&[(Uuid::new_v4(), Some("SN1".into()))], Some("SN2")),
+            match_device(&[(Uuid::new_v4(), Some("SN1".into()), false)], Some("SN2")),
             DeviceMatch::NewDuplicateSuspect
         );
     }
@@ -178,7 +216,7 @@ mod tests {
     #[test]
     fn missing_serial_never_reuses() {
         assert_eq!(
-            match_device(&[(Uuid::new_v4(), None)], None),
+            match_device(&[(Uuid::new_v4(), None, false)], None),
             DeviceMatch::NewDuplicateSuspect
         );
     }
@@ -190,18 +228,32 @@ mod tests {
 
     #[test]
     fn bogus_smbios_ignored() {
-        assert_eq!(
-            normalize_smbios(Some("00000000-0000-0000-0000-000000000000")),
-            None
-        );
-        assert_eq!(
-            normalize_smbios(Some("FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF")),
-            None
-        );
-        assert_eq!(normalize_smbios(Some("  ")), None);
+        for bogus in [
+            "00000000-0000-0000-0000-000000000000",
+            "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF",
+            "03000200-0400-0500-0006-000700080009",
+            "  ",
+        ] {
+            assert_eq!(normalize_smbios(Some(bogus)), None, "{bogus}");
+        }
         assert_eq!(
             normalize_smbios(Some("4c4c4544-0042")),
             Some("4C4C4544-0042".into())
         );
+    }
+
+    #[test]
+    fn placeholder_serials_ignored() {
+        for bogus in [
+            "Default string",
+            "To Be Filled By O.E.M.",
+            "System Serial Number",
+            "0",
+            "  none ",
+            "",
+        ] {
+            assert_eq!(normalize_serial(Some(bogus)), None, "{bogus}");
+        }
+        assert_eq!(normalize_serial(Some(" 5CG1234XYZ ")), Some("5CG1234XYZ"));
     }
 }

@@ -142,3 +142,28 @@ async fn nul_in_hostname_is_400(pool: PgPool) {
         .unwrap();
     assert_eq!(r.status(), 400);
 }
+
+#[sqlx::test(migrations = false)]
+async fn active_device_is_not_taken_over_by_same_hardware_ids(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(5).await;
+    let a = s.enroll_ok(&tok, Some("UUID-A"), Some("SN-A")).await;
+    s.client(Some(&a))
+        .post(s.url("/v1/checkin"))
+        .json(&checkin_body())
+        .send()
+        .await
+        .unwrap();
+    s.state.heartbeat.flush(&s.pool).await.unwrap();
+
+    let b = s.enroll_ok(&tok, Some("UUID-A"), Some("SN-A")).await;
+    assert_ne!(a.device_id, b.device_id);
+    let still = s
+        .client(Some(&a))
+        .post(s.url("/v1/checkin"))
+        .json(&checkin_body())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(still.status(), 200, "online device keeps its certificate");
+}
