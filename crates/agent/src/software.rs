@@ -42,9 +42,10 @@ pub fn to_items(entries: &[UninstallEntry], arch: Arch) -> Vec<SoftwareItem> {
     items
 }
 
-/// HKEY_USERS 底下真正的使用者設定檔（排除系統帳戶與 _Classes）。
+/// HKEY_USERS 底下真正的使用者設定檔：AD／本機帳戶（S-1-5-21-）與 Entra ID 帳戶（S-1-12-1-），
+/// 排除系統帳戶與 _Classes。
 pub fn is_user_sid(name: &str) -> bool {
-    name.starts_with("S-1-5-21-") && !name.ends_with("_Classes")
+    (name.starts_with("S-1-5-21-") || name.starts_with("S-1-12-1-")) && !name.ends_with("_Classes")
 }
 
 #[cfg(test)]
@@ -97,6 +98,8 @@ mod tests {
     #[test]
     fn user_sid_detection() {
         assert!(is_user_sid("S-1-5-21-111-222-333-1001"));
+        assert!(is_user_sid("S-1-12-1-111-222-333-444"), "Entra ID 使用者");
+        assert!(!is_user_sid("S-1-12-1-111-222-333-444_Classes"));
         assert!(!is_user_sid("S-1-5-21-111-222-333-1001_Classes"));
         assert!(!is_user_sid("S-1-5-18"));
         assert!(!is_user_sid(".DEFAULT"));
