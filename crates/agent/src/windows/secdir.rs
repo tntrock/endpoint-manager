@@ -202,7 +202,14 @@ pub fn prepare_data_dir(dir: &Path) -> anyhow::Result<()> {
 /// 服務啟動時：只檢查、不修改。
 pub fn verify_data_dir(dir: &Path) -> anyhow::Result<()> {
     match current_sddl(dir)? {
-        Some(sddl) if sddl_is_trusted(&sddl) && only_plain_files(dir)? => Ok(()),
+        Some(sddl) if sddl_is_trusted(&sddl) => {
+            anyhow::ensure!(
+                only_plain_files(dir)?,
+                "data directory {} contains subdirectories or links; reinstall the agent",
+                dir.display()
+            );
+            Ok(())
+        }
         Some(sddl) => bail!(
             "data directory {} has unexpected permissions ({sddl}); reinstall the agent",
             dir.display()

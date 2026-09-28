@@ -53,9 +53,46 @@ impl Schedule {
     }
 }
 
+/// 限制觸發頻率：距離上次放行不到 min_gap 就忽略（可跨執行緒共用）。
+pub struct Throttle {
+    min_gap: Duration,
+    last: std::sync::Mutex<Option<Instant>>,
+}
+
+impl Throttle {
+    pub fn new(min_gap: Duration) -> Self {
+        Self {
+            min_gap,
+            last: std::sync::Mutex::new(None),
+        }
+    }
+
+    pub fn allow(&self, now: Instant) -> bool {
+        let mut last = self.last.lock().expect("throttle lock");
+        if last.is_some_and(|t| now.duration_since(t) < self.min_gap) {
+            return false;
+        }
+        *last = Some(now);
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Windows 更新期間 CBS 機碼幾乎不停變動：觸發要有最小間隔，
+    /// 否則 Agent 每 10 秒就報到一次，也會塞滿觸發通道擠掉軟體變更。
+    #[test]
+    fn throttle_enforces_minimum_gap() {
+        let t = Throttle::new(Duration::from_secs(300));
+        let t0 = Instant::now();
+        assert!(t.allow(t0));
+        assert!(!t.allow(t0 + Duration::from_secs(10)));
+        assert!(!t.allow(t0 + Duration::from_secs(299)));
+        assert!(t.allow(t0 + Duration::from_secs(300)));
+        assert!(!t.allow(t0 + Duration::from_secs(301)));
+    }
 
     #[test]
     fn everything_due_at_start() {

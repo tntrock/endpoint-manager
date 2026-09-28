@@ -327,7 +327,15 @@ impl<C: Collector> Agent<C> {
                         .insert(s, format!("rejected by server ({code}): {msg}"));
                 }
                 Err(ClientError::Unauthorized) => return Cycle::Stop,
-                Err(ClientError::Retry(_)) => break,
+                Err(ClientError::Retry(_)) => {
+                    // 伺服器忙碌、連不上或代理伺服器回了非預期的錯誤：下次報到再送，錯誤回報給伺服器
+                    let msg = "upload failed; will retry at next check-in".to_string();
+                    if error_changed(self.errors.get(&s), &msg) {
+                        tracing::warn!(section = s.as_str(), "{msg}");
+                    }
+                    self.errors.insert(s, msg);
+                    break;
+                }
             }
         }
 

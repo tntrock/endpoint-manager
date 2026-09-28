@@ -74,7 +74,8 @@ fn run_service() -> anyhow::Result<()> {
             ServiceState::Stopped,
             ServiceExitCode::ServiceSpecific(UNTRUSTED_DATA_DIR),
         ))?;
-        return Err(e);
+        // 已記錄原因；回傳 Ok 避免 service_main 再記一次
+        return Ok(());
     }
     handle.set_service_status(status(ServiceState::Running, OK))?;
 

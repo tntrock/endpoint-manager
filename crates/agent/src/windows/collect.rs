@@ -122,8 +122,10 @@ impl Collector for WindowsCollector {
     fn identity(&self) -> anyhow::Result<Identity> {
         let con = wmi()?;
         let cs = computer_system(&con).ok();
-        let product: Vec<Product> = optional("Win32_ComputerSystemProduct", con.query());
-        let bios: Vec<Bios> = optional("Win32_BIOS", con.query());
+        // 硬體識別（SMBIOS UUID、BIOS 序號）是重灌比對的依據：查不到就不註冊，等下一輪再試，
+        // 避免建立一筆永遠比對不到的裝置記錄
+        let product: Vec<Product> = con.query().context("Win32_ComputerSystemProduct")?;
+        let bios: Vec<Bios> = con.query().context("Win32_BIOS")?;
         let nics: Vec<Nic> = optional("NICs", con.raw_query(NICS));
         Ok(Identity {
             hostname: hostname(cs.as_ref()),
