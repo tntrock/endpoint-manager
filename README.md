@@ -104,7 +104,7 @@ docker compose run --rm server admin-create admin    # 輸入第一個平台管�
 - 手動安裝：`msiexec /i endpoint-agent.msi /qn`
 - GPO：電腦設定 → 原則 → 軟體設定 → 軟體安裝，直接指定這個 MSI（放在只有網域電腦能讀取的共用資料夾）。
 
-安裝檔內含註冊金鑰，請當成機密保管，設定可使用次數與有效天數，用完即作廢。沒有網頁時可用指令產生：
+安裝檔內含註冊金鑰，請當成機密保管。Windows 會把安裝過的 MSI 快取在每台電腦的 `C:\Windows\Installer`，一般使用者讀得到裡面的金鑰，所以從網頁下載安裝檔時有效天數必填（最多 90 天），**派送完成後請在網頁作廢這把金鑰**。伺服器網址必須是 `https://主機:埠`（主機須為 `ca-init` 時給的名稱之一）。沒有網頁時可用指令產生：
 
 ```bash
 EM_CA_DIR=deploy/pki endpoint-server agent-msi endpoint-agent-<版本>.msi out.msi https://em.example.com:8443 <金鑰>

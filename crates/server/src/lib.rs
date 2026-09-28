@@ -128,14 +128,16 @@ pub async fn serve(cfg: config::Config) -> anyhow::Result<()> {
     db::migrate(&pool).await?;
     partitions::maintain_partitions(&pool, chrono::Utc::now()).await?;
 
+    let server_names = ca::server_names(&cfg.ca_dir)?;
+    let public_url = if cfg.agent_public_url.is_empty() {
+        installer::default_public_url(&server_names, cfg.agent_listen.port())
+    } else {
+        cfg.agent_public_url.clone()
+    };
     let state = AppState::new(pool.clone(), ca::Ca::load(&cfg.ca_dir)?)
         .with_display_offset(cfg.display_utc_offset)
         .with_enroll_limit(cfg.enroll_per_ip_per_minute)
-        .with_installer(
-            cfg.agent_msi.clone(),
-            cfg.agent_public_url.clone(),
-            ca::server_names(&cfg.ca_dir)?,
-        );
+        .with_installer(cfg.agent_msi.clone(), public_url, server_names);
     let tls_cfg = tls::server_config(&cfg.ca_dir)?;
 
     let hb = state.heartbeat.clone();

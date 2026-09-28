@@ -92,11 +92,11 @@ async fn main() -> anyhow::Result<()> {
                 std::env::var("EM_CA_DIR").unwrap_or_else(|_| "./pki".into()),
             );
             let names = endpoint_server::ca::server_names(&ca_dir)?;
-            endpoint_server::installer::check_server_url(&args[3], &names)
+            let url = endpoint_server::installer::normalize_server_url(&args[3], &names)
                 .map_err(|m| anyhow::anyhow!(m))?;
             let root = std::fs::read_to_string(ca_dir.join("root.pem")).context("root.pem")?;
             let template = std::fs::read(&args[1]).context("template")?;
-            let msi = endpoint_server::installer::build_msi(&template, &args[3], &args[4], &root)?;
+            let msi = endpoint_server::installer::build_msi(&template, &url, &args[4], &root)?;
             std::fs::write(&args[2], msi)?;
             println!("已產生 {}（內含註冊金鑰，請妥善保管）", args[2]);
             Ok(())

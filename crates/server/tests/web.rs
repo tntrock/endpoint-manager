@@ -825,7 +825,7 @@ async fn installer_download_embeds_token_url_and_root(pool: PgPool) {
             ("name", "MSI pilot"),
             ("max_uses", "5"),
             ("group", &tp.to_string()),
-            ("valid_days", ""),
+            ("valid_days", "30"),
             ("server_url", "https://localhost:8443"),
             ("download", "1"),
         ])
@@ -878,6 +878,7 @@ async fn installer_with_wrong_host_is_rejected_without_creating_token(pool: PgPo
             ("csrf", csrf_from(&html).as_str()),
             ("name", "wrong host"),
             ("max_uses", "5"),
+            ("valid_days", "30"),
             ("server_url", "https://10.9.9.9:8443"),
             ("download", "1"),
         ])
@@ -913,4 +914,34 @@ async fn group_admin_downloads_only_for_own_group(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(r.status(), 403);
+}
+
+/// 安裝檔會被 Windows 快取在 C:\Windows\Installer（一般使用者可讀），裡面的金鑰必須有期限。
+#[sqlx::test(migrations = false)]
+async fn installer_token_requires_bounded_validity(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let c = s.admin_client().await;
+    for days in ["", "91"] {
+        let (_, html) = s.page(&c, "/tokens").await;
+        let r = c
+            .post(s.web_url("/tokens"))
+            .form(&[
+                ("csrf", csrf_from(&html).as_str()),
+                ("name", "no expiry"),
+                ("max_uses", "5"),
+                ("valid_days", days),
+                ("server_url", "https://localhost:8443"),
+                ("download", "1"),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 400, "valid_days={days:?}");
+        assert!(r.text().await.unwrap().contains("有效天數"));
+    }
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM enroll_tokens WHERE name = 'no expiry'")
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 0);
 }

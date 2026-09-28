@@ -20,7 +20,7 @@
     <label>伺服器網址 <input name="server_url" value="{{ public_url }}" placeholder="https://em.example.com:8443" size="40"></label>
     <button name="download" value="1">建立並下載安裝檔</button>
   </p>
-  <p class="muted">安裝檔內含這把金鑰，可直接用 GPO 或 <code>msiexec /i endpoint-agent.msi /qn</code> 安裝。請當成機密保管，並設定可使用次數與有效天數。</p>
+  <p class="muted">安裝檔內含這把金鑰，可直接用 GPO 或 <code>msiexec /i endpoint-agent.msi /qn</code> 安裝。Windows 會把安裝檔快取在每台電腦的 <code>C:\Windows\Installer</code>（一般使用者可讀），所以下載安裝檔時有效天數必填（最多 90 天），派送完成後請作廢這把金鑰。</p>
   {% endif %}
 </form>
 </fieldset>

@@ -57,26 +57,57 @@ pub fn read_properties(msi: &[u8]) -> anyhow::Result<BTreeMap<String, String>> {
     Ok(out)
 }
 
-/// 網址必須是 https，且主機名稱（或 IP）在伺服器憑證的 SAN 內，否則 Agent 會連不上。
-pub fn check_server_url(url: &str, names: &[String]) -> Result<(), String> {
-    let rest = url
-        .strip_prefix("https://")
-        .ok_or("伺服器網址必須以 https:// 開頭")?;
-    let authority = rest.split('/').next().unwrap_or_default();
-    let host = match authority.strip_prefix('[') {
-        Some(v6) => v6.split(']').next().unwrap_or_default(),
-        None => authority.rsplit_once(':').map_or(authority, |(h, _)| h),
+/// 只接受 `https://主機:埠`（結尾的 `/` 可有可無），主機名稱（或 IP）必須在伺服器憑證的 SAN 內，
+/// 回傳正規化後的網址。這個值會放進 MSI 自訂動作的命令列，也會直接串接成 API 網址，
+/// 所以路徑、查詢字串、userinfo、引號、反斜線、空白一律拒絕；埠必填，避免連到管理網頁的 443。
+pub fn normalize_server_url(url: &str, names: &[String]) -> Result<String, String> {
+    const FORMAT: &str = "伺服器網址格式須為 https://主機:埠（例：https://em.example.com:8443）";
+    let rest = url.trim().strip_prefix("https://").ok_or(FORMAT)?;
+    let authority = rest.strip_suffix('/').unwrap_or(rest);
+    let (host, port) = match authority.strip_prefix('[') {
+        Some(v6) => {
+            let (h, p) = v6.split_once("]:").ok_or(FORMAT)?;
+            let ip: std::net::Ipv6Addr = h.parse().map_err(|_| FORMAT)?;
+            (ip.to_string(), p)
+        }
+        None => {
+            let (h, p) = authority.rsplit_once(':').ok_or(FORMAT)?;
+            let valid = !h.is_empty()
+                && h.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-');
+            if !valid {
+                return Err(FORMAT.into());
+            }
+            (h.to_ascii_lowercase(), p)
+        }
     };
-    if host.is_empty() {
-        return Err("伺服器網址缺少主機名稱".into());
-    }
-    if names.iter().any(|n| n.eq_ignore_ascii_case(host)) {
-        Ok(())
-    } else {
-        Err(format!(
+    let port: u16 = port
+        .parse()
+        .ok()
+        .filter(|p| *p != 0)
+        .ok_or("伺服器網址的埠須為 1～65535")?;
+    if !names.iter().any(|n| n.eq_ignore_ascii_case(&host)) {
+        return Err(format!(
             "「{host}」不在伺服器憑證的名稱內（{}），Agent 會無法連線",
             names.join("、")
-        ))
+        ));
+    }
+    Ok(url_of(&host, port))
+}
+
+/// 未設定 EM_AGENT_PUBLIC_URL 時，表單預設填入伺服器憑證的第一個名稱與 Agent API 的埠。
+pub fn default_public_url(names: &[String], agent_port: u16) -> String {
+    names
+        .first()
+        .map(|h| url_of(h, agent_port))
+        .unwrap_or_default()
+}
+
+fn url_of(host: &str, port: u16) -> String {
+    if host.contains(':') {
+        format!("https://[{host}]:{port}")
+    } else {
+        format!("https://{host}:{port}")
     }
 }
 
@@ -144,14 +175,67 @@ mod tests {
 
     #[test]
     fn server_url_must_match_certificate() {
-        let names = vec!["em.example.com".to_string(), "10.1.2.3".to_string()];
-        assert!(check_server_url("https://em.example.com:8443", &names).is_ok());
-        assert!(check_server_url("https://EM.example.com:8443/", &names).is_ok());
-        assert!(check_server_url("https://10.1.2.3:8443", &names).is_ok());
-        assert!(check_server_url("https://10.1.2.4:8443", &names).is_err());
-        assert!(check_server_url("http://em.example.com:8443", &names).is_err());
-        assert!(check_server_url("https://em.example.com.evil.test:8443", &names).is_err());
-        assert!(check_server_url("https://", &names).is_err());
+        let names = vec![
+            "em.example.com".to_string(),
+            "10.1.2.3".to_string(),
+            "::1".to_string(),
+        ];
+        let ok = |u: &str| normalize_server_url(u, &names);
+        assert_eq!(
+            ok("https://em.example.com:8443").unwrap(),
+            "https://em.example.com:8443"
+        );
+        assert_eq!(
+            ok(" https://EM.example.com:8443/ ").unwrap(),
+            "https://em.example.com:8443"
+        );
+        assert_eq!(
+            ok("https://10.1.2.3:8443").unwrap(),
+            "https://10.1.2.3:8443"
+        );
+        assert_eq!(ok("https://[::1]:8443").unwrap(), "https://[::1]:8443");
+        assert!(ok("https://10.1.2.4:8443").is_err());
+        assert!(ok("http://em.example.com:8443").is_err());
+        assert!(ok("https://em.example.com.evil.test:8443").is_err());
+        assert!(ok("https://").is_err());
+    }
+
+    /// 值會放進 MSI 自訂動作的命令列（"[SERVER_URL]"），也會直接串接成 API 網址：
+    /// 只接受 https://主機:埠，其餘一律拒絕。
+    #[test]
+    fn server_url_rejects_anything_but_host_and_port() {
+        let names = vec!["em.example.com".to_string()];
+        for bad in [
+            "https://em.example.com",         // 沒有埠：會連到管理網頁的 443
+            "https://em.example.com:",        // 空的埠
+            "https://em.example.com:abc",     // 非數字
+            "https://em.example.com:0",       // 超出範圍
+            "https://em.example.com:70000",   // 超出範圍
+            "https://em.example.com:8443/\\", // 反斜線會吃掉命令列的結尾引號
+            "https://em.example.com:8443/\" --root-ca \"x", // 注入其他參數
+            "https://em.example.com:8443/api", // 路徑
+            "https://em.example.com:8443?x=1", // 查詢字串
+            "https://u@em.example.com:8443",  // userinfo
+            "https://em.example.com:8443 x",  // 空白
+        ] {
+            assert!(
+                normalize_server_url(bad, &names).is_err(),
+                "should reject {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn default_public_url_uses_first_name_and_agent_port() {
+        assert_eq!(
+            default_public_url(&["em.example.com".into(), "10.1.2.3".into()], 8443),
+            "https://em.example.com:8443"
+        );
+        assert_eq!(
+            default_public_url(&["::1".into()], 8443),
+            "https://[::1]:8443"
+        );
+        assert_eq!(default_public_url(&[], 8443), "");
     }
 
     fn package_code(msi: &[u8]) -> uuid::Uuid {

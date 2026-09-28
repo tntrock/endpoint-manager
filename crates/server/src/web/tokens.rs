@@ -14,6 +14,9 @@ use super::{fmt_time, forbidden, not_found, render};
 use crate::AppState;
 use crate::tokens::{NewToken, create_token, revoke_token};
 
+/// 內含於安裝檔的金鑰最長有效天數
+const INSTALLER_MAX_DAYS: i64 = 90;
+
 pub struct TokenRow {
     pub id: i64,
     pub name: String,
@@ -172,8 +175,7 @@ pub async fn create(
     };
     // 下載安裝檔：先檢查網址與範本，失敗時不留下多餘的金鑰
     let download = !f.download.is_empty();
-    let server_url = f.server_url.trim();
-    let template = if download {
+    let installer = if download {
         let path = st.agent_msi.as_ref().ok_or_else(|| {
             (
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -181,11 +183,19 @@ pub async fn create(
             )
                 .into_response()
         })?;
-        crate::installer::check_server_url(server_url, &st.server_names).map_err(|m| bad(&m))?;
-        Some(tokio::fs::read(path).await.map_err(|e| {
+        // Windows 會把安裝檔快取在 C:\Windows\Installer（一般使用者可讀），金鑰必須有期限
+        if !valid_days.is_some_and(|d| d <= INSTALLER_MAX_DAYS) {
+            return Err(bad(&format!(
+                "下載安裝檔時必須設定有效天數（1～{INSTALLER_MAX_DAYS}）"
+            )));
+        }
+        let url = crate::installer::normalize_server_url(&f.server_url, &st.server_names)
+            .map_err(|m| bad(&m))?;
+        let template = tokio::fs::read(path).await.map_err(|e| {
             tracing::error!(error = %e, path = %path.display(), "cannot read agent MSI template");
             (StatusCode::SERVICE_UNAVAILABLE, "讀不到安裝檔範本").into_response()
-        })?)
+        })?;
+        Some((url, template))
     } else {
         None
     };
@@ -209,14 +219,14 @@ pub async fn create(
         Some(&id.to_string()),
         serde_json::json!({
             "name": name, "max_uses": max_uses, "group_id": group, "valid_days": valid_days,
-            "installer": download, "server_url": download.then_some(server_url)
+            "installer": download, "server_url": installer.as_ref().map(|(u, _)| u)
         }),
     )
     .await
     .map_err(db_error)?;
     drop(c);
-    if let Some(template) = template {
-        let (url, root) = (server_url.to_string(), st.ca.root_pem().to_string());
+    if let Some((url, template)) = installer {
+        let root = st.ca.root_pem().to_string();
         let msi = tokio::task::spawn_blocking(move || {
             crate::installer::build_msi(&template, &url, &token, &root)
         })
