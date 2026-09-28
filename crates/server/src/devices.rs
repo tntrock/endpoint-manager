@@ -17,7 +17,9 @@ async fn revoke_certs(conn: &mut PgConnection, id: Uuid) -> Result<(), sqlx::Err
     Ok(())
 }
 
-/// 核准待核准的重新註冊：新憑證接手舊裝置記錄，新記錄刪除。回傳舊裝置 id。
+/// 核准待核准的重新註冊：新憑證接手舊裝置記錄，新記錄刪除。回傳保留下來的裝置 id。
+/// 原裝置在待核准期間已被除役（或已不存在）時不讓它復活，改為讓新記錄成為獨立裝置
+/// ——拒絕會撤銷這台電腦可用的憑證，只能重新註冊。
 pub async fn approve_in(
     conn: &mut PgConnection,
     pending: Uuid,
@@ -31,17 +33,36 @@ pub async fn approve_in(
     .fetch_optional(&mut *conn)
     .await?
     .context("device is not pending approval")?;
-    let old = old.context("pending device has no original device")?;
-    // 待核准期間原裝置可能已被除役：不可讓它復活
-    let old_status: Option<String> =
-        sqlx::query_scalar("SELECT status FROM devices WHERE id = $1 FOR UPDATE")
-            .bind(old)
-            .fetch_optional(&mut *conn)
+    let old_status: Option<String> = match old {
+        Some(old) => {
+            sqlx::query_scalar("SELECT status FROM devices WHERE id = $1 FOR UPDATE")
+                .bind(old)
+                .fetch_optional(&mut *conn)
+                .await?
+        }
+        None => None,
+    };
+    let old = match old {
+        Some(old) if matches!(old_status.as_deref(), Some("active" | "duplicate_suspect")) => old,
+        _ => {
+            sqlx::query("UPDATE devices SET status = 'active', reenroll_of = NULL WHERE id = $1")
+                .bind(pending)
+                .execute(&mut *conn)
+                .await?;
+            audit::record(
+                conn,
+                actor,
+                "device_approve",
+                Some(&pending.to_string()),
+                serde_json::json!({
+                    "hostname": hostname, "standalone": true,
+                    "original": old, "original_status": old_status
+                }),
+            )
             .await?;
-    anyhow::ensure!(
-        matches!(old_status.as_deref(), Some("active" | "duplicate_suspect")),
-        "原裝置已除役或不存在，請拒絕這筆重新註冊"
-    );
+            return Ok(pending);
+        }
+    };
 
     revoke_certs(conn, old).await?;
     sqlx::query("UPDATE device_certs SET device_id = $1 WHERE device_id = $2")

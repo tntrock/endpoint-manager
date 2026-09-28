@@ -36,9 +36,10 @@ async fn status(s: &TestServer, id: Uuid) -> Option<String> {
         .unwrap()
 }
 
-/// 待核准期間原裝置被除役：核准不能讓它復活。
+/// 待核准期間原裝置被除役：核准不讓舊裝置復活，而是讓重灌後的這台成為獨立的新裝置
+/// （拒絕會撤銷它能用的憑證，只能重新註冊）。
 #[sqlx::test(migrations = false)]
-async fn approve_refuses_when_original_was_retired(pool: PgPool) {
+async fn approve_promotes_when_original_was_retired(pool: PgPool) {
     let s = TestServer::start(pool).await;
     let t = s.create_token(5).await;
     let old = s.enroll_ok(&t, Some("UUID-R"), Some("SN-R")).await;
@@ -46,16 +47,32 @@ async fn approve_refuses_when_original_was_retired(pool: PgPool) {
     endpoint_server::devices::retire(&s.pool, old.device_id, "admin")
         .await
         .unwrap();
-    assert!(
-        endpoint_server::devices::approve(&s.pool, new.device_id, "admin")
-            .await
-            .is_err()
-    );
+    let kept = endpoint_server::devices::approve(&s.pool, new.device_id, "admin")
+        .await
+        .unwrap();
+    assert_eq!(kept, new.device_id, "保留的是新記錄");
     assert_eq!(status(&s, old.device_id).await.as_deref(), Some("retired"));
-    assert_eq!(
-        status(&s, new.device_id).await.as_deref(),
-        Some("pending_approval")
-    );
+    assert_eq!(status(&s, new.device_id).await.as_deref(), Some("active"));
+    let reenroll_of: Option<Uuid> =
+        sqlx::query_scalar("SELECT reenroll_of FROM devices WHERE id = $1")
+            .bind(new.device_id)
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+    assert_eq!(reenroll_of, None);
+    // 新憑證仍可用
+    let r = s
+        .client(Some(&new))
+        .post(s.url("/v1/checkin"))
+        .json(&serde_json::json!({
+            "schema_version": protocol::SCHEMA_VERSION, "agent_version": "t",
+            "boot_time": chrono::Utc::now(), "logged_on_user": null, "ip_addresses": [],
+            "section_hashes": {}, "section_errors": {}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
 }
 
 /// 核准會刪除待核准的裝置記錄，它自己的變更歷史也一併刪除，不留孤兒資料。
@@ -81,7 +98,7 @@ async fn approve_removes_pending_change_history(pool: PgPool) {
     assert_eq!(count().await, 0);
 }
 
-/// 全部核准：需要勾選確認；其中一台無法核准時，其餘照常核准。
+/// 全部核准：需要勾選確認。
 #[sqlx::test(migrations = false)]
 async fn approve_all_requires_confirmation_and_skips_failures(pool: PgPool) {
     let s = TestServer::start(pool).await;
@@ -117,11 +134,15 @@ async fn approve_all_requires_confirmation_and_skips_failures(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(r.status(), 303);
-    assert_eq!(status(&s, b_new.device_id).await, None, "B 已核准");
+    assert_eq!(
+        status(&s, b_new.device_id).await,
+        None,
+        "B 已核准（併入原裝置）"
+    );
     assert_eq!(
         status(&s, a_new.device_id).await.as_deref(),
-        Some("pending_approval"),
-        "A 的原裝置已除役，留待處理"
+        Some("active"),
+        "A 的原裝置已除役，新記錄成為獨立裝置"
     );
 }
 

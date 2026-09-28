@@ -62,12 +62,16 @@ pub async fn create(pool: &PgPool, name: &str, actor: &str) -> anyhow::Result<i6
     Ok(id)
 }
 
-/// 群組內「仍有效」的裝置與金鑰（與群組頁面顯示的數字相同）。
-pub const ACTIVE_DEVICES: &str =
-    "SELECT count(*) FROM devices WHERE group_id = $1 AND status <> 'retired'";
-pub const ACTIVE_TOKENS: &str = "SELECT count(*) FROM enroll_tokens WHERE group_id = $1 \
-     AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now()) \
-     AND used_count < max_uses";
+/// 群組的使用情形：有效裝置（未除役）、有效金鑰（未作廢、未過期、未用完）、被指派的管理員
+/// （含停用中的，重新啟用時才不會沒有群組）。群組頁與刪除檢查共用這個定義。
+pub async fn usage(conn: &mut PgConnection, id: i64) -> Result<(i64, i64, i64), sqlx::Error> {
+    sqlx::query_as(
+        "SELECT (SELECT count(*) FROM devices WHERE group_id = $1 AND status <> 'retired'),                 (SELECT count(*) FROM enroll_tokens WHERE group_id = $1                    AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now())                    AND used_count < max_uses),                 (SELECT count(*) FROM admin_groups WHERE group_id = $1)",
+    )
+    .bind(id)
+    .fetch_one(conn)
+    .await
+}
 
 /// 還有有效裝置、有效金鑰或被指派的管理員時不能刪除（管理員可能因此沒有任何群組）。
 /// 已除役的裝置與失效的金鑰改為未分組。
@@ -79,21 +83,23 @@ pub async fn delete(pool: &PgPool, id: i64, actor: &str) -> anyhow::Result<()> {
         .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(|| anyhow::anyhow!("群組不存在"))?;
-    let count = |sql: &'static str| sqlx::query_scalar::<_, i64>(sql).bind(id);
-    let devices = count(ACTIVE_DEVICES).fetch_one(&mut *tx).await?;
-    let tokens = count(ACTIVE_TOKENS).fetch_one(&mut *tx).await?;
-    let admins = count("SELECT count(*) FROM admin_groups WHERE group_id = $1")
-        .fetch_one(&mut *tx)
-        .await?;
+    let (devices, tokens, admins) = usage(&mut tx, id).await?;
     anyhow::ensure!(
         devices == 0 && tokens == 0 && admins == 0,
         "群組內還有 {devices} 台裝置、{tokens} 把有效金鑰、{admins} 位管理員，無法刪除"
     );
+    let mut ungrouped = vec![];
     for sql in [
         "UPDATE devices SET group_id = NULL WHERE group_id = $1",
         "UPDATE enroll_tokens SET group_id = NULL WHERE group_id = $1",
     ] {
-        sqlx::query(sql).bind(id).execute(&mut *tx).await?;
+        ungrouped.push(
+            sqlx::query(sql)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?
+                .rows_affected(),
+        );
     }
     let name: Option<String> =
         sqlx::query_scalar("DELETE FROM device_groups WHERE id = $1 RETURNING name")
@@ -106,7 +112,9 @@ pub async fn delete(pool: &PgPool, id: i64, actor: &str) -> anyhow::Result<()> {
         actor,
         "group_delete",
         Some(&name),
-        serde_json::json!({ "id": id }),
+        serde_json::json!({
+            "id": id, "ungrouped_devices": ungrouped[0], "ungrouped_tokens": ungrouped[1]
+        }),
     )
     .await?;
     tx.commit().await?;

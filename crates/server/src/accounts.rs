@@ -260,7 +260,8 @@ pub async fn change_own_password(
     ensure!(!locked, "帳號已鎖定，請稍後再試");
     // 目前密碼輸錯與登入共用失敗次數：到上限就鎖定並登出所有工作階段
     if !crate::web::auth::verify_blocking(current, &hash).await {
-        if crate::web::auth::record_failure(&mut tx, admin_id).await? {
+        let locked = crate::web::auth::record_failure(&mut tx, admin_id).await?;
+        if locked {
             kill_sessions(&mut tx, admin_id).await?;
         }
         audit::record(
@@ -272,6 +273,9 @@ pub async fn change_own_password(
         )
         .await?;
         tx.commit().await?;
+        if locked {
+            anyhow::bail!("目前密碼錯誤次數過多，帳號已暫時鎖定並登出，請稍後再登入");
+        }
         anyhow::bail!("目前密碼錯誤");
     }
     let new_hash = hash_password(new)?;
@@ -457,33 +461,34 @@ mod tests {
         .unwrap()
     }
 
-    /// 兩個平台管理員同時停用對方：各自的交易只看得到自己的變更，檢查都通過，結果一個都不剩。
+    /// 兩個平台管理員同時停用對方：各自的交易只看得到自己的變更。沒有交易鎖時兩邊的檢查都會通過，
+    /// 結果一個都不剩。這裡手動排出最壞的交錯：兩邊都先改完，再各自檢查。
     #[sqlx::test(migrations = false)]
     async fn concurrent_disables_keep_one_platform_admin(pool: PgPool) {
-        let (root, g) = setup(&pool).await;
-        for round in 0..10 {
-            let a = platform(&pool, &format!("a{round}")).await;
-            let b = platform(&pool, &format!("b{round}")).await;
-            // 只留 a、b 兩個平台管理員
-            sqlx::query("UPDATE admins SET disabled_at = now() WHERE role = 'platform_admin' AND id NOT IN ($1, $2)")
-                .bind(a)
-                .bind(b)
-                .execute(&pool)
-                .await
-                .unwrap();
-            let (_ra, _rb) = tokio::join!(
-                set_disabled(&pool, b, true, a, "a"),
-                set_disabled(&pool, a, true, b, "b"),
-            );
-            let n: i64 = sqlx::query_scalar(
-                "SELECT count(*) FROM admins WHERE role = 'platform_admin' AND disabled_at IS NULL",
-            )
-            .fetch_one(&pool)
+        let (root, _) = setup(&pool).await;
+        let a = platform(&pool, "a").await;
+        let b = platform(&pool, "b").await;
+        sqlx::query("UPDATE admins SET disabled_at = now() WHERE id = $1")
+            .bind(root)
+            .execute(&pool)
             .await
             .unwrap();
-            assert!(n >= 1, "round {round}: no platform admin left");
-            let _ = (root, g);
-        }
+        let disable =
+            |id: i64| sqlx::query("UPDATE admins SET disabled_at = now() WHERE id = $1").bind(id);
+        let mut t1 = pool.begin().await.unwrap();
+        let mut t2 = pool.begin().await.unwrap();
+        disable(b).execute(&mut *t1).await.unwrap();
+        disable(a).execute(&mut *t2).await.unwrap();
+        ensure_platform_admin_left(&mut t1).await.unwrap();
+        let second = tokio::spawn(async move {
+            let r = ensure_platform_admin_left(&mut t2).await;
+            (r, t2)
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(!second.is_finished(), "第二個檢查要等第一個交易結束");
+        t1.commit().await.unwrap();
+        let (r, _t2) = second.await.unwrap();
+        assert!(r.is_err(), "第一個停用已提交，第二個必須失敗");
     }
 
     /// 稽核記錄的對象用帳號名稱，不是內部數字 id。
