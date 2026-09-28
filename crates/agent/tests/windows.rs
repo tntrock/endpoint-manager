@@ -71,3 +71,37 @@ fn collector_reports_this_machine() {
         }
     }
 }
+
+use std::sync::mpsc;
+use std::time::Duration;
+
+use endpoint_agent::windows::{eventlog::EventLog, regwatch};
+use winreg::RegKey;
+use winreg::enums::HKEY_CURRENT_USER as WINREG_HKCU;
+
+#[test]
+fn registry_watch_fires_on_change() {
+    let path = r"Software\EndpointManagerTest";
+    let (key, _) = RegKey::predef(WINREG_HKCU).create_subkey(path).unwrap();
+    let (tx, rx) = mpsc::channel();
+    regwatch::watch(regwatch::Root::CurrentUser, path, 0, move || {
+        let _ = tx.send(());
+    })
+    .unwrap();
+    std::thread::sleep(Duration::from_millis(200));
+    key.set_value("probe", &"1").unwrap();
+    assert!(
+        rx.recv_timeout(Duration::from_secs(5)).is_ok(),
+        "no notification"
+    );
+    let _ = RegKey::predef(WINREG_HKCU).delete_subkey_all(path);
+}
+
+#[test]
+fn eventlog_report_works() {
+    let log = EventLog::open().unwrap();
+    log.report(
+        windows_sys::Win32::System::EventLog::EVENTLOG_INFORMATION_TYPE,
+        "endpoint-agent test event",
+    );
+}
