@@ -45,8 +45,8 @@ tempfile.workspace = true
 chrono.workspace = true
 rcgen.workspace = true
 rustls.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 
 [target.'cfg(windows)'.dev-dependencies]
 winreg = "0.56"
-windows-sys = { version = "0.61", features = ["Win32_System_EventLog"] }
+windows-sys = { version = "0.61", features = ["Win32_System_EventLog", "Win32_System_Registry"] }

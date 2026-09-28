@@ -464,7 +464,7 @@ async fn shutdown_interrupts_a_running_cycle(pool: PgPool) {
     )
     .unwrap();
     let (tx, rx) = tokio::sync::watch::channel(false);
-    let (_ttx, trx) = tokio::sync::mpsc::unbounded_channel();
+    let (_ttx, trx) = tokio::sync::mpsc::channel(16);
     let task = tokio::spawn(endpoint_agent::agent::run_agent(a, rx, trx));
     tokio::time::sleep(Duration::from_millis(300)).await;
     tx.send(true).unwrap();

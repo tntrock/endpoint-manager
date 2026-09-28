@@ -132,6 +132,49 @@ fn prepare_does_not_follow_junctions() {
     assert_eq!(sddl(&victim), before);
 }
 
+/// 可信的目錄裡只該有一般檔案：v0.1.0 時代被搶先建立、又被「強化」成可信權限的目錄，
+/// 可能還留著 junction。這種目錄服務要拒絕、安裝時要重建。
+#[test]
+fn trusted_dir_with_junction_child_is_recreated() {
+    if !elevated() {
+        eprintln!("skipped: not elevated");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let victim = tmp.path().join("victim");
+    std::fs::create_dir_all(&victim).unwrap();
+    std::fs::write(victim.join("secret.txt"), b"x").unwrap();
+    let dir = tmp.path().join("em");
+    prepare_data_dir(&dir).unwrap();
+    assert!(
+        Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(dir.join("sub"))
+            .arg(&victim)
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(verify_data_dir(&dir).is_err(), "有 junction 的目錄不可信");
+    prepare_data_dir(&dir).unwrap();
+    assert!(!dir.join("sub").exists());
+    verify_data_dir(&dir).unwrap();
+    assert!(victim.join("secret.txt").exists());
+}
+
+/// 不需系統管理員：Windows Update 的 CBS 套件機碼可以監聽。
+#[test]
+fn patches_key_can_be_watched() {
+    endpoint_agent::windows::regwatch::watch(
+        endpoint_agent::windows::regwatch::Root::LocalMachine,
+        endpoint_agent::windows::regwatch::CBS_PACKAGES,
+        windows_sys::Win32::System::Registry::KEY_WOW64_64KEY,
+        || {},
+    )
+    .unwrap();
+}
+
 use endpoint_agent::collector::Collector;
 use endpoint_agent::sanitize::sanitize;
 use endpoint_agent::windows::collect::WindowsCollector;

@@ -101,11 +101,19 @@ fn computer_system(con: &WMIConnection) -> anyhow::Result<ComputerSystem> {
         .context("Win32_ComputerSystem returned nothing")
 }
 
-fn hostname(cs: &ComputerSystem) -> String {
-    cs.name
-        .clone()
+fn hostname(cs: Option<&ComputerSystem>) -> String {
+    cs.and_then(|c| c.name.clone())
         .or_else(|| std::env::var("COMPUTERNAME").ok())
         .unwrap_or_default()
+}
+
+/// 非必要的 WMI 查詢：失敗時記錄並當成沒有資料，不讓整個 identity／heartbeat 失敗
+/// （例如某些虛擬機或損壞的 WMI 儲存庫查不到 BIOS）。
+fn optional<T, E: std::fmt::Display>(what: &str, r: Result<Vec<T>, E>) -> Vec<T> {
+    r.unwrap_or_else(|e| {
+        tracing::debug!(query = what, error = %e, "optional WMI query failed");
+        vec![]
+    })
 }
 
 pub struct WindowsCollector;
@@ -113,12 +121,14 @@ pub struct WindowsCollector;
 impl Collector for WindowsCollector {
     fn identity(&self) -> anyhow::Result<Identity> {
         let con = wmi()?;
-        let cs = computer_system(&con)?;
-        let product: Vec<Product> = con.query()?;
-        let bios: Vec<Bios> = con.query()?;
-        let nics: Vec<Nic> = con.raw_query(NICS)?;
+        let cs = computer_system(&con).ok();
+        // 硬體識別（SMBIOS UUID、BIOS 序號）是重灌比對的依據：查不到就不註冊，等下一輪再試，
+        // 避免建立一筆永遠比對不到的裝置記錄
+        let product: Vec<Product> = con.query().context("Win32_ComputerSystemProduct")?;
+        let bios: Vec<Bios> = con.query().context("Win32_BIOS")?;
+        let nics: Vec<Nic> = optional("NICs", con.raw_query(NICS));
         Ok(Identity {
-            hostname: hostname(&cs),
+            hostname: hostname(cs.as_ref()),
             smbios_uuid: product.into_iter().next().and_then(|p| p.uuid),
             bios_serial: bios.into_iter().next().and_then(|b| b.serial_number),
             mac_addresses: nics.into_iter().filter_map(|n| n.mac_address).collect(),
@@ -127,9 +137,9 @@ impl Collector for WindowsCollector {
 
     fn heartbeat(&self) -> anyhow::Result<Heartbeat> {
         let con = wmi()?;
-        let cs = computer_system(&con)?;
-        let os: Vec<OperatingSystem> = con.query()?;
-        let nics: Vec<Nic> = con.raw_query(NICS)?;
+        let cs = computer_system(&con).ok();
+        let os: Vec<OperatingSystem> = optional("Win32_OperatingSystem", con.query());
+        let nics: Vec<Nic> = optional("NICs", con.raw_query(NICS));
         Ok(Heartbeat {
             boot_time: os
                 .into_iter()
@@ -137,7 +147,7 @@ impl Collector for WindowsCollector {
                 .and_then(|o| o.last_boot_up_time)
                 .map(|t| t.0.with_timezone(&Utc))
                 .unwrap_or_else(Utc::now),
-            logged_on_user: cs.user_name,
+            logged_on_user: cs.and_then(|c| c.user_name),
             ip_addresses: nics
                 .into_iter()
                 .flat_map(|n| n.ip_address.unwrap_or_default())
@@ -157,7 +167,7 @@ impl Collector for WindowsCollector {
                 let cs = computer_system(&con)?;
                 let os = con.query::<OperatingSystem>()?.into_iter().next();
                 InventoryPayload::Basic(BasicInfo {
-                    hostname: hostname(&cs),
+                    hostname: hostname(Some(&cs)),
                     domain: cs.domain.clone(),
                     is_domain_joined: cs.part_of_domain.unwrap_or(false),
                     os_caption: os
@@ -219,5 +229,19 @@ impl Collector for WindowsCollector {
             }
             Section::Software => unreachable!("handled above"),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 非必要的查詢（Product、BIOS、網卡、OS）失敗時當成沒有資料，不讓整個呼叫失敗。
+    #[test]
+    fn optional_query_failure_is_empty() {
+        let ok: Result<Vec<u8>, String> = Ok(vec![1, 2]);
+        assert_eq!(optional("x", ok), vec![1, 2]);
+        let err: Result<Vec<u8>, String> = Err("WBEM_E_FAILED".into());
+        assert!(optional("x", err).is_empty());
     }
 }

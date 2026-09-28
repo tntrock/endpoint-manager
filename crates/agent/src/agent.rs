@@ -58,6 +58,15 @@ pub struct Agent<C: Collector> {
     backoff: Backoff,
     collect_timeout: Duration,
     inflight: HashMap<&'static str, Arc<AtomicBool>>,
+    /// 目前在退避（連不上伺服器或伺服器要求稍後再試）：這段等待不因軟體變更提早結束
+    backing_off: bool,
+    /// 上一次取得心跳資訊失敗的訊息：相同錯誤不重複寫入事件檢視器
+    heartbeat_error: Option<String>,
+}
+
+/// 錯誤訊息和上次不同才需要記錄（避免每分鐘重複寫入事件檢視器）。
+pub fn error_changed(prev: Option<&String>, new: &str) -> bool {
+    prev.map(String::as_str) != Some(new)
 }
 
 /// 呼叫結束（含 panic）時清除「執行中」旗標。
@@ -79,15 +88,23 @@ fn new_csr() -> anyhow::Result<(String, String)> {
 
 impl<C: Collector> Agent<C> {
     pub fn new(dir: &Path, collector: C) -> anyhow::Result<Self> {
-        let config = AgentConfig::load(dir)?;
+        let mut config = AgentConfig::load(dir)?;
         let root_path = dir.join("root.pem");
         let root_pem = std::fs::read_to_string(&root_path)
             .with_context(|| format!("reading {}", root_path.display()))?;
+        let state = AgentState::load(dir)?;
+        // 註冊後、清除金鑰前中斷過（例如寫 config.json 失敗）：補清，金鑰不留在磁碟上
+        if state.is_enrolled() && config.enroll_token.is_some() {
+            config.enroll_token = None;
+            if let Err(e) = config.save(dir) {
+                tracing::error!(error = %format!("{e:#}"), "cannot clear enroll token");
+            }
+        }
         Ok(Self {
             dir: dir.to_path_buf(),
             config,
             root_pem,
-            state: AgentState::load(dir)?,
+            state,
             collector: Arc::new(collector),
             schedule: Schedule::default(),
             cache: BTreeMap::new(),
@@ -96,6 +113,8 @@ impl<C: Collector> Agent<C> {
             backoff: Backoff::default(),
             collect_timeout: COLLECT_TIMEOUT,
             inflight: HashMap::new(),
+            backing_off: false,
+            heartbeat_error: None,
         })
     }
 
@@ -114,7 +133,13 @@ impl<C: Collector> Agent<C> {
     }
 
     fn retry_later(&mut self) -> Cycle {
+        self.backing_off = true;
         Cycle::Next(self.backoff.next_delay(jitter()))
+    }
+
+    /// 這次等待是不是退避（不應被軟體變更提早結束）。
+    pub fn backing_off(&self) -> bool {
+        self.backing_off
     }
 
     /// 在 blocking 執行緒上呼叫 collector，並限制時間。
@@ -187,8 +212,11 @@ impl<C: Collector> Agent<C> {
                     self.cache.insert(s, p);
                 }
                 Err(e) => {
-                    tracing::warn!(section = s.as_str(), error = %format!("{e:#}"), "collection failed");
-                    self.errors.insert(s, format!("{e:#}"));
+                    let msg = format!("{e:#}");
+                    if error_changed(self.errors.get(&s), &msg) {
+                        tracing::warn!(section = s.as_str(), error = %msg, "collection failed");
+                    }
+                    self.errors.insert(s, msg);
                 }
             }
             self.schedule.mark_collected(s, now);
@@ -219,17 +247,24 @@ impl<C: Collector> Agent<C> {
         }
 
         self.collect_due().await;
-        let hb = self
-            .blocking("heartbeat", |c| c.heartbeat())
-            .await
-            .unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "heartbeat info unavailable");
+        let hb = match self.blocking("heartbeat", |c| c.heartbeat()).await {
+            Ok(hb) => {
+                self.heartbeat_error = None;
+                hb
+            }
+            Err(e) => {
+                let msg = format!("{e:#}");
+                if error_changed(self.heartbeat_error.as_ref(), &msg) {
+                    tracing::warn!(error = %msg, "heartbeat info unavailable");
+                }
+                self.heartbeat_error = Some(msg);
                 Heartbeat {
                     boot_time: Utc::now(),
                     logged_on_user: None,
                     ip_addresses: vec![],
                 }
-            });
+            }
+        };
         let client = match ServerClient::new(
             &self.config.server_url,
             &self.root_pem,
@@ -262,13 +297,17 @@ impl<C: Collector> Agent<C> {
                 tracing::error!("certificate rejected by server; agent stops (reinstall required)");
                 return Cycle::Stop;
             }
-            Err(ClientError::Retry(Some(after))) => return Cycle::Next(after),
+            Err(ClientError::Retry(Some(after))) => {
+                self.backing_off = true;
+                return Cycle::Next(after);
+            }
             Err(e) => {
                 tracing::warn!(error = %e, "checkin failed");
                 return self.retry_later();
             }
         };
         self.backoff.reset();
+        self.backing_off = false;
         self.intervals = resp.collection_intervals.clone();
 
         let rejected_before = self.state.rejected.clone();
@@ -288,7 +327,15 @@ impl<C: Collector> Agent<C> {
                         .insert(s, format!("rejected by server ({code}): {msg}"));
                 }
                 Err(ClientError::Unauthorized) => return Cycle::Stop,
-                Err(ClientError::Retry(_)) => break,
+                Err(ClientError::Retry(_)) => {
+                    // 伺服器忙碌、連不上或代理伺服器回了非預期的錯誤：下次報到再送，錯誤回報給伺服器
+                    let msg = "upload failed; will retry at next check-in".to_string();
+                    if error_changed(self.errors.get(&s), &msg) {
+                        tracing::warn!(section = s.as_str(), "{msg}");
+                    }
+                    self.errors.insert(s, msg);
+                    break;
+                }
             }
         }
 
@@ -310,12 +357,42 @@ impl<C: Collector> Agent<C> {
     }
 }
 
+/// 等到下一個週期。收到變更觸發時記下；可中斷（正常等待）時先等 DEBOUNCE 合併短時間內的
+/// 多次變更再提早結束，退避中則繼續等到原本的時間。回傳 false 表示要停止。
+pub async fn wait_next(
+    wait: Duration,
+    interruptible: bool,
+    shutdown: &mut watch::Receiver<bool>,
+    triggers: &mut mpsc::Receiver<Section>,
+    mut on_trigger: impl FnMut(Section),
+) -> bool {
+    let deadline = tokio::time::Instant::now() + wait;
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep_until(deadline) => return true,
+            _ = shutdown.changed() => return false,
+            Some(s) = triggers.recv() => {
+                on_trigger(s);
+                if interruptible {
+                    tokio::select! {
+                        _ = tokio::time::sleep(DEBOUNCE) => {}
+                        _ = shutdown.changed() => return false,
+                    }
+                    while let Ok(s) = triggers.try_recv() {
+                        on_trigger(s);
+                    }
+                    return true;
+                }
+            }
+        }
+    }
+}
+
 /// 反覆執行 run_cycle，直到收到停止訊號或伺服器拒絕憑證。
-/// 軟體變更觸發時先等 DEBOUNCE，合併短時間內的多次變更。
 pub async fn run_agent<C: Collector>(
     mut agent: Agent<C>,
     mut shutdown: watch::Receiver<bool>,
-    mut triggers: mpsc::UnboundedReceiver<Section>,
+    mut triggers: mpsc::Receiver<Section>,
 ) {
     loop {
         // 停止訊號可中斷進行中的週期（例如 WMI 卡住時），服務才能及時停止
@@ -327,19 +404,13 @@ pub async fn run_agent<C: Collector>(
             Cycle::Stop => return,
             Cycle::Next(d) => d,
         };
-        tokio::select! {
-            _ = tokio::time::sleep(wait) => {}
-            _ = shutdown.changed() => return,
-            Some(s) = triggers.recv() => {
-                agent.trigger(s);
-                tokio::select! {
-                    _ = tokio::time::sleep(DEBOUNCE) => {}
-                    _ = shutdown.changed() => return,
-                }
-                while let Ok(s) = triggers.try_recv() {
-                    agent.trigger(s);
-                }
-            }
+        let interruptible = !agent.backing_off();
+        if !wait_next(wait, interruptible, &mut shutdown, &mut triggers, |s| {
+            agent.trigger(s)
+        })
+        .await
+        {
+            return;
         }
     }
 }
@@ -347,6 +418,82 @@ pub async fn run_agent<C: Collector>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 退避等待中（伺服器連不上）收到軟體變更：只記下，不提早報到；
+    /// 正常等待中收到：去抖動後提早報到。
+    #[tokio::test(start_paused = true)]
+    async fn triggers_do_not_cut_short_a_backoff() {
+        for (interruptible, expect_secs) in [(false, 100), (true, 11)] {
+            let (_stx, mut srx) = watch::channel(false);
+            let (ttx, mut trx) = mpsc::channel(4);
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                let _ = ttx.send(Section::Software).await;
+                // 讓 sender 活到測試結束
+                tokio::time::sleep(Duration::from_secs(1000)).await;
+            });
+            let mut seen = vec![];
+            let start = tokio::time::Instant::now();
+            let go_on = wait_next(
+                Duration::from_secs(100),
+                interruptible,
+                &mut srx,
+                &mut trx,
+                |s| seen.push(s),
+            )
+            .await;
+            assert!(go_on);
+            assert_eq!(
+                start.elapsed().as_secs(),
+                expect_secs,
+                "interruptible={interruptible}"
+            );
+            assert_eq!(seen, vec![Section::Software], "變更都要記下");
+        }
+    }
+
+    #[test]
+    fn repeated_errors_are_logged_once() {
+        assert!(error_changed(None, "boom"));
+        assert!(!error_changed(Some(&"boom".to_string()), "boom"));
+        assert!(error_changed(Some(&"boom".to_string()), "other"));
+    }
+
+    struct NoCollector;
+    impl Collector for NoCollector {
+        fn identity(&self) -> anyhow::Result<crate::collector::Identity> {
+            unimplemented!()
+        }
+        fn heartbeat(&self) -> anyhow::Result<Heartbeat> {
+            unimplemented!()
+        }
+        fn collect(&self, _: Section) -> anyhow::Result<InventoryPayload> {
+            unimplemented!()
+        }
+    }
+
+    /// 註冊成功後若清除金鑰前就中斷（例如寫 config.json 失敗），下次啟動時補清。
+    #[test]
+    fn lingering_token_is_cleared_when_enrolled() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("root.pem"), "x").unwrap();
+        AgentConfig {
+            server_url: "https://a:8443".into(),
+            enroll_token: Some("tok".into()),
+        }
+        .save(dir.path())
+        .unwrap();
+        AgentState {
+            device_id: Some(uuid::Uuid::new_v4()),
+            chain_pem: Some("c".into()),
+            key_pem: Some("k".into()),
+            ..Default::default()
+        }
+        .save(dir.path())
+        .unwrap();
+        let _agent = Agent::new(dir.path(), NoCollector).unwrap();
+        assert_eq!(AgentConfig::load(dir.path()).unwrap().enroll_token, None);
+    }
 
     #[test]
     fn skips_sections_rejected_with_same_hash() {
