@@ -2,6 +2,7 @@
 
 pub mod collect;
 pub mod eventlog;
+pub mod install;
 pub mod registry;
 pub mod regwatch;
 pub mod service;

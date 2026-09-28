@@ -13,6 +13,14 @@ use reqwest::{StatusCode, header};
 
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// 伺服器給的 Retry-After 夾在這個範圍：0 會讓 Agent 空轉，極大值會讓它失聯。
+pub const RETRY_AFTER_MIN: Duration = Duration::from_secs(10);
+pub const RETRY_AFTER_MAX: Duration = Duration::from_secs(30 * 60);
+
+pub fn retry_after(secs: u64) -> Duration {
+    Duration::from_secs(secs).clamp(RETRY_AFTER_MIN, RETRY_AFTER_MAX)
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
     #[error("server busy or unreachable")]
@@ -63,7 +71,7 @@ impl ServerClient {
             .get(header::RETRY_AFTER)
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.trim().parse::<u64>().ok())
-            .map(Duration::from_secs);
+            .map(retry_after);
         Err(match status {
             StatusCode::UNAUTHORIZED => ClientError::Unauthorized,
             StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE => {
@@ -119,5 +127,17 @@ impl ServerClient {
         )
         .await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retry_after_is_clamped() {
+        assert_eq!(retry_after(0), RETRY_AFTER_MIN);
+        assert_eq!(retry_after(120), Duration::from_secs(120));
+        assert_eq!(retry_after(u64::MAX), RETRY_AFTER_MAX);
     }
 }
