@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>軟體搜尋</h1>
+<form method="get" action="/software">
+  <input name="q" value="{{ q }}" placeholder="軟體名稱（例如 Chrome）" autofocus>
+  <button>搜尋</button>
+</form>
+{% if !q.is_empty() %}
+<table>
+  <tr><th>名稱</th><th>版本</th><th>安裝台數</th></tr>
+  {% for r in rows %}<tr><td>{{ r.name }}</td><td>{{ r.version }}</td><td><a href="{{ r.url }}">{{ r.count }}</a></td></tr>{% endfor %}
+</table>
+{% if truncated %}<p class="muted">結果過多，只顯示前 500 筆，請縮小搜尋範圍。</p>{% endif %}
+{% endif %}
+{% endblock %}

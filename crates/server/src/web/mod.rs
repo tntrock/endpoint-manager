@@ -7,6 +7,7 @@ pub mod auth;
 pub mod dashboard;
 pub mod devices;
 pub mod login;
+pub mod software;
 
 use askama::Template;
 use axum::Router;
@@ -110,6 +111,7 @@ pub fn web_router(state: AppState) -> Router {
         .route("/login", get(login::form).post(login::submit))
         .route("/logout", post(login::logout))
         .route("/devices", get(devices::list))
+        .route("/software", get(software::search))
         .route("/devices/approve-all", post(devices::approve_all))
         .route("/devices/{id}/approve", post(devices::approve))
         .route("/devices/{id}/reject", post(devices::reject))

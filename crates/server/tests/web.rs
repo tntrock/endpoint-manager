@@ -421,3 +421,30 @@ async fn only_platform_admin_moves_devices(pool: PgPool) {
         200
     );
 }
+
+#[sqlx::test(migrations = false)]
+async fn software_search_is_scoped(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tp = s.create_group_token("台北總部", 2).await;
+    let kh = s.create_group_token("高雄廠", 1).await;
+    let a = s.enroll_ok(&tp, None, None).await;
+    let b = s.enroll_ok(&tp, None, None).await;
+    let k = s.enroll_ok(&kh, None, None).await;
+    upload_software(&s, &a, "Google Chrome", "120").await;
+    upload_software(&s, &b, "Google Chrome", "121").await;
+    upload_software(&s, &k, "Google Chrome", "121").await;
+
+    let c = s.admin_client().await;
+    let (_, html) = s.page(&c, "/software?q=chrome").await;
+    assert!(
+        html.contains("/devices?software=Google%20Chrome&#38;version=121\">2<"),
+        "{html}"
+    );
+
+    let gary = s.login_as("gary", Role::GroupAdmin, &["台北總部"]).await;
+    let (_, html) = s.page(&gary, "/software?q=chrome").await;
+    assert!(
+        html.contains("/devices?software=Google%20Chrome&#38;version=121\">1<"),
+        "只算自己群組：{html}"
+    );
+}
