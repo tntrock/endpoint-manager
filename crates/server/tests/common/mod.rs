@@ -88,7 +88,27 @@ impl TestServer {
             &self.pool,
             &tokens::NewToken {
                 name: "test".into(),
-                group_label: None,
+                group_id: None,
+                expires_at: None,
+                max_uses,
+                created_by: "test".into(),
+            },
+        )
+        .await
+        .unwrap()
+        .1
+    }
+
+    pub async fn create_group_token(&self, group: &str, max_uses: i32) -> String {
+        let mut c = self.pool.acquire().await.unwrap();
+        let gid = endpoint_server::groups::find_or_create(&mut c, group)
+            .await
+            .unwrap();
+        tokens::create_token(
+            &self.pool,
+            &tokens::NewToken {
+                name: format!("{group} token"),
+                group_id: Some(gid),
                 expires_at: None,
                 max_uses,
                 created_by: "test".into(),

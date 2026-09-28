@@ -1,5 +1,6 @@
 //! Endpoint Manager 伺服器。
 
+pub mod audit;
 pub mod ca;
 pub mod checkin;
 pub mod config;
@@ -7,6 +8,7 @@ pub mod db;
 pub mod diff;
 pub mod enroll;
 pub mod error;
+pub mod groups;
 pub mod heartbeat;
 pub mod identity;
 pub mod inventory;

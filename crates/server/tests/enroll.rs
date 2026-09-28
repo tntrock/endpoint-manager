@@ -167,3 +167,18 @@ async fn active_device_is_not_taken_over_by_same_hardware_ids(pool: PgPool) {
         .unwrap();
     assert_eq!(still.status(), 200, "online device keeps its certificate");
 }
+
+#[sqlx::test(migrations = false)]
+async fn device_joins_token_group(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_group_token("台北總部", 1).await;
+    let a = s.enroll_ok(&tok, None, None).await;
+    let name: String = sqlx::query_scalar(
+        "SELECT g.name FROM devices d JOIN device_groups g ON g.id = d.group_id WHERE d.id = $1",
+    )
+    .bind(a.device_id)
+    .fetch_one(&s.pool)
+    .await
+    .unwrap();
+    assert_eq!(name, "台北總部");
+}

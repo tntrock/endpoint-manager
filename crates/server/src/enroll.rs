@@ -100,7 +100,7 @@ pub async fn enroll(
     ))?;
 
     let mut tx = st.pool.begin().await?;
-    let token_id = tokens::consume_token(&mut tx, &req.enroll_token)
+    let (token_id, group_id) = tokens::consume_token(&mut tx, &req.enroll_token)
         .await?
         .ok_or(AppError::Unauthorized)?;
 
@@ -146,8 +146,8 @@ pub async fn enroll(
                 "active"
             };
             sqlx::query(
-                "INSERT INTO devices (id, hostname, smbios_uuid, bios_serial, status, enroll_token_id) \
-                 VALUES ($1, $2, $3, $4, $5, $6)",
+                "INSERT INTO devices (id, hostname, smbios_uuid, bios_serial, status, enroll_token_id, group_id) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)",
             )
             .bind(id)
             .bind(&req.hostname)
@@ -155,6 +155,7 @@ pub async fn enroll(
             .bind(serial)
             .bind(status)
             .bind(token_id)
+            .bind(group_id)
             .execute(&mut *tx)
             .await?;
             id

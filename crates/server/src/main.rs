@@ -6,7 +6,7 @@ use endpoint_server::{config::Config, tokens};
 const USAGE: &str = "usage:
   endpoint-server serve
   endpoint-server ca-init <dir> <server-dns-name>...
-  endpoint-server token-create <name> <max_uses> [group_label] [valid_days]";
+  endpoint-server token-create <name> <max_uses> [group_name] [valid_days]";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -40,11 +40,18 @@ async fn main() -> anyhow::Result<()> {
                 .map(|d| d.parse())
                 .transpose()
                 .context("valid_days")?;
+            let group_id = match args.get(3) {
+                Some(name) => {
+                    let mut c = pool.acquire().await?;
+                    Some(endpoint_server::groups::find_or_create(&mut c, name).await?)
+                }
+                None => None,
+            };
             let (id, token) = tokens::create_token(
                 &pool,
                 &tokens::NewToken {
                     name: args[1].clone(),
-                    group_label: args.get(3).cloned(),
+                    group_id,
                     expires_at: days.map(|d| chrono::Utc::now() + chrono::Duration::days(d)),
                     max_uses,
                     created_by: "cli".into(),
