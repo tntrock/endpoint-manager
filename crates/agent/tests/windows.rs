@@ -23,8 +23,10 @@ fn secure_dir_leaves_only_system_and_admins() {
     assert!(ok);
     let raw = std::fs::read(&save).unwrap();
     let utf16: Vec<u16> = raw
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_le_bytes(*c))
         .collect();
     let sddl = String::from_utf16_lossy(&utf16);
     assert!(sddl.contains(";;;SY)") && sddl.contains(";;;BA)"), "{sddl}");
@@ -38,4 +40,34 @@ fn secure_dir_leaves_only_system_and_admins() {
         .arg("/reset")
         .status()
         .unwrap();
+}
+
+use endpoint_agent::collector::Collector;
+use endpoint_agent::sanitize::sanitize;
+use endpoint_agent::windows::collect::WindowsCollector;
+use protocol::{InventoryPayload, Section};
+
+#[test]
+fn collector_reports_this_machine() {
+    let c = WindowsCollector;
+    let id = c.identity().unwrap();
+    assert!(!id.hostname.is_empty());
+
+    let hb = c.heartbeat().unwrap();
+    assert!(hb.boot_time < chrono::Utc::now());
+
+    for s in Section::ALL {
+        let mut p = c.collect(s).unwrap_or_else(|e| panic!("{s:?}: {e:#}"));
+        sanitize(&mut p);
+        assert_eq!(p.validate(), Ok(()), "{s:?}");
+        match p {
+            InventoryPayload::Basic(b) => assert!(!b.os_caption.is_empty()),
+            InventoryPayload::Hardware(h) => assert!(h.ram_mb > 0),
+            InventoryPayload::Software(v) => assert!(!v.is_empty()),
+            InventoryPayload::Services(v) => {
+                assert!(v.iter().any(|s| s.name.eq_ignore_ascii_case("EventLog")))
+            }
+            InventoryPayload::Patches(_) => {}
+        }
+    }
 }

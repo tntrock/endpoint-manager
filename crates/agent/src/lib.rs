@@ -10,3 +10,5 @@ pub mod schedule;
 pub mod serde_util;
 pub mod software;
 pub mod state;
+#[cfg(windows)]
+pub mod windows;
