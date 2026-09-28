@@ -64,6 +64,14 @@ impl AppState {
         }
     }
 
+    pub fn with_enroll_limit(mut self, per_minute: u32) -> Self {
+        self.enroll_limiter = Arc::new(ratelimit::RateLimiter::new(
+            per_minute,
+            Duration::from_secs(60),
+        ));
+        self
+    }
+
     pub fn with_display_offset(mut self, hours: i32) -> Self {
         if let Some(o) = chrono::FixedOffset::east_opt(hours * 3600) {
             self.display_offset = o;
@@ -100,7 +108,8 @@ pub async fn serve(cfg: config::Config) -> anyhow::Result<()> {
     partitions::maintain_partitions(&pool, chrono::Utc::now()).await?;
 
     let state = AppState::new(pool.clone(), ca::Ca::load(&cfg.ca_dir)?)
-        .with_display_offset(cfg.display_utc_offset);
+        .with_display_offset(cfg.display_utc_offset)
+        .with_enroll_limit(cfg.enroll_per_ip_per_minute);
     let tls_cfg = tls::server_config(&cfg.ca_dir)?;
 
     let hb = state.heartbeat.clone();
@@ -133,8 +142,27 @@ pub async fn serve(cfg: config::Config) -> anyhow::Result<()> {
     tokio::select! {
         r = tls::serve_mtls(listener, tls_cfg, agent_router(state.clone()), tls::ConnLimits::default()) => r?,
         r = tls::serve_mtls(web_listener, web_tls, web::web_router(state.clone()), tls::ConnLimits::default()) => r?,
-        _ = tokio::signal::ctrl_c() => tracing::info!("shutting down"),
+        _ = shutdown_signal() => tracing::info!("shutting down"),
     }
     state.heartbeat.flush(&pool).await?;
     Ok(())
+}
+
+/// Ctrl+C 或（Unix）SIGTERM：docker stop 送的是 SIGTERM。
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = term.recv() => {}
+                }
+                return;
+            }
+            Err(e) => tracing::error!(error = %e, "cannot install SIGTERM handler"),
+        }
+    }
+    let _ = tokio::signal::ctrl_c().await;
 }
