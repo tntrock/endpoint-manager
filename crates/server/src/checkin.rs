@@ -37,17 +37,16 @@ pub async fn checkin(
     validate_strings(&req)?;
     let now = Utc::now();
     let earliest = DateTime::from_timestamp(946_684_800, 0).expect("2000-01-01");
-    if req.boot_time < earliest || req.boot_time > now + Duration::days(1) {
-        return Err(AppError::BadRequest("boot_time out of range".into()));
-    }
+    // 端點時鐘可能不準：夾限而不拒絕，避免該電腦永遠報到失敗
+    let boot_time = req.boot_time.clamp(earliest, now);
 
     st.heartbeat.record(
         device.device_id,
         HotFields {
-            seen_at: Utc::now(),
+            seen_at: now,
             ip: req.ip_addresses.first().cloned(),
             logged_on_user: req.logged_on_user.clone(),
-            boot_time: req.boot_time,
+            boot_time,
             agent_version: req.agent_version.clone(),
             section_errors: serde_json::to_value(&req.section_errors).expect("serializable"),
         },

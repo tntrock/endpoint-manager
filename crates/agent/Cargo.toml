@@ -1,0 +1,49 @@
+[package]
+name = "endpoint-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "endpoint_agent"
+
+[dependencies]
+protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+rustls.workspace = true
+rcgen.workspace = true
+flate2.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+reqwest.workspace = true
+x509-parser.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+wmi = "0.18"
+winreg = "0.56"
+windows-service = "0.8"
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Registry",
+    "Win32_System_EventLog",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+endpoint-server = { path = "../server" }
+sqlx.workspace = true
+tempfile.workspace = true
+chrono.workspace = true
+rcgen.workspace = true
+rustls.workspace = true
+tokio.workspace = true
+
+[target.'cfg(windows)'.dev-dependencies]
+winreg = "0.56"
+windows-sys = { version = "0.61", features = ["Win32_System_EventLog"] }

@@ -32,3 +32,21 @@ cargo run -p endpoint-server -- serve
 - Windows 上的 `DATABASE_URL` 請用 `127.0.0.1` 而非 `localhost`，否則每次連線會先嘗試 IPv6 多等約 2 秒。
 - Windows 內建的 curl（Schannel）測試時要加 `--ssl-no-revoke`，例如：
   `curl --ssl-no-revoke --cacert pki/root.pem https://localhost:8443/healthz`
+
+## Agent（Windows）
+
+```powershell
+cargo build -p endpoint-agent --release
+```
+
+Agent 目錄（預設 `C:\ProgramData\EndpointManager`，可用 `EM_AGENT_DIR` 覆寫）需要：
+
+- `root.pem`：伺服器 `ca-init` 產生的根 CA 憑證
+- `config.json`：`{"server_url": "https://<伺服器>:8443", "enroll_token": "<token-create 產生的金鑰>"}`
+
+執行方式：
+
+- `endpoint-agent run`：主控台模式（開發／除錯），Ctrl+C 結束
+- `endpoint-agent service`：由 Windows 服務啟動；啟動時會把 Agent 目錄權限限縮為只有 SYSTEM 與 Administrators（正式安裝由 MSI 設定，見計畫 4）
+
+註冊成功後 `config.json` 中的 `enroll_token` 會被清除，裝置身分與私鑰存在 `state.json`。

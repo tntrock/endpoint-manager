@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/protocol", "crates/server"]
+members = ["crates/protocol", "crates/server", "crates/agent"]
 
 [workspace.package]
 version = "0.1.0"
@@ -32,6 +32,8 @@ sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio",
 flate2 = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
+tempfile = "3"
 
 [profile.release]
 panic = "abort"
