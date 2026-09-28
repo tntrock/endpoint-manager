@@ -151,7 +151,7 @@ async fn nul_in_checkin_is_400(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = false)]
-async fn absurd_boot_time_is_400(pool: PgPool) {
+async fn future_boot_time_is_clamped(pool: PgPool) {
     let s = TestServer::start(pool).await;
     let tok = s.create_token(1).await;
     let a = s.enroll_ok(&tok, None, None).await;
@@ -164,7 +164,15 @@ async fn absurd_boot_time_is_400(pool: PgPool) {
         .send()
         .await
         .unwrap();
-    assert_eq!(r.status(), 400);
+    assert_eq!(r.status(), 200);
+    s.state.heartbeat.flush(&s.pool).await.unwrap();
+    let boot: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("SELECT boot_time FROM devices WHERE id = $1")
+            .bind(a.device_id)
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+    assert!(boot <= chrono::Utc::now());
 }
 
 #[sqlx::test(migrations = false)]
