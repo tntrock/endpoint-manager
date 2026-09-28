@@ -28,6 +28,50 @@ impl AgentConfig {
     }
 }
 
+/// 安裝／升級時合併設定：命令列值優先，否則沿用既有值；已註冊就不再保留註冊金鑰。
+pub fn merge_config(
+    existing: Option<AgentConfig>,
+    enrolled: bool,
+    server_url: Option<&str>,
+    token: Option<&str>,
+) -> anyhow::Result<AgentConfig> {
+    let server_url = server_url
+        .map(String::from)
+        .or_else(|| existing.as_ref().map(|c| c.server_url.clone()))
+        .context("SERVER_URL is required on first install")?;
+    anyhow::ensure!(
+        server_url.starts_with("https://"),
+        "SERVER_URL must start with https://"
+    );
+    let enroll_token = if enrolled {
+        None
+    } else {
+        token
+            .map(String::from)
+            .or_else(|| existing.and_then(|c| c.enroll_token))
+    };
+    Ok(AgentConfig {
+        server_url,
+        enroll_token,
+    })
+}
+
+/// MSI 的 ROOT_CA 屬性（單行 base64 DER）→ PEM；不是一張可解析的 X.509 憑證就拒絕。
+pub fn root_pem_from_b64(b64: &str) -> anyhow::Result<String> {
+    use rustls::pki_types::{CertificateDer, pem::PemObject};
+    let b64: String = b64.split_whitespace().collect();
+    let mut pem = String::from("-----BEGIN CERTIFICATE-----\n");
+    for chunk in b64.as_bytes().chunks(64) {
+        pem.push_str(std::str::from_utf8(chunk)?);
+        pem.push('\n');
+    }
+    pem.push_str("-----END CERTIFICATE-----\n");
+    let der =
+        CertificateDer::from_pem_slice(pem.as_bytes()).context("ROOT_CA is not valid base64")?;
+    x509_parser::parse_x509_certificate(&der).context("ROOT_CA is not an X.509 certificate")?;
+    Ok(pem)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -50,5 +94,68 @@ mod tests {
                 .as_deref(),
             Some("tok")
         );
+    }
+
+    fn cfg(url: &str, tok: Option<&str>) -> AgentConfig {
+        AgentConfig {
+            server_url: url.into(),
+            enroll_token: tok.map(String::from),
+        }
+    }
+
+    #[test]
+    fn merge_fresh_install_needs_url() {
+        assert!(merge_config(None, false, None, Some("t")).is_err());
+        assert!(merge_config(None, false, Some("http://x"), None).is_err());
+        assert_eq!(
+            merge_config(None, false, Some("https://a:8443"), Some("t")).unwrap(),
+            cfg("https://a:8443", Some("t"))
+        );
+    }
+
+    #[test]
+    fn merge_upgrade_keeps_existing_values() {
+        let old = cfg("https://a:8443", Some("t"));
+        assert_eq!(
+            merge_config(Some(old.clone()), false, None, None).unwrap(),
+            old
+        );
+        assert_eq!(
+            merge_config(Some(old), false, Some("https://b:8443"), Some("u")).unwrap(),
+            cfg("https://b:8443", Some("u"))
+        );
+    }
+
+    #[test]
+    fn merge_enrolled_never_writes_token_back() {
+        let old = cfg("https://a:8443", None);
+        assert_eq!(
+            merge_config(Some(old.clone()), true, None, Some("t")).unwrap(),
+            old
+        );
+        assert_eq!(
+            merge_config(Some(cfg("https://a:8443", Some("stale"))), true, None, None)
+                .unwrap()
+                .enroll_token,
+            None
+        );
+    }
+
+    #[test]
+    fn root_pem_roundtrip_and_rejects_garbage() {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let pem = rcgen::CertificateParams::default()
+            .self_signed(&key)
+            .unwrap()
+            .pem();
+        let b64: String = pem.lines().filter(|l| !l.starts_with("-----")).collect();
+        let back = root_pem_from_b64(&b64).unwrap();
+        assert_eq!(
+            back.replace(['\r', '\n'], ""),
+            pem.replace(['\r', '\n'], "")
+        );
+        assert!(back.lines().all(|l| l.len() <= 64));
+        assert!(root_pem_from_b64("bm90IGEgY2VydA==").is_err());
+        assert!(root_pem_from_b64("***").is_err());
     }
 }

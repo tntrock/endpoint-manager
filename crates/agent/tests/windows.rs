@@ -106,16 +106,72 @@ fn eventlog_report_works() {
     );
 }
 
-/// 需要系統管理員權限（CI 的 windows runner 有）；一般權限下略過。
-#[test]
-fn harden_dir_takes_ownership_from_squatter() {
-    let elevated = Command::new("net")
+fn elevated() -> bool {
+    Command::new("net")
         .arg("session")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
-        .is_ok_and(|s| s.success());
-    if !elevated {
+        .is_ok_and(|s| s.success())
+}
+
+/// 需要系統管理員權限；一般權限下略過。
+#[test]
+fn configure_hardens_dir_and_writes_files() {
+    if !elevated() {
+        eprintln!("skipped: not elevated");
+        return;
+    }
+    use endpoint_agent::config::AgentConfig;
+    use endpoint_agent::windows::install::{configure, unconfigure};
+    let key = rcgen::KeyPair::generate().unwrap();
+    let pem = rcgen::CertificateParams::default()
+        .self_signed(&key)
+        .unwrap()
+        .pem();
+    let b64: String = pem.lines().filter(|l| !l.starts_with("-----")).collect();
+    let tmp = tempfile::tempdir().unwrap();
+    let data = tmp.path().join("data");
+
+    // 首次安裝缺根憑證 → 失敗
+    assert!(
+        configure(
+            &data,
+            Some("https://em.example.com:8443"),
+            Some("tok"),
+            None
+        )
+        .is_err()
+    );
+
+    configure(
+        &data,
+        Some("https://em.example.com:8443"),
+        Some("tok"),
+        Some(&b64),
+    )
+    .unwrap();
+    assert!(
+        std::fs::read_to_string(data.join("root.pem"))
+            .unwrap()
+            .contains("BEGIN CERTIFICATE")
+    );
+    let c = AgentConfig::load(&data).unwrap();
+    assert_eq!(c.enroll_token.as_deref(), Some("tok"));
+
+    // 重跑（升級）不帶參數：全部沿用
+    configure(&data, None, None, None).unwrap();
+    assert_eq!(AgentConfig::load(&data).unwrap(), c);
+
+    unconfigure(&data).unwrap();
+    assert!(!data.exists());
+    unconfigure(&data).unwrap(); // 不存在也成功
+}
+
+/// 需要系統管理員權限（CI 的 windows runner 有）；一般權限下略過。
+#[test]
+fn harden_dir_takes_ownership_from_squatter() {
+    if !elevated() {
         eprintln!("skipped: not elevated");
         return;
     }

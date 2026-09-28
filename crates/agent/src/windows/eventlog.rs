@@ -1,5 +1,6 @@
 //! 把 tracing 輸出寫到「事件檢視器 → Windows 記錄 → 應用程式」。
-//! 事件來源由 MSI 註冊（計畫 4）；未註冊時事件仍會寫入，只是檢視器顯示「找不到描述」。
+//! 事件來源由 MSI 註冊，訊息檔用 .NET Framework 的 EventLogMessages.dll；
+//! 未註冊時（主控台模式）事件仍會寫入，只是檢視器顯示「找不到描述」。
 
 use std::io::Write;
 

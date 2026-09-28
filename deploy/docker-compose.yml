@@ -1,0 +1,43 @@
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: em
+      POSTGRES_PASSWORD: ${EM_DB_PASSWORD:?請在 .env 設定 EM_DB_PASSWORD}
+      POSTGRES_DB: endpoint_manager
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U em -d endpoint_manager"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  server:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: endpoint-manager-server
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://em:${EM_DB_PASSWORD}@db:5432/endpoint_manager
+      EM_CA_DIR: /pki
+      EM_AGENT_LISTEN: 0.0.0.0:8443
+      EM_WEB_LISTEN: 0.0.0.0:8444
+      EM_DISPLAY_UTC_OFFSET: ${EM_DISPLAY_UTC_OFFSET:-8}
+      EM_AGENT_MSI: /agent/endpoint-agent.msi
+      EM_AGENT_PUBLIC_URL: ${EM_AGENT_PUBLIC_URL:-}
+    volumes:
+      - ./pki:/pki:ro
+      - ./agent:/agent:ro
+    ports:
+      - "8443:8443"
+      - "443:8444"
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+volumes:
+  pgdata:

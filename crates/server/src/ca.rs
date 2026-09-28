@@ -23,6 +23,35 @@ pub struct IssuedCert {
 pub struct Ca {
     issuer: Issuer<'static, KeyPair>,
     chain_pem: String,
+    root_pem: String,
+}
+
+/// server.pem 第一張（伺服器）憑證的 SAN：DNS 名稱與 IP。
+pub fn server_names(dir: &Path) -> anyhow::Result<Vec<String>> {
+    use rustls::pki_types::{CertificateDer, pem::PemObject};
+    use x509_parser::extensions::GeneralName;
+    let pem = std::fs::read(dir.join("server.pem")).context("reading server.pem")?;
+    let der = CertificateDer::pem_slice_iter(&pem)
+        .next()
+        .context("server.pem is empty")??;
+    let (_, cert) = x509_parser::parse_x509_certificate(&der)?;
+    let mut names = Vec::new();
+    if let Some(san) = cert.subject_alternative_name()? {
+        for n in &san.value.general_names {
+            match n {
+                GeneralName::DNSName(d) => names.push(d.to_string()),
+                GeneralName::IPAddress(b) => {
+                    if let Ok(v4) = <[u8; 4]>::try_from(*b) {
+                        names.push(std::net::Ipv4Addr::from(v4).to_string());
+                    } else if let Ok(v6) = <[u8; 16]>::try_from(*b) {
+                        names.push(std::net::Ipv6Addr::from(v6).to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(names)
 }
 
 fn to_time(dt: DateTime<Utc>) -> time::OffsetDateTime {
@@ -117,12 +146,21 @@ impl Ca {
         let int_pem = read("intermediate.pem")?;
         let int_key = KeyPair::from_pem(&read("intermediate.key")?)?;
         let issuer = Issuer::from_ca_cert_pem(&int_pem, int_key)?;
-        let chain_pem = format!("{}{}", int_pem, read("root.pem")?);
-        Ok(Ca { issuer, chain_pem })
+        let root_pem = read("root.pem")?;
+        let chain_pem = format!("{int_pem}{root_pem}");
+        Ok(Ca {
+            issuer,
+            chain_pem,
+            root_pem,
+        })
     }
 
     pub fn chain_pem(&self) -> &str {
         &self.chain_pem
+    }
+
+    pub fn root_pem(&self) -> &str {
+        &self.root_pem
     }
 
     /// 只取 CSR 的公鑰；主體、用途、效期一律由伺服器決定。
@@ -224,6 +262,21 @@ mod tests {
         assert!(
             ca.sign_device_csr("not a csr", Uuid::new_v4(), Utc::now())
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn server_names_and_root_pem() {
+        let dir = tempfile::tempdir().unwrap();
+        init_ca(dir.path(), vec!["em.example.com".into(), "10.1.2.3".into()]).unwrap();
+        assert_eq!(
+            server_names(dir.path()).unwrap(),
+            vec!["em.example.com", "10.1.2.3"]
+        );
+        let ca = Ca::load(dir.path()).unwrap();
+        assert_eq!(
+            ca.root_pem(),
+            std::fs::read_to_string(dir.path().join("root.pem")).unwrap()
         );
     }
 

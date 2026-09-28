@@ -13,6 +13,12 @@ pub struct Config {
     pub web_listen: SocketAddr,
     /// 管理網頁顯示時間的時區（UTC 偏移小時）
     pub display_utc_offset: i32,
+    /// 註冊端點每個 IP 每分鐘上限（負載測試時調高）
+    pub enroll_per_ip_per_minute: u32,
+    /// 通用範本 MSI 的路徑；未設定時網頁不提供「下載安裝檔」
+    pub agent_msi: Option<PathBuf>,
+    /// 下載安裝檔時預設的伺服器網址（例：https://em.example.com:8443）
+    pub agent_public_url: String,
 }
 
 impl Config {
@@ -43,6 +49,18 @@ impl Config {
                 );
                 h
             },
+            enroll_per_ip_per_minute: {
+                let n: u32 = match get("EM_ENROLL_PER_IP_PER_MINUTE") {
+                    Some(v) => v.parse().context("EM_ENROLL_PER_IP_PER_MINUTE")?,
+                    None => crate::ENROLL_PER_IP_PER_MINUTE,
+                };
+                anyhow::ensure!(n >= 1, "EM_ENROLL_PER_IP_PER_MINUTE must be >= 1");
+                n
+            },
+            agent_msi: get("EM_AGENT_MSI")
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from),
+            agent_public_url: get("EM_AGENT_PUBLIC_URL").unwrap_or_default(),
         })
     }
 }
@@ -72,5 +90,24 @@ mod tests {
             _ => None,
         });
         assert!(bad.is_err());
+    }
+
+    #[test]
+    fn enroll_limit_env() {
+        let base = |v: Option<&str>| {
+            let v = v.map(String::from);
+            Config::from_lookup(move |k| match k {
+                "DATABASE_URL" => Some("postgres://x".into()),
+                "EM_ENROLL_PER_IP_PER_MINUTE" => v.clone(),
+                _ => None,
+            })
+        };
+        assert_eq!(base(None).unwrap().enroll_per_ip_per_minute, 60);
+        assert_eq!(
+            base(Some("100000")).unwrap().enroll_per_ip_per_minute,
+            100_000
+        );
+        assert!(base(Some("0")).is_err());
+        assert!(base(Some("abc")).is_err());
     }
 }

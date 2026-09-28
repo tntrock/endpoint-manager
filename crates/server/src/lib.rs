@@ -13,6 +13,7 @@ pub mod error;
 pub mod groups;
 pub mod heartbeat;
 pub mod identity;
+pub mod installer;
 pub mod inventory;
 pub mod partitions;
 pub mod ratelimit;
@@ -44,6 +45,11 @@ pub struct AppState {
     pub login_limiter: Arc<ratelimit::RateLimiter>,
     /// 管理網頁顯示時間用的時區
     pub display_offset: chrono::FixedOffset,
+    /// 通用範本 MSI；None 表示不提供下載安裝檔
+    pub agent_msi: Option<std::path::PathBuf>,
+    pub agent_public_url: String,
+    /// 伺服器憑證的名稱（下載安裝檔時檢查網址）
+    pub server_names: Arc<Vec<String>>,
 }
 
 impl AppState {
@@ -61,7 +67,30 @@ impl AppState {
                 Duration::from_secs(60),
             )),
             display_offset: chrono::FixedOffset::east_opt(8 * 3600).expect("valid offset"),
+            agent_msi: None,
+            agent_public_url: String::new(),
+            server_names: Arc::new(vec![]),
         }
+    }
+
+    pub fn with_installer(
+        mut self,
+        msi: Option<std::path::PathBuf>,
+        public_url: String,
+        server_names: Vec<String>,
+    ) -> Self {
+        self.agent_msi = msi;
+        self.agent_public_url = public_url;
+        self.server_names = Arc::new(server_names);
+        self
+    }
+
+    pub fn with_enroll_limit(mut self, per_minute: u32) -> Self {
+        self.enroll_limiter = Arc::new(ratelimit::RateLimiter::new(
+            per_minute,
+            Duration::from_secs(60),
+        ));
+        self
     }
 
     pub fn with_display_offset(mut self, hours: i32) -> Self {
@@ -99,8 +128,16 @@ pub async fn serve(cfg: config::Config) -> anyhow::Result<()> {
     db::migrate(&pool).await?;
     partitions::maintain_partitions(&pool, chrono::Utc::now()).await?;
 
+    let server_names = ca::server_names(&cfg.ca_dir)?;
+    let public_url = if cfg.agent_public_url.is_empty() {
+        installer::default_public_url(&server_names, cfg.agent_listen.port())
+    } else {
+        cfg.agent_public_url.clone()
+    };
     let state = AppState::new(pool.clone(), ca::Ca::load(&cfg.ca_dir)?)
-        .with_display_offset(cfg.display_utc_offset);
+        .with_display_offset(cfg.display_utc_offset)
+        .with_enroll_limit(cfg.enroll_per_ip_per_minute)
+        .with_installer(cfg.agent_msi.clone(), public_url, server_names);
     let tls_cfg = tls::server_config(&cfg.ca_dir)?;
 
     let hb = state.heartbeat.clone();
@@ -133,8 +170,27 @@ pub async fn serve(cfg: config::Config) -> anyhow::Result<()> {
     tokio::select! {
         r = tls::serve_mtls(listener, tls_cfg, agent_router(state.clone()), tls::ConnLimits::default()) => r?,
         r = tls::serve_mtls(web_listener, web_tls, web::web_router(state.clone()), tls::ConnLimits::default()) => r?,
-        _ = tokio::signal::ctrl_c() => tracing::info!("shutting down"),
+        _ = shutdown_signal() => tracing::info!("shutting down"),
     }
     state.heartbeat.flush(&pool).await?;
     Ok(())
+}
+
+/// Ctrl+C 或（Unix）SIGTERM：docker stop 送的是 SIGTERM。
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = term.recv() => {}
+                }
+                return;
+            }
+            Err(e) => tracing::error!(error = %e, "cannot install SIGTERM handler"),
+        }
+    }
+    let _ = tokio::signal::ctrl_c().await;
 }

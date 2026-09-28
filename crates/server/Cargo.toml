@@ -34,6 +34,7 @@ tracing-subscriber.workspace = true
 askama.workspace = true
 argon2.workspace = true
 form_urlencoded = "1"
+msi = "0.10"
 
 [dev-dependencies]
 reqwest = { workspace = true, features = ["cookies", "form"] }
