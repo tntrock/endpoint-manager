@@ -58,7 +58,8 @@ jobs:
           ./installer/build.ps1 -Version 0.1.1 -Out target/upgrade.msi
           $env:EM_CA_DIR = "target/ci-pki"
           ./target/release/endpoint-server.exe agent-msi target/template.msi target/a.msi https://localhost:9 ci-secret-token-8f3a
-          ./installer/test-msi.ps1 -Msi target/a.msi -UpgradeMsi target/upgrade.msi -Token ci-secret-token-8f3a -RootPem target/ci-pki/root.pem
+          ./target/release/endpoint-server.exe agent-msi target/template.msi target/b.msi https://localhost:10 ci-second-token-2c7e
+          ./installer/test-msi.ps1 -Msi target/a.msi -Msi2 target/b.msi -UpgradeMsi target/upgrade.msi -Token ci-secret-token-8f3a -Token2 ci-second-token-2c7e -RootPem target/ci-pki/root.pem
       - uses: actions/upload-artifact@v4
         with:
           name: agent-msi

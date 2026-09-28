@@ -26,10 +26,13 @@ pub fn build_msi(
     check_template(template)?;
     let mut pkg = Package::open(Cursor::new(template.to_vec()))?;
     let root = root_b64(root_pem);
+    // 每個下載都是不同的產品：同版本也能以另一個安裝檔升級（範本設 AllowSameVersionUpgrades）
+    let product_code = format!("{{{}}}", uuid::Uuid::new_v4()).to_uppercase();
     for (k, v) in [
         ("SERVER_URL", server_url),
         ("ENROLL_TOKEN", token),
         ("ROOT_CA", root.as_str()),
+        ("ProductCode", product_code.as_str()),
     ] {
         pkg.update_rows(
             Update::table("Property")
@@ -42,10 +45,10 @@ pub fn build_msi(
     Ok(pkg.into_inner()?.into_inner())
 }
 
-/// 範本必須是可讀的 MSI，且預先放好三個佔位屬性（只能更新既有列）。
+/// 範本必須是可讀的 MSI，且預先放好要改寫的屬性（只能更新既有列）。
 pub fn check_template(template: &[u8]) -> anyhow::Result<()> {
     let existing = read_properties(template)?;
-    for k in ["SERVER_URL", "ENROLL_TOKEN", "ROOT_CA"] {
+    for k in ["SERVER_URL", "ENROLL_TOKEN", "ROOT_CA", "ProductCode"] {
         anyhow::ensure!(
             existing.contains_key(k),
             "範本 MSI 缺少 {k} 屬性（請用 installer/agent.wxs 建置的範本）"
@@ -135,6 +138,7 @@ fn url_of(host: &str, port: u16) -> String {
 pub fn sample_template() -> Vec<u8> {
     template_with(&[
         ("KEEP", "me"),
+        ("ProductCode", "{00000000-0000-0000-0000-000000000001}"),
         ("SERVER_URL", " "),
         ("ENROLL_TOKEN", " "),
         ("ROOT_CA", " "),
@@ -177,6 +181,18 @@ mod tests {
         assert_eq!(p["KEEP"], "me", "其他屬性不動");
         let b = build_msi(&t, "https://em.example.com:8443", "tok-2", ROOT).unwrap();
         assert_ne!(package_code(&a), package_code(&b));
+        // 每個下載都是不同的產品，同版本也能用另一個安裝檔升級（改網址、換群組）
+        let pb = read_properties(&b).unwrap();
+        let tp = read_properties(&t).unwrap();
+        assert_ne!(p["ProductCode"], tp["ProductCode"]);
+        assert_ne!(p["ProductCode"], pb["ProductCode"]);
+        assert!(
+            uuid::Uuid::parse_str(p["ProductCode"].trim_matches(['{', '}'])).is_ok()
+                && p["ProductCode"].starts_with('{')
+                && p["ProductCode"] == p["ProductCode"].to_uppercase(),
+            "{}",
+            p["ProductCode"]
+        );
         // 範本已有同名屬性時覆寫而不是重複
         let again = build_msi(&a, "https://other.example.com:8443", "tok-3", ROOT).unwrap();
         assert_eq!(
