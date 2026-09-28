@@ -70,3 +70,9 @@ jobs:
         with:
           name: msi-logs
           path: "*.log"
+
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash deploy/smoke.sh

@@ -5,3 +5,6 @@
 /.superpowers
 *.msi
 *.wixpdb
+/deploy/pki
+/deploy/agent
+/deploy/.env
