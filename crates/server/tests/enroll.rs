@@ -251,3 +251,44 @@ async fn move_device_changes_group_and_audits(pool: PgPool) {
         .unwrap();
     assert_eq!(g, Some(kh));
 }
+
+#[sqlx::test(migrations = false)]
+async fn approved_reinstall_records_inventory_diff(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(5).await;
+    let old = s.enroll_ok(&tok, Some("UUID-A"), Some("SN-A")).await;
+    let upload = |agent: &common::TestAgent, ver: &str| {
+        let up = protocol::InventoryUpload {
+            schema_version: protocol::SCHEMA_VERSION,
+            payload: protocol::InventoryPayload::Software(vec![protocol::SoftwareItem {
+                name: "7-Zip".into(),
+                version: Some(ver.into()),
+                publisher: None,
+                install_date: None,
+                arch: protocol::Arch::X64,
+            }]),
+        };
+        s.client(Some(agent))
+            .put(s.url("/v1/inventory/software"))
+            .json(&up)
+            .send()
+    };
+    assert_eq!(upload(&old, "1.0").await.unwrap().status(), 204);
+    let new = s.enroll_ok(&tok, Some("UUID-A"), Some("SN-A")).await;
+    endpoint_server::devices::approve(&s.pool, new.device_id, "tester")
+        .await
+        .unwrap();
+    assert_eq!(upload(&new, "2.0").await.unwrap().status(), 204);
+    let changes: Vec<(String, String)> = sqlx::query_as(
+        "SELECT change, item_key FROM inventory_changes WHERE device_id = $1",
+    )
+    .bind(old.device_id)
+    .fetch_all(&s.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        changes,
+        vec![("updated".to_string(), "7-Zip|x64|".to_string())],
+        "重灌前後的差異要記入歷史"
+    );
+}

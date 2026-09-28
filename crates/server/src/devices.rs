@@ -39,8 +39,9 @@ pub async fn approve_in(
         .bind(pending)
         .execute(&mut *conn)
         .await?;
-    // 清空舊裝置的區段 hash：Agent 下次報到時伺服器會要求重新上傳全部區段
-    sqlx::query("DELETE FROM inventory_sections WHERE device_id = $1")
+    // 清空（不刪除）舊裝置的區段 hash：Agent 下次報到時伺服器會要求重新上傳全部區段，
+    // 而舊資料仍是比對基準，重灌前後的差異會記入變更歷史
+    sqlx::query("UPDATE inventory_sections SET hash = '' WHERE device_id = $1")
         .bind(old)
         .execute(&mut *conn)
         .await?;
