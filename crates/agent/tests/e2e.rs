@@ -410,3 +410,16 @@ fn missing_config_is_a_clear_error() {
         .expect("must fail");
     assert!(format!("{err:#}").contains("config.json"), "{err:#}");
 }
+
+#[sqlx::test(migrations = false)]
+async fn state_is_not_rewritten_when_unchanged(pool: PgPool) {
+    let e = env(pool, 1).await;
+    let mut a = Agent::new(e.dir.path(), Fake::new()).unwrap();
+    next(a.run_cycle().await);
+    let path = e.dir.path().join("state.json");
+    let before = std::fs::metadata(&path).unwrap().modified().unwrap();
+    std::thread::sleep(Duration::from_millis(50));
+    next(a.run_cycle().await);
+    let after = std::fs::metadata(&path).unwrap().modified().unwrap();
+    assert_eq!(before, after, "私鑰檔不應每個週期重寫");
+}

@@ -234,6 +234,7 @@ impl<C: Collector> Agent<C> {
         self.backoff.reset();
         self.intervals = resp.collection_intervals.clone();
 
+        let rejected_before = self.state.rejected.clone();
         for s in plan_uploads(&resp.request_sections, &hashes, &self.state.rejected) {
             let up = InventoryUpload {
                 schema_version: SCHEMA_VERSION,
@@ -259,7 +260,10 @@ impl<C: Collector> Agent<C> {
         {
             tracing::warn!(error = %format!("{e:#}"), "certificate renewal failed");
         }
-        if let Err(e) = self.state.save(&self.dir) {
+        // 只在內容變動時寫檔（enroll／renew 已各自存檔），減少私鑰檔被寫壞的機會
+        if self.state.rejected != rejected_before
+            && let Err(e) = self.state.save(&self.dir)
+        {
             tracing::error!(error = %e, "saving state failed");
         }
         Cycle::Next(with_jitter(
