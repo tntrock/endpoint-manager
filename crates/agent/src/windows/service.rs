@@ -44,6 +44,8 @@ fn status(state: ServiceState, exit_code: ServiceExitCode) -> ServiceStatus {
 }
 
 const OK: ServiceExitCode = ServiceExitCode::Win32(0);
+/// 服務專用結束代碼：1 = 執行中發生錯誤；2 = 資料目錄不可信（需重新安裝）
+const UNTRUSTED_DATA_DIR: u32 = 2;
 
 fn run_service() -> anyhow::Result<()> {
     if let Ok(log) = EventLog::open() {
@@ -64,17 +66,27 @@ fn run_service() -> anyhow::Result<()> {
         ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
         _ => ServiceControlHandlerResult::NotImplemented,
     })?;
+    // 資料目錄不可信（權限被改、被換成 junction）時不回報「執行中」，直接以結束代碼 2 停止
+    let dir = super::agent_dir();
+    if let Err(e) = super::secdir::verify_data_dir(&dir) {
+        tracing::error!(error = %format!("{e:#}"), "untrusted data directory; agent will not start");
+        handle.set_service_status(status(
+            ServiceState::Stopped,
+            ServiceExitCode::ServiceSpecific(UNTRUSTED_DATA_DIR),
+        ))?;
+        return Err(e);
+    }
     handle.set_service_status(status(ServiceState::Running, OK))?;
 
-    let dir = super::agent_dir();
-    let result = super::secdir::verify_data_dir(&dir).and_then(|()| {
-        let rt = tokio::runtime::Runtime::new()?;
-        let r = rt.block_on(super::run(&dir, rx));
-        let _ = handle.set_service_status(status(ServiceState::StopPending, OK));
-        // 卡住的 WMI 執行緒無法取消，不等它們結束
-        rt.shutdown_timeout(Duration::from_secs(5));
-        r
-    });
+    let result = tokio::runtime::Runtime::new()
+        .map_err(anyhow::Error::from)
+        .and_then(|rt| {
+            let r = rt.block_on(super::run(&dir, rx));
+            let _ = handle.set_service_status(status(ServiceState::StopPending, OK));
+            // 卡住的 WMI 執行緒無法取消，不等它們結束
+            rt.shutdown_timeout(Duration::from_secs(5));
+            r
+        });
     // 失敗時回報非 0 結束代碼，讓 SCM 的失敗復原動作重新啟動服務；
     // 伺服器拒絕憑證（401）屬正常停止，回報 0，避免無限重啟。
     let exit = match &result {

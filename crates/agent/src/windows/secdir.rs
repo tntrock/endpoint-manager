@@ -117,6 +117,18 @@ fn sddl_of_handle(handle: HANDLE) -> std::io::Result<String> {
     Ok(sddl)
 }
 
+/// Agent 只在資料目錄放一般檔案：出現子目錄或 junction／符號連結（例如 v0.1.0 時代被搶先建立、
+/// 又被「強化」成可信權限的目錄裡殘留的）就不可信。可信目錄一般使用者無法新增項目，檢查結果不會被換掉。
+fn only_plain_files(dir: &Path) -> std::io::Result<bool> {
+    for entry in std::fs::read_dir(dir)? {
+        let attrs = entry?.metadata()?.file_attributes();
+        if attrs & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY) != 0 {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 /// 以 DATA_DIR_SDDL 建立目錄（建立的同時就套用，沒有空窗）。
 fn create_secure(dir: &Path) -> std::io::Result<()> {
     let sddl = wide(OsStr::new(DATA_DIR_SDDL));
@@ -173,7 +185,7 @@ pub fn prepare_data_dir(dir: &Path) -> anyhow::Result<()> {
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
                 r => r.with_context(|| format!("creating {}", dir.display()))?,
             },
-            Some(sddl) if sddl_is_trusted(&sddl) => return Ok(()),
+            Some(sddl) if sddl_is_trusted(&sddl) && only_plain_files(dir)? => return Ok(()),
             Some(sddl) => {
                 tracing::warn!(dir = %dir.display(), %sddl, "untrusted data directory; recreating");
                 remove_untrusted(dir)
@@ -190,7 +202,7 @@ pub fn prepare_data_dir(dir: &Path) -> anyhow::Result<()> {
 /// 服務啟動時：只檢查、不修改。
 pub fn verify_data_dir(dir: &Path) -> anyhow::Result<()> {
     match current_sddl(dir)? {
-        Some(sddl) if sddl_is_trusted(&sddl) => Ok(()),
+        Some(sddl) if sddl_is_trusted(&sddl) && only_plain_files(dir)? => Ok(()),
         Some(sddl) => bail!(
             "data directory {} has unexpected permissions ({sddl}); reinstall the agent",
             dir.display()
