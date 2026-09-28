@@ -43,6 +43,11 @@ fn current_sddl_of_ordinary_dir_is_untrusted() {
     assert!(s.starts_with("O:") && s.contains("D:"), "{s}");
     assert!(!sddl_is_trusted(&s), "{s}");
     assert!(current_sddl(&tmp.path().join("missing")).unwrap().is_none());
+    assert!(
+        current_sddl(&tmp.path().join("missing").join("child"))
+            .unwrap()
+            .is_none()
+    );
     assert!(verify_data_dir(tmp.path()).is_err());
 }
 

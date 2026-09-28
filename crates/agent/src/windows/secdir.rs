@@ -10,44 +10,81 @@ use std::os::windows::fs::MetadataExt;
 use std::path::Path;
 
 use anyhow::{Context, bail};
-use windows_sys::Win32::Foundation::LocalFree;
+use windows_sys::Win32::Foundation::{
+    CloseHandle, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, HANDLE, INVALID_HANDLE_VALUE,
+    LocalFree,
+};
 use windows_sys::Win32::Security::Authorization::{
     ConvertSecurityDescriptorToStringSecurityDescriptorW,
-    ConvertStringSecurityDescriptorToSecurityDescriptorW, GetNamedSecurityInfoW, SDDL_REVISION_1,
+    ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1,
     SE_FILE_OBJECT,
 };
 use windows_sys::Win32::Security::{
     DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
     SECURITY_ATTRIBUTES,
 };
-use windows_sys::Win32::Storage::FileSystem::CreateDirectoryW;
+use windows_sys::Win32::Storage::FileSystem::{
+    BY_HANDLE_FILE_INFORMATION, CreateDirectoryW, CreateFileW, FILE_ATTRIBUTE_DIRECTORY,
+    FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, GetFileInformationByHandle,
+    OPEN_EXISTING, READ_CONTROL,
+};
 
 use crate::state::{DATA_DIR_SDDL, sddl_is_trusted};
-
-const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 
 fn wide(s: &OsStr) -> Vec<u16> {
     s.encode_wide().chain(Some(0)).collect()
 }
 
 /// 目錄目前的擁有者與 DACL（SDDL）。不存在 → None；junction／符號連結／不是目錄 → Some("")（不可信）。
+///
+/// 屬性與安全描述元都從同一個 handle 讀取（開啟時不跟隨 reparse point），
+/// 避免檢查「不是 junction」與讀取權限之間被換成 junction。
+/// 判定可信之後才以路徑寫檔：可信目錄的擁有者是 SYSTEM／Administrators，一般使用者沒有
+/// 該目錄的 DELETE，也沒有 ProgramData 的 DELETE_CHILD，無法再把它改名或換掉。
+/// （EM_AGENT_DIR 指到其他位置時，這個前提取決於上層目錄的權限。）
 pub fn current_sddl(dir: &Path) -> std::io::Result<Option<String>> {
-    let meta = match std::fs::symlink_metadata(dir) {
-        Ok(m) => m,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e),
-    };
-    if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 || !meta.is_dir() {
-        return Ok(Some(String::new()));
-    }
     let path = wide(dir.as_os_str());
-    let info = OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
+    let handle = unsafe {
+        CreateFileW(
+            path.as_ptr(),
+            READ_CONTROL | FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        let e = std::io::Error::last_os_error();
+        return match e.raw_os_error().map(|c| c as u32) {
+            Some(ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND) => Ok(None),
+            _ => Err(e),
+        };
+    }
+    let result = sddl_of_handle(handle);
+    unsafe { CloseHandle(handle) };
+    result.map(Some)
+}
+
+fn sddl_of_handle(handle: HANDLE) -> std::io::Result<String> {
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    if unsafe { GetFileInformationByHandle(handle, &mut info) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+        || info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0
+    {
+        return Ok(String::new());
+    }
+    let what = OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
     let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
     let err = unsafe {
-        GetNamedSecurityInfoW(
-            path.as_ptr(),
+        GetSecurityInfo(
+            handle,
             SE_FILE_OBJECT,
-            info,
+            what,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
             std::ptr::null_mut(),
@@ -63,19 +100,21 @@ pub fn current_sddl(dir: &Path) -> std::io::Result<Option<String>> {
         ConvertSecurityDescriptorToStringSecurityDescriptorW(
             sd,
             SDDL_REVISION_1,
-            info,
+            what,
             &mut text,
             std::ptr::null_mut(),
         )
     };
+    // 先取錯誤碼再釋放，LocalFree 可能覆蓋它
+    let convert_err = (ok == 0).then(std::io::Error::last_os_error);
     unsafe { LocalFree(sd) };
-    if ok == 0 {
-        return Err(std::io::Error::last_os_error());
+    if let Some(e) = convert_err {
+        return Err(e);
     }
     let len = (0..).take_while(|&i| unsafe { *text.add(i) } != 0).count();
     let sddl = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(text, len) });
     unsafe { LocalFree(text.cast()) };
-    Ok(Some(sddl))
+    Ok(sddl)
 }
 
 /// 以 DATA_DIR_SDDL 建立目錄（建立的同時就套用，沒有空窗）。
