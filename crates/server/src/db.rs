@@ -8,8 +8,11 @@ pub async fn migrate(pool: &PgPool) -> Result<(), sqlx::migrate::MigrateError> {
 }
 
 /// 報到與收集間隔的合理範圍（秒）：0 會讓所有 Agent 不停報到，極大值等於不再收集。
+/// 報到下限 30 秒：30,000 台約每秒 1,000 次。
 pub const MIN_INTERVAL_SECS: u32 = 30;
 pub const MAX_INTERVAL_SECS: u32 = 7 * 24 * 3600;
+/// 收集間隔下限（完整收集比報到重得多）
+pub const MIN_COLLECT_SECS: u32 = 300;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
@@ -23,7 +26,7 @@ pub async fn load_settings(pool: &PgPool) -> Result<Settings, sqlx::Error> {
         sqlx::query_as("SELECT key, value #>> '{}' FROM settings WHERE key LIKE '%_secs'")
             .fetch_all(pool)
             .await?;
-    let get = |k: &str, default: u32| {
+    let get = |k: &str, default: u32, min: u32| {
         let raw = rows
             .iter()
             .find(|(key, _)| key == k)
@@ -31,21 +34,27 @@ pub async fn load_settings(pool: &PgPool) -> Result<Settings, sqlx::Error> {
         match raw.map(|v| v.trim().parse::<u64>()) {
             Some(Ok(n)) => u32::try_from(n)
                 .unwrap_or(u32::MAX)
-                .clamp(MIN_INTERVAL_SECS, MAX_INTERVAL_SECS),
+                .clamp(min, MAX_INTERVAL_SECS),
             Some(Err(_)) => {
-                tracing::warn!(key = k, value = ?raw, "invalid setting; using default");
+                // 每次報到都會讀設定：同一個壞值只警告一次
+                static WARNED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+                let mut warned = WARNED.lock().expect("warned lock");
+                if !warned.iter().any(|w| w == k) {
+                    tracing::warn!(key = k, value = ?raw, "invalid setting; using default");
+                    warned.push(k.to_string());
+                }
                 default
             }
             None => default,
         }
     };
     Ok(Settings {
-        checkin_interval_secs: get("checkin_interval_secs", 60),
+        checkin_interval_secs: get("checkin_interval_secs", 60, MIN_INTERVAL_SECS),
         intervals: CollectionIntervals {
-            software_secs: get("software_interval_secs", 3600),
-            patches_secs: get("patches_interval_secs", 3600),
-            services_secs: get("services_interval_secs", 3600),
-            hardware_secs: get("hardware_interval_secs", 86400),
+            software_secs: get("software_interval_secs", 3600, MIN_COLLECT_SECS),
+            patches_secs: get("patches_interval_secs", 3600, MIN_COLLECT_SECS),
+            services_secs: get("services_interval_secs", 3600, MIN_COLLECT_SECS),
+            hardware_secs: get("hardware_interval_secs", 86400, MIN_COLLECT_SECS),
         },
     })
 }
@@ -84,7 +93,10 @@ mod tests {
         let s = load_settings(&pool).await.unwrap();
         assert_eq!(s.checkin_interval_secs, 60, "壞值用預設");
         assert_eq!(s.intervals.software_secs, 3600, "壞值用預設");
-        assert_eq!(s.intervals.patches_secs, MIN_INTERVAL_SECS, "0 夾到下限");
+        assert_eq!(
+            s.intervals.patches_secs, MIN_COLLECT_SECS,
+            "0 夾到收集間隔下限"
+        );
         assert_eq!(
             s.intervals.hardware_secs, MAX_INTERVAL_SECS,
             "極大值夾到上限"

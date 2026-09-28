@@ -23,10 +23,25 @@ impl From<protocol::ValidationError> for AppError {
     }
 }
 
-/// 暫時不可用的 SQLSTATE：08 連線問題、53 資源不足（例如連線數用盡）、
-/// 57 操作員介入（關機、重啟、查詢被取消）。
+/// 暫時不可用的 SQLSTATE：連線中斷、資源不足（記憶體、磁碟、連線數）、
+/// 資料庫關機／重啟、查詢被取消。協定錯誤（08P01）與設定上限（53400）不算。
 fn unavailable_sqlstate(code: &str) -> bool {
-    ["08", "53", "57"].iter().any(|c| code.starts_with(c))
+    matches!(
+        code,
+        "08000"
+            | "08001"
+            | "08003"
+            | "08004"
+            | "08006"
+            | "53000"
+            | "53100"
+            | "53200"
+            | "53300"
+            | "57P01"
+            | "57P02"
+            | "57P03"
+            | "57014"
+    )
 }
 
 fn db_unavailable(e: &sqlx::Error) -> bool {
@@ -83,7 +98,8 @@ mod tests {
         ] {
             assert!(unavailable_sqlstate(code), "{code}");
         }
-        for code in ["23505", "22P02", "42P01", "40001"] {
+        // 協定錯誤、設定上限、一般錯誤不是暫時狀況：回 500 才會被告警，Agent 也不會無限重試
+        for code in ["23505", "22P02", "42P01", "40001", "08P01", "53400"] {
             assert!(!unavailable_sqlstate(code), "{code}");
         }
     }
