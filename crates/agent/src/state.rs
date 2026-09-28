@@ -85,100 +85,79 @@ impl AgentState {
     }
 }
 
-const PROTECT: &[&str] = &[
-    "/inheritance:r",
-    "/grant:r",
-    "*S-1-5-18:(OI)(CI)F",
-    "*S-1-5-32-544:(OI)(CI)F",
-];
+/// 資料目錄的安全描述元（SDDL）：擁有者 Administrators，DACL 受保護（不繼承），
+/// 只有 SYSTEM 與 Administrators 完全控制。建立目錄時直接套用。
+pub const DATA_DIR_SDDL: &str = "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
 
-#[cfg(windows)]
-fn icacls(target: &Path, args: &[&str]) -> anyhow::Result<()> {
-    let status = std::process::Command::new("icacls")
-        .arg(target)
-        .args(args)
-        .stdout(std::process::Stdio::null())
-        .status()?;
-    anyhow::ensure!(
-        status.success(),
-        "icacls {args:?} failed on {}",
-        target.display()
-    );
-    Ok(())
-}
-
-/// 建立目錄；Windows 上移除繼承權限，只留 SYSTEM 與 Administrators（以 SID 指定，不受語系影響）。
-pub fn secure_dir(dir: &Path) -> anyhow::Result<()> {
-    std::fs::create_dir_all(dir)?;
-    #[cfg(windows)]
-    icacls(dir, PROTECT)?;
-    Ok(())
-}
-
-/// harden_dir 依序執行的 icacls（目標、參數）：
-/// 1. 目錄與所有子項的擁有者改為 Administrators（原擁有者就不能再改回權限）；
-/// 2. 目錄本身改為不繼承、只留 SYSTEM 與 Administrators；
-/// 3. 子項重設為只繼承（此時目錄已受保護，繼承到的只有上一步的權限）。
-///
-/// 目錄本身絕不 /reset：那會暫時恢復繼承 ProgramData（Users 可讀）。
-pub type Step = (std::path::PathBuf, &'static [&'static str]);
-
-pub fn harden_steps(dir: &Path, has_children: bool) -> Vec<Step> {
-    let mut steps: Vec<Step> = vec![
-        (
-            dir.to_path_buf(),
-            &["/setowner", "*S-1-5-32-544", "/T", "/C", "/Q"],
-        ),
-        (dir.to_path_buf(), PROTECT),
-    ];
-    if has_children {
-        steps.push((dir.join("*"), &["/reset", "/T", "/C", "/Q"]));
+/// 目錄現有的安全描述元是否可信：擁有者為 SYSTEM／Administrators，DACL 受保護，
+/// 而且恰好只有 SYSTEM 與 Administrators 的完全控制（沒有其他項目、沒有繼承項目）。
+/// 用在搶先建立目錄的一般使用者：他可能是擁有者，或自己加了權限項目。
+pub fn sddl_is_trusted(sddl: &str) -> bool {
+    const SYSTEM: [&str; 2] = ["SY", "S-1-5-18"];
+    const ADMINS: [&str; 2] = ["BA", "S-1-5-32-544"];
+    let Some(owner) = sddl
+        .strip_prefix("O:")
+        .map(|r| r.split(['G', 'D']).next().unwrap_or_default())
+    else {
+        return false;
+    };
+    if !SYSTEM.contains(&owner) && !ADMINS.contains(&owner) {
+        return false;
     }
-    steps
-}
-
-/// 服務模式與安裝時用：防止一般使用者搶先建立目錄或暫存檔、以擁有者身分改回權限。
-/// 需要系統管理員權限。
-pub fn harden_dir(dir: &Path) -> anyhow::Result<()> {
-    std::fs::create_dir_all(dir)?;
-    #[cfg(windows)]
-    {
-        let has_children = std::fs::read_dir(dir)?.next().is_some();
-        for (target, args) in harden_steps(dir, has_children) {
-            icacls(&target, args)?;
+    let Some((_, dacl)) = sddl.split_once("D:") else {
+        return false;
+    };
+    let (flags, aces) = dacl.split_at(dacl.find('(').unwrap_or(dacl.len()));
+    if !flags.contains('P') {
+        return false;
+    }
+    let (mut system, mut admins) = (false, false);
+    for ace in aces.split(['(', ')']).filter(|a| !a.is_empty()) {
+        let f: Vec<&str> = ace.split(';').collect();
+        let full = f.len() == 6
+            && f[0] == "A"
+            && matches!(f[1], "OICI" | "CIOI")
+            && matches!(f[2], "FA" | "0x1f01ff");
+        match f.get(5) {
+            Some(sid) if full && SYSTEM.contains(sid) && !system => system = true,
+            Some(sid) if full && ADMINS.contains(sid) && !admins => admins = true,
+            _ => return false,
         }
     }
-    Ok(())
+    system && admins
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// 目錄本身不能被 /reset：那會暫時恢復繼承 ProgramData 的權限（Users 可讀），
-    /// 讓一般使用者趁機開啟 state.json（含私鑰）並保留 handle。
     #[test]
-    fn harden_never_resets_the_dir_itself() {
-        let dir = Path::new(r"C:\ProgramData\EndpointManager");
-        for has_children in [false, true] {
-            let steps = harden_steps(dir, has_children);
-            let pos = |f: &dyn Fn(&Step) -> bool| steps.iter().position(f);
-            let owner = pos(&|(t, a)| t == dir && a.contains(&"/setowner")).expect("setowner");
-            let protect =
-                pos(&|(t, a)| t == dir && a.contains(&"/inheritance:r")).expect("protect");
-            assert!(owner < protect, "先取得擁有權，擁有者才無法改回權限");
-            assert!(
-                !steps.iter().any(|(t, a)| t == dir && a.contains(&"/reset")),
-                "{steps:?}"
-            );
-            match pos(&|(_, a)| a.contains(&"/reset")) {
-                Some(reset) => {
-                    assert!(has_children);
-                    assert!(reset > protect, "子項要在目錄保護後才重設");
-                    assert_eq!(steps[reset].0, dir.join("*"));
-                }
-                None => assert!(!has_children, "有子項時要重設子項的 ACL"),
-            }
+    fn trusted_sddl_is_exactly_system_and_admins() {
+        for ok in [
+            "O:BAG:SYD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)",
+            "O:SYD:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)",
+            "O:S-1-5-32-544D:P(A;CIOI;0x1f01ff;;;S-1-5-18)(A;OICI;FA;;;S-1-5-32-544)",
+        ] {
+            assert!(sddl_is_trusted(ok), "{ok}");
+        }
+        for bad in [
+            // 擁有者是一般使用者：可以隨時改回權限
+            "O:S-1-5-21-1-2-3-1001D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)",
+            // 沒有 P：會繼承 ProgramData（Users 可讀）
+            "O:BAD:AI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)",
+            // 多一個使用者自己加的項目
+            "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;S-1-5-21-1-2-3-1001)",
+            "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;BU)",
+            // 拒絕項目、繼承項目、缺少其中一個、權限不足
+            "O:BAD:P(D;OICI;FA;;;BA)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)",
+            "O:BAD:P(A;OICIID;FA;;;SY)(A;OICI;FA;;;BA)",
+            "O:BAD:P(A;OICI;FA;;;SY)",
+            "O:BAD:P(A;OICI;FR;;;SY)(A;OICI;FA;;;BA)",
+            // 沒有 DACL
+            "O:BAG:SY",
+            "",
+        ] {
+            assert!(!sddl_is_trusted(bad), "{bad}");
         }
     }
 

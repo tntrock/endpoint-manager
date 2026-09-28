@@ -112,6 +112,7 @@ EM_CA_DIR=deploy/pki endpoint-server agent-msi endpoint-agent-<版本>.msi out.m
 
 - 升級：直接安裝新版的通用範本 MSI，設定與註冊身分沿用。
 - 要改伺服器網址：直接安裝另一次下載的安裝檔，會取代原本的安裝（同版本也可以）。已註冊的電腦沿用原本的身分與群組（群組請在網頁移動）。
+- 同一群電腦只用一個派送來源：GPO 指派了安裝檔 A，又手動裝了另一個下載的 B，B 會取代 A，GPO 下次開機又裝回 A，兩者會一直互換。要改用新安裝檔時，請把 GPO 改指向新的 MSI。
 - 解除安裝會刪除 `C:\ProgramData\EndpointManager`（含裝置憑證）；之後重新安裝需在網頁核准重新註冊。
 
 ### 自行建置範本 MSI

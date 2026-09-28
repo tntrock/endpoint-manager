@@ -11,18 +11,18 @@ use windows_service::service::{
 };
 use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 
+use super::secdir::prepare_data_dir;
 use super::service::SERVICE_NAME;
 use crate::config::apply_install_config;
-use crate::state::harden_dir;
 
-/// 先強化資料目錄，之後才寫入 root.pem 與 config.json。
+/// 先確保資料目錄可信（不可信就重建），之後才寫入 root.pem 與 config.json。
 pub fn configure(
     data: &Path,
     server_url: Option<&str>,
     token: Option<&str>,
     root_ca: Option<&str>,
 ) -> anyhow::Result<()> {
-    harden_dir(data)?;
+    prepare_data_dir(data)?;
     apply_install_config(data, server_url, token, root_ca)
 }
 

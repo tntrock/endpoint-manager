@@ -126,9 +126,18 @@ mod tests {
     /// docker stop 只給 30 秒（stop_grace_period）：資料庫卡住時，關閉前的寫入不能無限等待。
     #[tokio::test]
     async fn flush_before_exit_gives_up_after_limit() {
+        // 接受連線但永遠不回應的「資料庫」：保證 flush 會卡住，測到的是逾時而不是連線失敗
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((sock, _)) = listener.accept().await {
+                held.push(sock);
+            }
+        });
         let pool = sqlx::postgres::PgPoolOptions::new()
             .acquire_timeout(Duration::from_secs(60))
-            .connect_lazy("postgres://u:p@10.255.255.1:5432/db")
+            .connect_lazy(&format!("postgres://u:p@{addr}/db"))
             .unwrap();
         let hb = HeartbeatBuffer::new();
         hb.record(

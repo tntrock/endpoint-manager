@@ -3,43 +3,128 @@
 
 use std::process::Command;
 
-use endpoint_agent::state::secure_dir;
+use endpoint_agent::state::sddl_is_trusted;
+use endpoint_agent::windows::secdir::{current_sddl, prepare_data_dir, verify_data_dir};
 
-/// 以 SDDL 檢查（不受系統語系影響）：只剩 SYSTEM (SY) 與 Administrators (BA)。
+/// 需要系統管理員權限（CI 的 windows runner 有）；一般權限下略過。
+fn elevated() -> bool {
+    Command::new("net")
+        .arg("session")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+fn sddl(p: &std::path::Path) -> String {
+    current_sddl(p).unwrap().expect("exists")
+}
+
+/// 模擬一般使用者搶先建立的目錄：自己加了 Users 完全控制、放了假的 state.json。
+fn squat(dir: &std::path::Path) {
+    std::fs::create_dir_all(dir).unwrap();
+    assert!(
+        Command::new("icacls")
+            .arg(dir)
+            .args(["/grant", "*S-1-5-32-545:(OI)(CI)F"])
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    );
+    std::fs::write(dir.join("state.json"), b"{\"device_id\":null}").unwrap();
+}
+
+/// 不需系統管理員：一般的暫存目錄讀得到 SDDL，但不可信；不存在則為 None。
 #[test]
-fn secure_dir_leaves_only_system_and_admins() {
-    let dir = tempfile::tempdir().unwrap();
-    let target = dir.path().join("em");
-    secure_dir(&target).unwrap();
+fn current_sddl_of_ordinary_dir_is_untrusted() {
+    let tmp = tempfile::tempdir().unwrap();
+    let s = sddl(tmp.path());
+    assert!(s.starts_with("O:") && s.contains("D:"), "{s}");
+    assert!(!sddl_is_trusted(&s), "{s}");
+    assert!(current_sddl(&tmp.path().join("missing")).unwrap().is_none());
+    assert!(verify_data_dir(tmp.path()).is_err());
+}
 
-    let save = dir.path().join("acl.txt");
-    let ok = Command::new("icacls")
-        .arg(&target)
-        .arg("/save")
-        .arg(&save)
-        .status()
-        .unwrap()
-        .success();
-    assert!(ok);
-    let raw = std::fs::read(&save).unwrap();
-    let utf16: Vec<u16> = raw
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .map(|c| u16::from_le_bytes(*c))
-        .collect();
-    let sddl = String::from_utf16_lossy(&utf16);
-    assert!(sddl.contains(";;;SY)") && sddl.contains(";;;BA)"), "{sddl}");
-    for other in [";;;BU)", ";;;AU)", ";;;WD)", ";;;CO)"] {
-        assert!(!sddl.contains(other), "{other} in {sddl}");
+#[test]
+fn prepare_creates_trusted_dir() {
+    if !elevated() {
+        eprintln!("skipped: not elevated");
+        return;
     }
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("em");
+    prepare_data_dir(&dir).unwrap();
+    assert!(sddl_is_trusted(&sddl(&dir)), "{}", sddl(&dir));
+    verify_data_dir(&dir).unwrap();
+    // 已可信的目錄：內容保留
+    std::fs::write(dir.join("state.json"), b"keep").unwrap();
+    prepare_data_dir(&dir).unwrap();
+    assert_eq!(std::fs::read(dir.join("state.json")).unwrap(), b"keep");
+}
 
-    // 還原，讓 tempdir 可以刪除（擁有者仍有 WRITE_DAC）
-    Command::new("icacls")
-        .arg(&target)
-        .arg("/reset")
-        .status()
-        .unwrap();
+#[test]
+fn prepare_recreates_squatted_dir() {
+    if !elevated() {
+        eprintln!("skipped: not elevated");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("em");
+    squat(&dir);
+    assert!(verify_data_dir(&dir).is_err(), "搶先建立的目錄不可信");
+    prepare_data_dir(&dir).unwrap();
+    let s = sddl(&dir);
+    assert!(
+        sddl_is_trusted(&s) && !s.contains("S-1-5-32-545") && !s.contains(";;;BU)"),
+        "{s}"
+    );
+    assert!(!dir.join("state.json").exists(), "搶先放的檔案要被清掉");
+}
+
+#[test]
+fn prepare_does_not_follow_junctions() {
+    if !elevated() {
+        eprintln!("skipped: not elevated");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let victim = tmp.path().join("victim");
+    std::fs::create_dir_all(&victim).unwrap();
+    std::fs::write(victim.join("secret.txt"), b"x").unwrap();
+    let before = sddl(&victim);
+    let mklink = |link: &std::path::Path| {
+        assert!(
+            Command::new("cmd")
+                .args(["/c", "mklink", "/J"])
+                .arg(link)
+                .arg(&victim)
+                .stdout(std::process::Stdio::null())
+                .status()
+                .unwrap()
+                .success()
+        );
+    };
+
+    // 目錄裡放 junction 指向別處
+    let dir = tmp.path().join("em");
+    squat(&dir);
+    mklink(&dir.join("sub"));
+    prepare_data_dir(&dir).unwrap();
+    assert!(
+        victim.join("secret.txt").exists(),
+        "不可刪到 junction 指向的目錄"
+    );
+    assert_eq!(sddl(&victim), before, "不可改到 junction 指向的目錄的權限");
+
+    // 資料目錄本身就是 junction
+    let dir2 = tmp.path().join("em2");
+    mklink(&dir2);
+    assert!(verify_data_dir(&dir2).is_err());
+    prepare_data_dir(&dir2).unwrap();
+    assert!(sddl_is_trusted(&sddl(&dir2)));
+    assert!(victim.join("secret.txt").exists());
+    assert_eq!(sddl(&victim), before);
 }
 
 use endpoint_agent::collector::Collector;
@@ -106,15 +191,6 @@ fn eventlog_report_works() {
     );
 }
 
-fn elevated() -> bool {
-    Command::new("net")
-        .arg("session")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
-}
-
 /// 需要系統管理員權限；一般權限下略過。
 #[test]
 fn configure_hardens_dir_and_writes_files() {
@@ -166,66 +242,4 @@ fn configure_hardens_dir_and_writes_files() {
     unconfigure(&data).unwrap();
     assert!(!data.exists());
     unconfigure(&data).unwrap(); // 不存在也成功
-}
-
-/// 需要系統管理員權限（CI 的 windows runner 有）；一般權限下略過。
-#[test]
-fn harden_dir_takes_ownership_from_squatter() {
-    if !elevated() {
-        eprintln!("skipped: not elevated");
-        return;
-    }
-    let dir = tempfile::tempdir().unwrap();
-    let target = dir.path().join("em");
-    std::fs::create_dir_all(&target).unwrap();
-    std::fs::write(target.join("state.json.tmp"), b"squatted").unwrap();
-    endpoint_agent::state::harden_dir(&target).unwrap();
-
-    // icacls /save 不含擁有者，改用 Get-Acl 取完整 SDDL（O: 擁有者、D: DACL）
-    // CI 的 PSModulePath 指向 PowerShell 7 模組，Windows PowerShell 會載入失敗
-    let out = Command::new("powershell")
-        .env_remove("PSModulePath")
-        .args(["-NoProfile", "-Command"])
-        .arg(format!(
-            "(Get-Acl -LiteralPath '{}').Sddl",
-            target.join("state.json.tmp").display()
-        ))
-        .output()
-        .unwrap();
-    let sddl = String::from_utf8_lossy(&out.stdout).to_string();
-    let diag = format!(
-        "sddl=[{sddl}] stderr=[{}]",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(
-        !sddl.contains(";;;BU)") && !sddl.contains(";;;AU)"),
-        "{diag}"
-    );
-    assert!(sddl.contains("O:BA"), "{diag}");
-
-    // 目錄本身：擁有者 Administrators、DACL 受保護（D:P，不繼承 ProgramData）、沒有 Users
-    let out = Command::new("powershell")
-        .env_remove("PSModulePath")
-        .args(["-NoProfile", "-Command"])
-        .arg(format!(
-            "(Get-Acl -LiteralPath '{}').Sddl",
-            target.display()
-        ))
-        .output()
-        .unwrap();
-    let dir_sddl = String::from_utf8_lossy(&out.stdout).to_string();
-    assert!(
-        dir_sddl.contains("O:BA") && dir_sddl.contains("D:P") && !dir_sddl.contains(";;;BU)"),
-        "dir sddl=[{dir_sddl}]"
-    );
-
-    // 空目錄（沒有子項可重設）也要成功
-    let empty = dir.path().join("empty");
-    endpoint_agent::state::harden_dir(&empty).unwrap();
-
-    Command::new("icacls")
-        .arg(&target)
-        .args(["/reset", "/T", "/C", "/Q"])
-        .status()
-        .unwrap();
 }
