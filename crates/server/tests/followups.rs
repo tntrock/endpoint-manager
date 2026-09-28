@@ -223,3 +223,26 @@ async fn lookup_indexes_exist(pool: PgPool) {
         assert!(names.iter().any(|n| n == want), "{want} missing");
     }
 }
+
+/// 裝置身分只取自用戶端憑證：A 的上傳不會寫到 B 的資料。
+#[sqlx::test(migrations = false)]
+async fn uploads_only_touch_the_authenticated_device(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let t = s.create_token(5).await;
+    let a = s.enroll_ok(&t, Some("UUID-XA"), Some("SN-XA")).await;
+    let b = s.enroll_ok(&t, Some("UUID-XB"), Some("SN-XB")).await;
+    upload_software(&s, &b, "B-App", "1").await;
+    upload_software(&s, &a, "A-App", "1").await;
+    let names = |id: Uuid| {
+        let pool = s.pool.clone();
+        async move {
+            sqlx::query_scalar::<_, String>("SELECT name FROM device_software WHERE device_id = $1")
+                .bind(id)
+                .fetch_all(&pool)
+                .await
+                .unwrap()
+        }
+    };
+    assert_eq!(names(b.device_id).await, vec!["B-App".to_string()]);
+    assert_eq!(names(a.device_id).await, vec!["A-App".to_string()]);
+}
