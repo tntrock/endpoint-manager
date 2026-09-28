@@ -202,6 +202,27 @@ fn harden_dir_takes_ownership_from_squatter() {
         "{diag}"
     );
     assert!(sddl.contains("O:BA"), "{diag}");
+
+    // 目錄本身：擁有者 Administrators、DACL 受保護（D:P，不繼承 ProgramData）、沒有 Users
+    let out = Command::new("powershell")
+        .env_remove("PSModulePath")
+        .args(["-NoProfile", "-Command"])
+        .arg(format!(
+            "(Get-Acl -LiteralPath '{}').Sddl",
+            target.display()
+        ))
+        .output()
+        .unwrap();
+    let dir_sddl = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(
+        dir_sddl.contains("O:BA") && dir_sddl.contains("D:P") && !dir_sddl.contains(";;;BU)"),
+        "dir sddl=[{dir_sddl}]"
+    );
+
+    // 空目錄（沒有子項可重設）也要成功
+    let empty = dir.path().join("empty");
+    endpoint_agent::state::harden_dir(&empty).unwrap();
+
     Command::new("icacls")
         .arg(&target)
         .args(["/reset", "/T", "/C", "/Q"])

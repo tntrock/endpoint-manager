@@ -85,53 +85,102 @@ impl AgentState {
     }
 }
 
+const PROTECT: &[&str] = &[
+    "/inheritance:r",
+    "/grant:r",
+    "*S-1-5-18:(OI)(CI)F",
+    "*S-1-5-32-544:(OI)(CI)F",
+];
+
+#[cfg(windows)]
+fn icacls(target: &Path, args: &[&str]) -> anyhow::Result<()> {
+    let status = std::process::Command::new("icacls")
+        .arg(target)
+        .args(args)
+        .stdout(std::process::Stdio::null())
+        .status()?;
+    anyhow::ensure!(
+        status.success(),
+        "icacls {args:?} failed on {}",
+        target.display()
+    );
+    Ok(())
+}
+
 /// 建立目錄；Windows 上移除繼承權限，只留 SYSTEM 與 Administrators（以 SID 指定，不受語系影響）。
 pub fn secure_dir(dir: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(dir)?;
     #[cfg(windows)]
-    {
-        let status = std::process::Command::new("icacls")
-            .arg(dir)
-            .args([
-                "/inheritance:r",
-                "/grant:r",
-                "*S-1-5-18:(OI)(CI)F",
-                "*S-1-5-32-544:(OI)(CI)F",
-            ])
-            .stdout(std::process::Stdio::null())
-            .status()?;
-        anyhow::ensure!(status.success(), "icacls failed on {}", dir.display());
-    }
+    icacls(dir, PROTECT)?;
     Ok(())
 }
 
-/// 服務模式用：先把目錄與其下所有檔案的擁有者改為 Administrators 並重設子項 ACL，
-/// 再套用 secure_dir。防止一般使用者搶先建立目錄或暫存檔、以擁有者身分改回權限。
+/// harden_dir 依序執行的 icacls（目標、參數）：
+/// 1. 目錄與所有子項的擁有者改為 Administrators（原擁有者就不能再改回權限）；
+/// 2. 目錄本身改為不繼承、只留 SYSTEM 與 Administrators；
+/// 3. 子項重設為只繼承（此時目錄已受保護，繼承到的只有上一步的權限）。
+///
+/// 目錄本身絕不 /reset：那會暫時恢復繼承 ProgramData（Users 可讀）。
+pub type Step = (std::path::PathBuf, &'static [&'static str]);
+
+pub fn harden_steps(dir: &Path, has_children: bool) -> Vec<Step> {
+    let mut steps: Vec<Step> = vec![
+        (
+            dir.to_path_buf(),
+            &["/setowner", "*S-1-5-32-544", "/T", "/C", "/Q"],
+        ),
+        (dir.to_path_buf(), PROTECT),
+    ];
+    if has_children {
+        steps.push((dir.join("*"), &["/reset", "/T", "/C", "/Q"]));
+    }
+    steps
+}
+
+/// 服務模式與安裝時用：防止一般使用者搶先建立目錄或暫存檔、以擁有者身分改回權限。
 /// 需要系統管理員權限。
 pub fn harden_dir(dir: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(dir)?;
     #[cfg(windows)]
-    for args in [
-        &["/setowner", "*S-1-5-32-544", "/T", "/C", "/Q"][..],
-        &["/reset", "/T", "/C", "/Q"][..],
-    ] {
-        let status = std::process::Command::new("icacls")
-            .arg(dir)
-            .args(args)
-            .stdout(std::process::Stdio::null())
-            .status()?;
-        anyhow::ensure!(
-            status.success(),
-            "icacls {args:?} failed on {}",
-            dir.display()
-        );
+    {
+        let has_children = std::fs::read_dir(dir)?.next().is_some();
+        for (target, args) in harden_steps(dir, has_children) {
+            icacls(&target, args)?;
+        }
     }
-    secure_dir(dir)
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 目錄本身不能被 /reset：那會暫時恢復繼承 ProgramData 的權限（Users 可讀），
+    /// 讓一般使用者趁機開啟 state.json（含私鑰）並保留 handle。
+    #[test]
+    fn harden_never_resets_the_dir_itself() {
+        let dir = Path::new(r"C:\ProgramData\EndpointManager");
+        for has_children in [false, true] {
+            let steps = harden_steps(dir, has_children);
+            let pos = |f: &dyn Fn(&Step) -> bool| steps.iter().position(f);
+            let owner = pos(&|(t, a)| t == dir && a.contains(&"/setowner")).expect("setowner");
+            let protect =
+                pos(&|(t, a)| t == dir && a.contains(&"/inheritance:r")).expect("protect");
+            assert!(owner < protect, "先取得擁有權，擁有者才無法改回權限");
+            assert!(
+                !steps.iter().any(|(t, a)| t == dir && a.contains(&"/reset")),
+                "{steps:?}"
+            );
+            match pos(&|(_, a)| a.contains(&"/reset")) {
+                Some(reset) => {
+                    assert!(has_children);
+                    assert!(reset > protect, "子項要在目錄保護後才重設");
+                    assert_eq!(steps[reset].0, dir.join("*"));
+                }
+                None => assert!(!has_children, "有子項時要重設子項的 ACL"),
+            }
+        }
+    }
 
     #[test]
     fn missing_state_is_default() {
