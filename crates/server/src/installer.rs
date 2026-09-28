@@ -86,7 +86,7 @@ pub fn normalize_server_url(url: &str, names: &[String]) -> Result<String, Strin
         .ok()
         .filter(|p| *p != 0)
         .ok_or("伺服器網址的埠須為 1～65535")?;
-    if !names.iter().any(|n| n.eq_ignore_ascii_case(&host)) {
+    if !names.iter().any(|n| san_matches(n, &host)) {
         return Err(format!(
             "「{host}」不在伺服器憑證的名稱內（{}），Agent 會無法連線",
             names.join("、")
@@ -95,10 +95,21 @@ pub fn normalize_server_url(url: &str, names: &[String]) -> Result<String, Strin
     Ok(url_of(&host, port))
 }
 
+/// 憑證名稱是否涵蓋主機：完全相同（不分大小寫），或 `*.網域` 涵蓋恰好多一層的名稱。
+fn san_matches(name: &str, host: &str) -> bool {
+    match name.strip_prefix("*.") {
+        Some(domain) => host
+            .split_once('.')
+            .is_some_and(|(label, rest)| !label.is_empty() && rest.eq_ignore_ascii_case(domain)),
+        None => name.eq_ignore_ascii_case(host),
+    }
+}
+
 /// 未設定 EM_AGENT_PUBLIC_URL 時，表單預設填入伺服器憑證的第一個名稱與 Agent API 的埠。
 pub fn default_public_url(names: &[String], agent_port: u16) -> String {
     names
-        .first()
+        .iter()
+        .find(|n| !n.starts_with("*."))
         .map(|h| url_of(h, agent_port))
         .unwrap_or_default()
 }
@@ -226,6 +237,21 @@ mod tests {
     }
 
     #[test]
+    fn server_url_matches_wildcard_san_and_ipv6_variants() {
+        let names = vec!["*.example.com".to_string(), "::1".to_string()];
+        let ok = |u: &str| normalize_server_url(u, &names);
+        assert_eq!(
+            ok("https://em.example.com:8443").unwrap(),
+            "https://em.example.com:8443"
+        );
+        // 萬用字元只涵蓋一層
+        assert!(ok("https://a.b.example.com:8443").is_err());
+        assert!(ok("https://example.com:8443").is_err());
+        // IPv6 寫法不同但位址相同
+        assert_eq!(ok("https://[0:0::1]:8443").unwrap(), "https://[::1]:8443");
+    }
+
+    #[test]
     fn default_public_url_uses_first_name_and_agent_port() {
         assert_eq!(
             default_public_url(&["em.example.com".into(), "10.1.2.3".into()], 8443),
@@ -236,6 +262,10 @@ mod tests {
             "https://[::1]:8443"
         );
         assert_eq!(default_public_url(&[], 8443), "");
+        assert_eq!(
+            default_public_url(&["*.example.com".into(), "em.example.com".into()], 8443),
+            "https://em.example.com:8443"
+        );
     }
 
     fn package_code(msi: &[u8]) -> uuid::Uuid {
