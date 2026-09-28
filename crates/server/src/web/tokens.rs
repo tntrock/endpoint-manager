@@ -2,7 +2,7 @@
 
 use askama::Template;
 use axum::extract::{Form, Path, State};
-use axum::http::StatusCode;
+use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Redirect, Response};
 use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
@@ -34,6 +34,8 @@ struct TokensPage {
     new_token: Option<String>,
     groups: Vec<SelectOption>,
     rows: Vec<TokenRow>,
+    installer: bool,
+    public_url: String,
 }
 
 type Row = (
@@ -103,6 +105,8 @@ async fn page_for(
         new_token,
         groups: group_options(st, s, "", false).await.map_err(db_error)?,
         rows,
+        installer: st.agent_msi.is_some(),
+        public_url: st.agent_public_url.clone(),
     }))
 }
 
@@ -122,6 +126,11 @@ pub struct CreateForm {
     group: String,
     #[serde(default)]
     valid_days: String,
+    #[serde(default)]
+    server_url: String,
+    /// 非空：建立後直接下載安裝檔
+    #[serde(default)]
+    download: String,
 }
 
 pub async fn create(
@@ -161,6 +170,25 @@ pub async fn create(
                 .ok_or_else(|| bad("有效天數需為 1～3650"))?,
         ),
     };
+    // 下載安裝檔：先檢查網址與範本，失敗時不留下多餘的金鑰
+    let download = !f.download.is_empty();
+    let server_url = f.server_url.trim();
+    let template = if download {
+        let path = st.agent_msi.as_ref().ok_or_else(|| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "伺服器未設定安裝檔範本（EM_AGENT_MSI）",
+            )
+                .into_response()
+        })?;
+        crate::installer::check_server_url(server_url, &st.server_names).map_err(|m| bad(&m))?;
+        Some(tokio::fs::read(path).await.map_err(|e| {
+            tracing::error!(error = %e, path = %path.display(), "cannot read agent MSI template");
+            (StatusCode::SERVICE_UNAVAILABLE, "讀不到安裝檔範本").into_response()
+        })?)
+    } else {
+        None
+    };
     let (id, token) = create_token(
         &st.pool,
         &NewToken {
@@ -180,12 +208,37 @@ pub async fn create(
         "token_create",
         Some(&id.to_string()),
         serde_json::json!({
-            "name": name, "max_uses": max_uses, "group_id": group, "valid_days": valid_days
+            "name": name, "max_uses": max_uses, "group_id": group, "valid_days": valid_days,
+            "installer": download, "server_url": download.then_some(server_url)
         }),
     )
     .await
     .map_err(db_error)?;
     drop(c);
+    if let Some(template) = template {
+        let (url, root) = (server_url.to_string(), st.ca.root_pem().to_string());
+        let msi = tokio::task::spawn_blocking(move || {
+            crate::installer::build_msi(&template, &url, &token, &root)
+        })
+        .await
+        .map_err(anyhow::Error::from)
+        .and_then(|r| r)
+        .map_err(|e| {
+            tracing::error!(error = %format!("{e:#}"), "building agent MSI failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "產生安裝檔失敗").into_response()
+        })?;
+        return Ok((
+            [
+                (header::CONTENT_TYPE, "application/x-msi"),
+                (
+                    header::CONTENT_DISPOSITION,
+                    "attachment; filename=\"endpoint-agent.msi\"",
+                ),
+            ],
+            msi,
+        )
+            .into_response());
+    }
     page_for(&st, &s, Some(token)).await
 }
 

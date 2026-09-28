@@ -48,7 +48,13 @@ impl TestServer {
             .await
             .unwrap();
 
-        let state = AppState::new(pool.clone(), ca::Ca::load(dir.path()).unwrap());
+        let msi_path = dir.path().join("template.msi");
+        std::fs::write(&msi_path, endpoint_server::installer::sample_template()).unwrap();
+        let state = AppState::new(pool.clone(), ca::Ca::load(dir.path()).unwrap()).with_installer(
+            Some(msi_path),
+            "https://localhost:8443".into(),
+            vec!["localhost".into()],
+        );
         let cfg = tls::server_config(dir.path()).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();

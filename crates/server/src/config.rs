@@ -15,6 +15,10 @@ pub struct Config {
     pub display_utc_offset: i32,
     /// 註冊端點每個 IP 每分鐘上限（負載測試時調高）
     pub enroll_per_ip_per_minute: u32,
+    /// 通用範本 MSI 的路徑；未設定時網頁不提供「下載安裝檔」
+    pub agent_msi: Option<PathBuf>,
+    /// 下載安裝檔時預設的伺服器網址（例：https://em.example.com:8443）
+    pub agent_public_url: String,
 }
 
 impl Config {
@@ -53,6 +57,10 @@ impl Config {
                 anyhow::ensure!(n >= 1, "EM_ENROLL_PER_IP_PER_MINUTE must be >= 1");
                 n
             },
+            agent_msi: get("EM_AGENT_MSI")
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from),
+            agent_public_url: get("EM_AGENT_PUBLIC_URL").unwrap_or_default(),
         })
     }
 }

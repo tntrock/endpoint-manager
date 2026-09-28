@@ -45,6 +45,11 @@ pub struct AppState {
     pub login_limiter: Arc<ratelimit::RateLimiter>,
     /// 管理網頁顯示時間用的時區
     pub display_offset: chrono::FixedOffset,
+    /// 通用範本 MSI；None 表示不提供下載安裝檔
+    pub agent_msi: Option<std::path::PathBuf>,
+    pub agent_public_url: String,
+    /// 伺服器憑證的名稱（下載安裝檔時檢查網址）
+    pub server_names: Arc<Vec<String>>,
 }
 
 impl AppState {
@@ -62,7 +67,22 @@ impl AppState {
                 Duration::from_secs(60),
             )),
             display_offset: chrono::FixedOffset::east_opt(8 * 3600).expect("valid offset"),
+            agent_msi: None,
+            agent_public_url: String::new(),
+            server_names: Arc::new(vec![]),
         }
+    }
+
+    pub fn with_installer(
+        mut self,
+        msi: Option<std::path::PathBuf>,
+        public_url: String,
+        server_names: Vec<String>,
+    ) -> Self {
+        self.agent_msi = msi;
+        self.agent_public_url = public_url;
+        self.server_names = Arc::new(server_names);
+        self
     }
 
     pub fn with_enroll_limit(mut self, per_minute: u32) -> Self {
@@ -110,7 +130,12 @@ pub async fn serve(cfg: config::Config) -> anyhow::Result<()> {
 
     let state = AppState::new(pool.clone(), ca::Ca::load(&cfg.ca_dir)?)
         .with_display_offset(cfg.display_utc_offset)
-        .with_enroll_limit(cfg.enroll_per_ip_per_minute);
+        .with_enroll_limit(cfg.enroll_per_ip_per_minute)
+        .with_installer(
+            cfg.agent_msi.clone(),
+            cfg.agent_public_url.clone(),
+            ca::server_names(&cfg.ca_dir)?,
+        );
     let tls_cfg = tls::server_config(&cfg.ca_dir)?;
 
     let hb = state.heartbeat.clone();

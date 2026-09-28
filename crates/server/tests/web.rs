@@ -809,3 +809,108 @@ async fn login_is_rate_limited_per_ip(pool: PgPool) {
     assert!(statuses[..statuses.len() - 1].iter().all(|&s| s == 401));
     assert_eq!(*statuses.last().unwrap(), 429);
 }
+
+#[sqlx::test(migrations = false)]
+async fn installer_download_embeds_token_url_and_root(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tp = s.group_id("台北總部").await;
+    let c = s.admin_client().await;
+    let (_, html) = s.page(&c, "/tokens").await;
+    assert!(html.contains("建立並下載安裝檔"));
+    assert!(html.contains(r#"value="https://localhost:8443""#));
+    let r = c
+        .post(s.web_url("/tokens"))
+        .form(&[
+            ("csrf", csrf_from(&html).as_str()),
+            ("name", "MSI pilot"),
+            ("max_uses", "5"),
+            ("group", &tp.to_string()),
+            ("valid_days", ""),
+            ("server_url", "https://localhost:8443"),
+            ("download", "1"),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    assert!(
+        r.headers()["content-disposition"]
+            .to_str()
+            .unwrap()
+            .starts_with("attachment")
+    );
+    let bytes = r.bytes().await.unwrap();
+    let p = endpoint_server::installer::read_properties(&bytes).unwrap();
+    assert_eq!(p["SERVER_URL"], "https://localhost:8443");
+    assert_eq!(
+        p["ROOT_CA"],
+        endpoint_server::installer::root_b64(&s.root_pem)
+    );
+    // 包進去的金鑰可以註冊，且電腦歸入該群組
+    let a = s.enroll_ok(&p["ENROLL_TOKEN"], None, None).await;
+    let g: Option<i64> = sqlx::query_scalar("SELECT group_id FROM devices WHERE id = $1")
+        .bind(a.device_id)
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    assert_eq!(g, Some(tp));
+    let detail: serde_json::Value =
+        sqlx::query_scalar("SELECT detail FROM audit_log WHERE action = 'token_create'")
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+    assert_eq!(detail["installer"], true);
+    assert_eq!(detail["server_url"], "https://localhost:8443");
+    assert!(
+        !detail.to_string().contains(&p["ENROLL_TOKEN"]),
+        "明碼不可寫進稽核記錄"
+    );
+}
+
+#[sqlx::test(migrations = false)]
+async fn installer_with_wrong_host_is_rejected_without_creating_token(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let c = s.admin_client().await;
+    let (_, html) = s.page(&c, "/tokens").await;
+    let r = c
+        .post(s.web_url("/tokens"))
+        .form(&[
+            ("csrf", csrf_from(&html).as_str()),
+            ("name", "wrong host"),
+            ("max_uses", "5"),
+            ("server_url", "https://10.9.9.9:8443"),
+            ("download", "1"),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 400);
+    assert!(r.text().await.unwrap().contains("不在伺服器憑證的名稱內"));
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM enroll_tokens WHERE name = 'wrong host'")
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 0);
+}
+
+#[sqlx::test(migrations = false)]
+async fn group_admin_downloads_only_for_own_group(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let ks = s.group_id("高雄廠").await;
+    let g = s.login_as("gary", Role::GroupAdmin, &["台北總部"]).await;
+    let (_, html) = s.page(&g, "/tokens").await;
+    let r = g
+        .post(s.web_url("/tokens"))
+        .form(&[
+            ("csrf", csrf_from(&html).as_str()),
+            ("name", "other group"),
+            ("max_uses", "5"),
+            ("group", &ks.to_string()),
+            ("server_url", "https://localhost:8443"),
+            ("download", "1"),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 403);
+}

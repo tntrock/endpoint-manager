@@ -15,6 +15,13 @@
   <label>群組 <select name="group">{% for o in groups %}<option value="{{ o.value }}">{{ o.label }}</option>{% endfor %}</select></label>
   <label>有效天數 <input name="valid_days" type="number" min="1" placeholder="不限"></label>
   <button>建立</button>
+  {% if installer %}
+  <p>
+    <label>伺服器網址 <input name="server_url" value="{{ public_url }}" placeholder="https://em.example.com:8443" size="40"></label>
+    <button name="download" value="1">建立並下載安裝檔</button>
+  </p>
+  <p class="muted">安裝檔內含這把金鑰，可直接用 GPO 或 <code>msiexec /i endpoint-agent.msi /qn</code> 安裝。請當成機密保管，並設定可使用次數與有效天數。</p>
+  {% endif %}
 </form>
 </fieldset>
 <table>
