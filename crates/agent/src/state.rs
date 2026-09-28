@@ -97,6 +97,30 @@ pub fn secure_dir(dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// 服務模式用：先把目錄與其下所有檔案的擁有者改為 Administrators 並重設子項 ACL，
+/// 再套用 secure_dir。防止一般使用者搶先建立目錄或暫存檔、以擁有者身分改回權限。
+/// 需要系統管理員權限。
+pub fn harden_dir(dir: &Path) -> anyhow::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    #[cfg(windows)]
+    for args in [
+        &["/setowner", "*S-1-5-32-544", "/T", "/C", "/Q"][..],
+        &["/reset", "/T", "/C", "/Q"][..],
+    ] {
+        let status = std::process::Command::new("icacls")
+            .arg(dir)
+            .args(args)
+            .stdout(std::process::Stdio::null())
+            .status()?;
+        anyhow::ensure!(
+            status.success(),
+            "icacls {args:?} failed on {}",
+            dir.display()
+        );
+    }
+    secure_dir(dir)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

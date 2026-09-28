@@ -1,8 +1,9 @@
 //! Agent 主迴圈：註冊 → 收集到期區段 → 報到 → 上傳伺服器要求的區段 → 視需要續期。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
@@ -55,6 +56,17 @@ pub struct Agent<C: Collector> {
     errors: BTreeMap<Section, String>,
     intervals: CollectionIntervals,
     backoff: Backoff,
+    collect_timeout: Duration,
+    inflight: HashMap<&'static str, Arc<AtomicBool>>,
+}
+
+/// 呼叫結束（含 panic）時清除「執行中」旗標。
+struct ClearOnDrop(Arc<AtomicBool>);
+
+impl Drop for ClearOnDrop {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 fn new_csr() -> anyhow::Result<(String, String)> {
@@ -82,7 +94,15 @@ impl<C: Collector> Agent<C> {
             errors: BTreeMap::new(),
             intervals: DEFAULT_INTERVALS,
             backoff: Backoff::default(),
+            collect_timeout: COLLECT_TIMEOUT,
+            inflight: HashMap::new(),
         })
+    }
+
+    /// 測試用：縮短 collector 逾時。
+    pub fn with_collect_timeout(mut self, d: Duration) -> Self {
+        self.collect_timeout = d;
+        self
     }
 
     pub fn state(&self) -> &AgentState {
@@ -98,19 +118,28 @@ impl<C: Collector> Agent<C> {
     }
 
     /// 在 blocking 執行緒上呼叫 collector，並限制時間。
+    /// 逾時無法取消執行緒（例如 WMI 卡住），所以同一個 key 的上一次呼叫還沒結束時直接回報錯誤，
+    /// 不再開新執行緒、也不再等一次逾時。
     async fn blocking<T: Send + 'static>(
-        &self,
+        &mut self,
+        key: &'static str,
         f: impl FnOnce(&C) -> anyhow::Result<T> + Send + 'static,
     ) -> anyhow::Result<T> {
+        let busy = self.inflight.entry(key).or_default().clone();
+        if busy.swap(true, Ordering::AcqRel) {
+            anyhow::bail!("previous call still running (hung?)");
+        }
         let c = self.collector.clone();
-        match tokio::time::timeout(COLLECT_TIMEOUT, tokio::task::spawn_blocking(move || f(&c)))
-            .await
-        {
+        let task = tokio::task::spawn_blocking(move || {
+            let _done = ClearOnDrop(busy);
+            f(&c)
+        });
+        match tokio::time::timeout(self.collect_timeout, task).await {
             Ok(Ok(r)) => r,
             Ok(Err(e)) => Err(anyhow::anyhow!("collector panicked: {e}")),
             Err(_) => Err(anyhow::anyhow!(
                 "timed out after {}s",
-                COLLECT_TIMEOUT.as_secs()
+                self.collect_timeout.as_secs()
             )),
         }
     }
@@ -121,7 +150,7 @@ impl<C: Collector> Agent<C> {
             .enroll_token
             .clone()
             .context("not enrolled and no enroll token in config.json (reinstall required)")?;
-        let id = self.blocking(|c| c.identity()).await?;
+        let id = self.blocking("identity", |c| c.identity()).await?;
         let (csr_pem, key_pem) = new_csr()?;
         let client = ServerClient::new(&self.config.server_url, &self.root_pem, None)?;
         let resp = client
@@ -148,7 +177,7 @@ impl<C: Collector> Agent<C> {
     async fn collect_due(&mut self) {
         let now = Instant::now();
         for s in self.schedule.due(now, &self.intervals) {
-            match self.blocking(move |c| c.collect(s)).await {
+            match self.blocking(s.as_str(), move |c| c.collect(s)).await {
                 Ok(mut p) => {
                     sanitize(&mut p);
                     let still_rejected = self.state.rejected.get(&s) == Some(&p.canonical_hash());
@@ -185,14 +214,17 @@ impl<C: Collector> Agent<C> {
         }
 
         self.collect_due().await;
-        let hb = self.blocking(|c| c.heartbeat()).await.unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "heartbeat info unavailable");
-            Heartbeat {
-                boot_time: Utc::now(),
-                logged_on_user: None,
-                ip_addresses: vec![],
-            }
-        });
+        let hb = self
+            .blocking("heartbeat", |c| c.heartbeat())
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "heartbeat info unavailable");
+                Heartbeat {
+                    boot_time: Utc::now(),
+                    logged_on_user: None,
+                    ip_addresses: vec![],
+                }
+            });
         let client = match ServerClient::new(
             &self.config.server_url,
             &self.root_pem,
@@ -281,7 +313,12 @@ pub async fn run_agent<C: Collector>(
     mut triggers: mpsc::UnboundedReceiver<Section>,
 ) {
     loop {
-        let wait = match agent.run_cycle().await {
+        // 停止訊號可中斷進行中的週期（例如 WMI 卡住時），服務才能及時停止
+        let cycle = tokio::select! {
+            c = agent.run_cycle() => c,
+            _ = shutdown.changed() => return,
+        };
+        let wait = match cycle {
             Cycle::Stop => return,
             Cycle::Next(d) => d,
         };

@@ -105,3 +105,45 @@ fn eventlog_report_works() {
         "endpoint-agent test event",
     );
 }
+
+/// 需要系統管理員權限（CI 的 windows runner 有）；一般權限下略過。
+#[test]
+fn harden_dir_takes_ownership_from_squatter() {
+    let elevated = Command::new("net")
+        .arg("session")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    if !elevated {
+        eprintln!("skipped: not elevated");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("em");
+    std::fs::create_dir_all(&target).unwrap();
+    std::fs::write(target.join("state.json.tmp"), b"squatted").unwrap();
+    endpoint_agent::state::harden_dir(&target).unwrap();
+
+    let save = dir.path().join("owner.txt");
+    Command::new("icacls")
+        .arg(target.join("state.json.tmp"))
+        .arg("/save")
+        .arg(&save)
+        .status()
+        .unwrap();
+    let raw = std::fs::read(&save).unwrap();
+    let utf16: Vec<u16> = raw
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_le_bytes(*c))
+        .collect();
+    let sddl = String::from_utf16_lossy(&utf16);
+    assert!(sddl.contains("O:BA"), "{sddl}");
+    Command::new("icacls")
+        .arg(&target)
+        .args(["/reset", "/T", "/C", "/Q"])
+        .status()
+        .unwrap();
+}

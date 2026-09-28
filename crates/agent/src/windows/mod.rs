@@ -36,7 +36,15 @@ pub async fn run(dir: &Path, shutdown: watch::Receiver<bool>) -> anyhow::Result<
 }
 
 /// 開發／除錯用：在主控台執行，Ctrl+C 結束；不變更目錄 ACL。
+/// 必須以 EM_AGENT_DIR 指定目錄：預設目錄繼承 ProgramData 權限（Users 可讀），私鑰會外洩。
 pub fn run_console() -> anyhow::Result<()> {
+    let dir = std::env::var_os("EM_AGENT_DIR")
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "console mode requires EM_AGENT_DIR (use `service` for the default directory)"
+            )
+        })?;
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env().add_directive("info".parse()?),
@@ -49,6 +57,6 @@ pub fn run_console() -> anyhow::Result<()> {
             let _ = tokio::signal::ctrl_c().await;
             let _ = tx.send(true);
         });
-        run(&agent_dir(), rx).await
+        run(&dir, rx).await
     })
 }

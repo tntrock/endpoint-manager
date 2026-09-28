@@ -149,6 +149,8 @@ use protocol::{
 struct Fake {
     software: Arc<Mutex<Vec<SoftwareItem>>>,
     fail_patches: bool,
+    /// 模擬 WMI 卡住：heartbeat() 睡這麼久
+    hang: Option<Duration>,
 }
 
 fn app(name: &str) -> SoftwareItem {
@@ -166,6 +168,7 @@ impl Fake {
         Fake {
             software: Arc::new(Mutex::new(vec![app("7-Zip")])),
             fail_patches: false,
+            hang: None,
         }
     }
 }
@@ -181,6 +184,9 @@ impl Collector for Fake {
     }
 
     fn heartbeat(&self) -> anyhow::Result<Heartbeat> {
+        if let Some(d) = self.hang {
+            std::thread::sleep(d);
+        }
         Ok(Heartbeat {
             boot_time: chrono::Utc::now() - chrono::Duration::hours(1),
             logged_on_user: Some("CORP\\bob".into()),
@@ -422,4 +428,50 @@ async fn state_is_not_rewritten_when_unchanged(pool: PgPool) {
     next(a.run_cycle().await);
     let after = std::fs::metadata(&path).unwrap().modified().unwrap();
     assert_eq!(before, after, "私鑰檔不應每個週期重寫");
+}
+
+#[sqlx::test(migrations = false)]
+async fn hung_collector_call_is_not_waited_on_again(pool: PgPool) {
+    let e = env(pool, 1).await;
+    let fake = Fake {
+        hang: Some(Duration::from_secs(3)),
+        ..Fake::new()
+    };
+    let mut a = Agent::new(e.dir.path(), fake)
+        .unwrap()
+        .with_collect_timeout(Duration::from_millis(500));
+    next(a.run_cycle().await); // heartbeat 逾時，改用預設值
+    let t = std::time::Instant::now();
+    next(a.run_cycle().await); // 上一次的 heartbeat 仍卡著 → 直接跳過
+    assert!(
+        t.elapsed() < Duration::from_millis(400),
+        "{:?}",
+        t.elapsed()
+    );
+}
+
+#[sqlx::test(migrations = false)]
+async fn shutdown_interrupts_a_running_cycle(pool: PgPool) {
+    let e = env(pool, 1).await;
+    let mut a = Agent::new(e.dir.path(), Fake::new()).unwrap();
+    next(a.run_cycle().await); // 先完成註冊
+    let a = Agent::new(
+        e.dir.path(),
+        Fake {
+            hang: Some(Duration::from_secs(3)),
+            ..Fake::new()
+        },
+    )
+    .unwrap();
+    let (tx, rx) = tokio::sync::watch::channel(false);
+    let (_ttx, trx) = tokio::sync::mpsc::unbounded_channel();
+    let task = tokio::spawn(endpoint_agent::agent::run_agent(a, rx, trx));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    tx.send(true).unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .is_ok(),
+        "run_agent must return promptly on shutdown"
+    );
 }

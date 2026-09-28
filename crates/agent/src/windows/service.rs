@@ -27,7 +27,7 @@ fn service_main(_args: Vec<OsString>) {
     }
 }
 
-fn status(state: ServiceState) -> ServiceStatus {
+fn status(state: ServiceState, exit_code: ServiceExitCode) -> ServiceStatus {
     ServiceStatus {
         service_type: ServiceType::OWN_PROCESS,
         current_state: state,
@@ -36,12 +36,14 @@ fn status(state: ServiceState) -> ServiceStatus {
         } else {
             ServiceControlAccept::empty()
         },
-        exit_code: ServiceExitCode::Win32(0),
+        exit_code,
         checkpoint: 0,
-        wait_hint: Duration::from_secs(70),
+        wait_hint: Duration::from_secs(10),
         process_id: None,
     }
 }
+
+const OK: ServiceExitCode = ServiceExitCode::Win32(0);
 
 fn run_service() -> anyhow::Result<()> {
     if let Ok(log) = EventLog::open() {
@@ -62,14 +64,26 @@ fn run_service() -> anyhow::Result<()> {
         ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
         _ => ServiceControlHandlerResult::NotImplemented,
     })?;
-    handle.set_service_status(status(ServiceState::Running))?;
+    handle.set_service_status(status(ServiceState::Running, OK))?;
 
     let dir = super::agent_dir();
-    let result = crate::state::secure_dir(&dir)
-        .and_then(|()| tokio::runtime::Runtime::new()?.block_on(super::run(&dir, rx)));
-    if let Err(e) = &result {
-        tracing::error!(error = %format!("{e:#}"), "agent stopped with error");
-    }
-    handle.set_service_status(status(ServiceState::Stopped))?;
+    let result = crate::state::harden_dir(&dir).and_then(|()| {
+        let rt = tokio::runtime::Runtime::new()?;
+        let r = rt.block_on(super::run(&dir, rx));
+        let _ = handle.set_service_status(status(ServiceState::StopPending, OK));
+        // 卡住的 WMI 執行緒無法取消，不等它們結束
+        rt.shutdown_timeout(Duration::from_secs(5));
+        r
+    });
+    // 失敗時回報非 0 結束代碼，讓 SCM 的失敗復原動作重新啟動服務；
+    // 伺服器拒絕憑證（401）屬正常停止，回報 0，避免無限重啟。
+    let exit = match &result {
+        Ok(()) => OK,
+        Err(e) => {
+            tracing::error!(error = %format!("{e:#}"), "agent stopped with error");
+            ServiceExitCode::ServiceSpecific(1)
+        }
+    };
+    handle.set_service_status(status(ServiceState::Stopped, exit))?;
     result
 }
