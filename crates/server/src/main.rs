@@ -7,7 +7,8 @@ const USAGE: &str = "usage:
   endpoint-server serve
   endpoint-server ca-init <dir> <server-dns-name>...
   endpoint-server token-create <name> <max_uses> [group_name] [valid_days]
-  endpoint-server admin-create <username>   (password from stdin)";
+  endpoint-server admin-create <username>   (password from stdin)
+  endpoint-server agent-msi <template.msi> <out.msi> <server_url> <token>";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -84,6 +85,20 @@ async fn main() -> anyhow::Result<()> {
             )
             .await?;
             println!("token id {id}：{token}\n（明碼只顯示這一次）");
+            Ok(())
+        }
+        Some("agent-msi") if args.len() >= 5 => {
+            let ca_dir = std::path::PathBuf::from(
+                std::env::var("EM_CA_DIR").unwrap_or_else(|_| "./pki".into()),
+            );
+            let names = endpoint_server::ca::server_names(&ca_dir)?;
+            endpoint_server::installer::check_server_url(&args[3], &names)
+                .map_err(|m| anyhow::anyhow!(m))?;
+            let root = std::fs::read_to_string(ca_dir.join("root.pem")).context("root.pem")?;
+            let template = std::fs::read(&args[1]).context("template")?;
+            let msi = endpoint_server::installer::build_msi(&template, &args[3], &args[4], &root)?;
+            std::fs::write(&args[2], msi)?;
+            println!("已產生 {}（內含註冊金鑰，請妥善保管）", args[2]);
             Ok(())
         }
         _ => bail!("{USAGE}"),

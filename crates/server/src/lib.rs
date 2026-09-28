@@ -13,6 +13,7 @@ pub mod error;
 pub mod groups;
 pub mod heartbeat;
 pub mod identity;
+pub mod installer;
 pub mod inventory;
 pub mod partitions;
 pub mod ratelimit;
