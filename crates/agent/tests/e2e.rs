@@ -135,3 +135,278 @@ async fn unreachable_server_is_retry() {
     let r = c.renew(&protocol::RenewRequest { csr_pem: csr() }).await;
     assert!(matches!(r, Err(ClientError::Retry(None))), "{r:?}");
 }
+
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use endpoint_agent::agent::{Agent, Cycle};
+use endpoint_agent::collector::{Collector, Heartbeat, Identity};
+use protocol::{
+    Arch, BasicInfo, HardwareInfo, InventoryPayload, PatchItem, Section, ServiceItem, SoftwareItem,
+};
+
+#[derive(Clone)]
+struct Fake {
+    software: Arc<Mutex<Vec<SoftwareItem>>>,
+    fail_patches: bool,
+}
+
+fn app(name: &str) -> SoftwareItem {
+    SoftwareItem {
+        name: name.into(),
+        version: Some("1.0".into()),
+        publisher: None,
+        install_date: None,
+        arch: Arch::X64,
+    }
+}
+
+impl Fake {
+    fn new() -> Self {
+        Fake {
+            software: Arc::new(Mutex::new(vec![app("7-Zip")])),
+            fail_patches: false,
+        }
+    }
+}
+
+impl Collector for Fake {
+    fn identity(&self) -> anyhow::Result<Identity> {
+        Ok(Identity {
+            hostname: "FAKE-PC".into(),
+            smbios_uuid: Some("4C4C4544-0000-1111-2222-333344445555".into()),
+            bios_serial: Some("SN-FAKE".into()),
+            mac_addresses: vec!["00:11:22:33:44:55".into()],
+        })
+    }
+
+    fn heartbeat(&self) -> anyhow::Result<Heartbeat> {
+        Ok(Heartbeat {
+            boot_time: chrono::Utc::now() - chrono::Duration::hours(1),
+            logged_on_user: Some("CORP\\bob".into()),
+            ip_addresses: vec!["10.1.1.1".into()],
+        })
+    }
+
+    fn collect(&self, s: Section) -> anyhow::Result<InventoryPayload> {
+        Ok(match s {
+            Section::Basic => InventoryPayload::Basic(BasicInfo {
+                hostname: "FAKE-PC".into(),
+                domain: Some("corp.local".into()),
+                is_domain_joined: true,
+                os_caption: "Windows 11 Pro".into(),
+                os_build: "26100".into(),
+            }),
+            Section::Hardware => InventoryPayload::Hardware(HardwareInfo {
+                manufacturer: Some("Dell".into()),
+                model: Some("OptiPlex".into()),
+                cpu: Some("Intel".into()),
+                ram_mb: 16_384,
+                disks: vec![],
+            }),
+            Section::Software => InventoryPayload::Software(self.software.lock().unwrap().clone()),
+            Section::Patches if self.fail_patches => anyhow::bail!("WMI timeout"),
+            Section::Patches => InventoryPayload::Patches(vec![PatchItem {
+                kb: "KB5000001".into(),
+                installed_on: None,
+            }]),
+            Section::Services => InventoryPayload::Services(vec![ServiceItem {
+                name: "Spooler".into(),
+                display_name: None,
+                start_mode: "Auto".into(),
+                state: "Running".into(),
+                binary_path: None,
+            }]),
+        })
+    }
+}
+
+async fn count(e: &Env, sql: &'static str, id: uuid::Uuid) -> i64 {
+    sqlx::query_scalar(sql)
+        .bind(id)
+        .fetch_one(&e.pool)
+        .await
+        .unwrap()
+}
+
+fn next(c: Cycle) -> Duration {
+    match c {
+        Cycle::Next(d) => d,
+        Cycle::Stop => panic!("agent stopped unexpectedly"),
+    }
+}
+
+#[sqlx::test(migrations = false)]
+async fn first_cycle_enrolls_and_uploads_all_sections(pool: PgPool) {
+    let e = env(pool, 1).await;
+    let mut a = Agent::new(e.dir.path(), Fake::new()).unwrap();
+    let wait = next(a.run_cycle().await);
+    assert!(
+        wait >= Duration::from_secs(48) && wait <= Duration::from_secs(72),
+        "{wait:?}"
+    );
+
+    let id = a.state().device_id.expect("enrolled");
+    assert!(
+        AgentConfig::load(e.dir.path())
+            .unwrap()
+            .enroll_token
+            .is_none(),
+        "token removed"
+    );
+    assert_eq!(
+        count(
+            &e,
+            "SELECT count(*) FROM inventory_sections WHERE device_id = $1",
+            id
+        )
+        .await,
+        5
+    );
+    assert_eq!(
+        count(
+            &e,
+            "SELECT count(*) FROM device_software WHERE device_id = $1",
+            id
+        )
+        .await,
+        1
+    );
+}
+
+#[sqlx::test(migrations = false)]
+async fn unchanged_inventory_is_not_reuploaded(pool: PgPool) {
+    let e = env(pool, 1).await;
+    let mut a = Agent::new(e.dir.path(), Fake::new()).unwrap();
+    next(a.run_cycle().await);
+    let id = a.state().device_id.unwrap();
+    let stamp = || async {
+        sqlx::query_scalar::<_, chrono::DateTime<chrono::Utc>>(
+            "SELECT max(updated_at) FROM inventory_sections WHERE device_id = $1",
+        )
+        .bind(id)
+        .fetch_one(&e.pool)
+        .await
+        .unwrap()
+    };
+    let before = stamp().await;
+    next(a.run_cycle().await);
+    assert_eq!(stamp().await, before);
+}
+
+#[sqlx::test(migrations = false)]
+async fn software_change_is_uploaded_and_recorded(pool: PgPool) {
+    let e = env(pool, 1).await;
+    let fake = Fake::new();
+    let mut a = Agent::new(e.dir.path(), fake.clone()).unwrap();
+    next(a.run_cycle().await);
+    fake.software.lock().unwrap().push(app("Unapproved Tool"));
+    a.trigger(Section::Software);
+    next(a.run_cycle().await);
+    let id = a.state().device_id.unwrap();
+    assert_eq!(
+        count(
+            &e,
+            "SELECT count(*) FROM inventory_changes WHERE device_id = $1 AND change = 'added'",
+            id
+        )
+        .await,
+        1
+    );
+}
+
+#[sqlx::test(migrations = false)]
+async fn collector_error_reaches_server(pool: PgPool) {
+    let e = env(pool, 1).await;
+    let fake = Fake {
+        fail_patches: true,
+        ..Fake::new()
+    };
+    let mut a = Agent::new(e.dir.path(), fake).unwrap();
+    next(a.run_cycle().await);
+    e.state.heartbeat.flush(&e.pool).await.unwrap();
+    let id = a.state().device_id.unwrap();
+    let errors: String =
+        sqlx::query_scalar("SELECT section_errors::text FROM devices WHERE id = $1")
+            .bind(id)
+            .fetch_one(&e.pool)
+            .await
+            .unwrap();
+    assert!(errors.contains("WMI timeout"), "{errors}");
+    assert_eq!(
+        count(
+            &e,
+            "SELECT count(*) FROM inventory_sections WHERE device_id = $1",
+            id
+        )
+        .await,
+        4
+    );
+}
+
+#[sqlx::test(migrations = false)]
+async fn revoked_certificate_stops_agent(pool: PgPool) {
+    let e = env(pool, 1).await;
+    let mut a = Agent::new(e.dir.path(), Fake::new()).unwrap();
+    next(a.run_cycle().await);
+    sqlx::query("UPDATE device_certs SET revoked_at = now()")
+        .execute(&e.pool)
+        .await
+        .unwrap();
+    assert_eq!(a.run_cycle().await, Cycle::Stop);
+}
+
+#[sqlx::test(migrations = false)]
+async fn unreachable_server_backs_off(pool: PgPool) {
+    let e = env(pool, 1).await;
+    let mut cfg = AgentConfig::load(e.dir.path()).unwrap();
+    cfg.server_url = "https://127.0.0.1:1".into();
+    cfg.save(e.dir.path()).unwrap();
+    let mut a = Agent::new(e.dir.path(), Fake::new()).unwrap();
+    let first = next(a.run_cycle().await);
+    let second = next(a.run_cycle().await);
+    assert!(first >= Duration::from_secs(48), "{first:?}");
+    assert!(second > first, "{first:?} then {second:?}");
+    assert!(a.state().device_id.is_none());
+}
+
+#[sqlx::test(migrations = false)]
+async fn expiring_certificate_is_renewed(pool: PgPool) {
+    let e = env(pool, 1).await;
+    let mut a = Agent::new(e.dir.path(), Fake::new()).unwrap();
+    next(a.run_cycle().await);
+    let old_chain = a.state().chain_pem.clone();
+    sqlx::query("UPDATE device_certs SET not_after = now() + interval '5 days'")
+        .execute(&e.pool)
+        .await
+        .unwrap();
+    next(a.run_cycle().await);
+    assert_ne!(a.state().chain_pem, old_chain);
+    next(a.run_cycle().await); // 新憑證可用
+}
+
+#[sqlx::test(migrations = false)]
+async fn restart_keeps_identity(pool: PgPool) {
+    let e = env(pool, 1).await;
+    let mut a = Agent::new(e.dir.path(), Fake::new()).unwrap();
+    next(a.run_cycle().await);
+    let id = a.state().device_id;
+    drop(a);
+    let mut b = Agent::new(e.dir.path(), Fake::new()).unwrap();
+    next(b.run_cycle().await);
+    assert_eq!(b.state().device_id, id);
+    let devices: i64 = sqlx::query_scalar("SELECT count(*) FROM devices")
+        .fetch_one(&e.pool)
+        .await
+        .unwrap();
+    assert_eq!(devices, 1);
+}
+
+#[test]
+fn missing_config_is_a_clear_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let err = Agent::new(dir.path(), Fake::new())
+        .err()
+        .expect("must fail");
+    assert!(format!("{err:#}").contains("config.json"), "{err:#}");
+}

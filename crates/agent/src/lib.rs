@@ -1,7 +1,9 @@
 //! Endpoint Manager Windows Agent。
 
+pub mod agent;
 pub mod backoff;
 pub mod client;
+pub mod collector;
 pub mod config;
 pub mod sanitize;
 pub mod schedule;
