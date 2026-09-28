@@ -135,9 +135,13 @@ fn harden_dir_takes_ownership_from_squatter() {
         .output()
         .unwrap();
     let sddl = String::from_utf8_lossy(&out.stdout).to_string();
+    let diag = format!(
+        "sddl=[{sddl}] stderr=[{}]",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert!(
         !sddl.contains(";;;BU)") && !sddl.contains(";;;AU)"),
-        "{sddl}"
+        "{diag}"
     );
     assert!(sddl.contains("O:BA"), "{diag}");
     Command::new("icacls")
