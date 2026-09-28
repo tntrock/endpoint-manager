@@ -17,6 +17,12 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 pub const RETRY_AFTER_MIN: Duration = Duration::from_secs(10);
 pub const RETRY_AFTER_MAX: Duration = Duration::from_secs(30 * 60);
 
+/// 伺服器拒絕的是這份內容本身（格式、大小、驗證）：同一份內容不再重送。
+/// 其他錯誤碼都當成暫時問題，之後再試。
+pub fn is_payload_rejection(code: u16) -> bool {
+    matches!(code, 400 | 413 | 415 | 422)
+}
+
 pub fn retry_after(secs: u64) -> Duration {
     Duration::from_secs(secs).clamp(RETRY_AFTER_MIN, RETRY_AFTER_MAX)
 }
@@ -77,7 +83,7 @@ impl ServerClient {
             StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE => {
                 ClientError::Retry(retry_after)
             }
-            s if s.is_client_error() => {
+            s if is_payload_rejection(s.as_u16()) => {
                 ClientError::Rejected(s.as_u16(), resp.text().await.unwrap_or_default())
             }
             _ => ClientError::Retry(retry_after),
@@ -133,6 +139,18 @@ impl ServerClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 只有「內容本身有問題」的 4xx 才記為被拒（同一份內容不再重送）；
+    /// 其他 4xx（404、409、403…）多半是伺服器暫時狀態或版本差異，之後再試。
+    #[test]
+    fn only_payload_errors_are_permanent_rejections() {
+        for code in [400, 413, 415, 422] {
+            assert!(is_payload_rejection(code), "{code}");
+        }
+        for code in [403, 404, 405, 408, 409, 410] {
+            assert!(!is_payload_rejection(code), "{code}");
+        }
+    }
 
     #[test]
     fn retry_after_is_clamped() {

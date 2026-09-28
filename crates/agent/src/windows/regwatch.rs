@@ -61,13 +61,30 @@ pub fn watch(
 }
 
 /// 監聽 HKLM 64／32 位元 Uninstall 機碼；HKU 變動太頻繁，只靠每小時補收。
-pub fn watch_software(tx: mpsc::UnboundedSender<Section>) {
+pub fn watch_software(tx: mpsc::Sender<Section>) {
     for wow in [KEY_WOW64_64KEY, KEY_WOW64_32KEY] {
         let tx = tx.clone();
         if let Err(e) = watch(Root::LocalMachine, UNINSTALL, wow, move || {
-            let _ = tx.send(Section::Software);
+            let _ = tx.try_send(Section::Software);
         }) {
             tracing::warn!(error = %e, "cannot watch Uninstall key");
         }
+    }
+}
+
+/// 安裝更新（KB）時 CBS 會新增套件機碼：觸發重新收集 patches（Windows Update 完成時）。
+pub const CBS_PACKAGES: &str =
+    r"SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\Packages";
+
+pub fn watch_patches(tx: mpsc::Sender<Section>) {
+    if let Err(e) = watch(
+        Root::LocalMachine,
+        CBS_PACKAGES,
+        KEY_WOW64_64KEY,
+        move || {
+            let _ = tx.try_send(Section::Patches);
+        },
+    ) {
+        tracing::warn!(error = %e, "cannot watch Component Based Servicing key");
     }
 }

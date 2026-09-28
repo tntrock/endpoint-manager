@@ -45,7 +45,7 @@ tempfile.workspace = true
 chrono.workspace = true
 rcgen.workspace = true
 rustls.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 
 [target.'cfg(windows)'.dev-dependencies]
 winreg = "0.56"

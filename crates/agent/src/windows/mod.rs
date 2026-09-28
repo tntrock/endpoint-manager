@@ -31,8 +31,10 @@ fn lower_priority() {
 pub async fn run(dir: &Path, shutdown: watch::Receiver<bool>) -> anyhow::Result<()> {
     lower_priority();
     let agent = Agent::new(dir, collect::WindowsCollector)?;
-    let (tx, rx) = mpsc::unbounded_channel();
-    regwatch::watch_software(tx);
+    // 有界：登錄檔大量變動時多餘的觸發直接丟棄（排程本來就會合併同一區段）
+    let (tx, rx) = mpsc::channel(16);
+    regwatch::watch_software(tx.clone());
+    regwatch::watch_patches(tx);
     run_agent(agent, shutdown, rx).await;
     Ok(())
 }
