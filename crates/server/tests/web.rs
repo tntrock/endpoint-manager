@@ -259,3 +259,165 @@ async fn approvals_respect_role_and_scope(pool: PgPool) {
             .unwrap();
     assert_eq!(pending, vec![kh_new.device_id], "只核准自己群組的");
 }
+
+async fn upload_software(s: &TestServer, a: &common::TestAgent, name: &str, ver: &str) {
+    let up = protocol::InventoryUpload {
+        schema_version: protocol::SCHEMA_VERSION,
+        payload: protocol::InventoryPayload::Software(vec![protocol::SoftwareItem {
+            name: name.into(),
+            version: Some(ver.into()),
+            publisher: None,
+            install_date: None,
+            arch: protocol::Arch::X64,
+        }]),
+    };
+    let r = s
+        .client(Some(a))
+        .put(s.url("/v1/inventory/software"))
+        .json(&up)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 204);
+}
+
+#[sqlx::test(migrations = false)]
+async fn device_detail_and_tabs(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(1).await;
+    let a = s.enroll_ok(&tok, None, None).await;
+    upload_software(&s, &a, "<b>7-Zip</b>", "23.01").await;
+    let c = s.admin_client().await;
+    let (status, html) = s.page(&c, &format!("/devices/{}", a.device_id)).await;
+    assert_eq!(status, 200);
+    assert!(html.contains("PC-001"));
+    assert!(html.contains(&format!("/devices/{}/tab/software", a.device_id)));
+    let (status, frag) = s
+        .page(&c, &format!("/devices/{}/tab/software", a.device_id))
+        .await;
+    assert_eq!(status, 200);
+    assert!(frag.contains("&#60;b&#62;7-Zip&#60;/b&#62;"), "{frag}");
+    assert!(!frag.contains("<html"));
+    assert_eq!(
+        s.page(&c, &format!("/devices/{}/tab/nope", a.device_id))
+            .await
+            .0,
+        404
+    );
+    assert_eq!(
+        s.page(&c, &format!("/devices/{}", uuid::Uuid::new_v4()))
+            .await
+            .0,
+        404
+    );
+}
+
+#[sqlx::test(migrations = false)]
+async fn group_admin_cannot_open_other_group_device(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let kh = s.create_group_token("高雄廠", 1).await;
+    let other = s.enroll_ok(&kh, None, None).await;
+    let c = s.login_as("gary", Role::GroupAdmin, &["台北總部"]).await;
+    assert_eq!(
+        s.page(&c, &format!("/devices/{}", other.device_id)).await.0,
+        404
+    );
+    assert_eq!(
+        s.page(&c, &format!("/devices/{}/tab/software", other.device_id))
+            .await
+            .0,
+        404
+    );
+    let (_, html) = s.page(&c, "/").await;
+    let r = c
+        .post(s.web_url(&format!("/devices/{}/retire", other.device_id)))
+        .form(&[("csrf", csrf_from(&html).as_str())])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 404);
+}
+
+#[sqlx::test(migrations = false)]
+async fn retire_requires_csrf_role_and_revokes(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_group_token("台北總部", 1).await;
+    let a = s.enroll_ok(&tok, None, None).await;
+    let path = format!("/devices/{}/retire", a.device_id);
+
+    let viewer = s.login_as("vera", Role::Viewer, &["台北總部"]).await;
+    let (_, html) = s.page(&viewer, &format!("/devices/{}", a.device_id)).await;
+    assert!(!html.contains("除役（"), "檢視者看不到除役按鈕");
+    let r = viewer
+        .post(s.web_url(&path))
+        .form(&[("csrf", csrf_from(&html).as_str())])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 403);
+
+    let c = s.login_as("gary", Role::GroupAdmin, &["台北總部"]).await;
+    let r = c
+        .post(s.web_url(&path))
+        .form(&[("csrf", "forged")])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 403);
+    let (_, html) = s.page(&c, &format!("/devices/{}", a.device_id)).await;
+    let r = c
+        .post(s.web_url(&path))
+        .form(&[("csrf", csrf_from(&html).as_str())])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 303);
+    let status: String = sqlx::query_scalar("SELECT status FROM devices WHERE id = $1")
+        .bind(a.device_id)
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "retired");
+}
+
+#[sqlx::test(migrations = false)]
+async fn only_platform_admin_moves_devices(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_group_token("台北總部", 1).await;
+    let a = s.enroll_ok(&tok, None, None).await;
+    let kh = s.group_id("高雄廠").await;
+    let path = format!("/devices/{}/group", a.device_id);
+
+    let gary = s
+        .login_as("gary", Role::GroupAdmin, &["台北總部", "高雄廠"])
+        .await;
+    let (_, html) = s.page(&gary, "/").await;
+    let r = gary
+        .post(s.web_url(&path))
+        .form(&[
+            ("csrf", csrf_from(&html).as_str()),
+            ("group", &kh.to_string()),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 403);
+
+    let c = s.admin_client().await;
+    let (_, html) = s.page(&c, &format!("/devices/{}", a.device_id)).await;
+    let r = c
+        .post(s.web_url(&path))
+        .form(&[
+            ("csrf", csrf_from(&html).as_str()),
+            ("group", &kh.to_string()),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 303);
+    let kate = s.login_as("kate", Role::GroupAdmin, &["高雄廠"]).await;
+    assert_eq!(
+        s.page(&kate, &format!("/devices/{}", a.device_id)).await.0,
+        200
+    );
+}

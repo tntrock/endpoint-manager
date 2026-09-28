@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>{{ d.hostname }} <span class="badge {{ d.badge }}">{{ d.badge_label }}</span></h1>
+<table>
+  <tr><th>裝置 ID</th><td>{{ d.id }}</td><th>群組</th><td>{{ d.group }}</td></tr>
+  <tr><th>網域</th><td>{{ d.domain }}</td><th>作業系統</th><td>{{ d.os }}（{{ d.build }}）</td></tr>
+  <tr><th>使用者</th><td>{{ d.user }}</td><th>IP</th><td>{{ d.ip }}</td></tr>
+  <tr><th>廠牌／型號</th><td>{{ d.model }}</td><th>CPU</th><td>{{ d.cpu }}</td></tr>
+  <tr><th>記憶體</th><td>{{ d.ram }}</td><th>BIOS 序號</th><td>{{ d.serial }}</td></tr>
+  <tr><th>最後報到</th><td>{{ d.last_seen }}</td><th>開機時間</th><td>{{ d.boot }}</td></tr>
+  <tr><th>註冊時間</th><td>{{ d.enrolled }}</td><th>Agent 版本</th><td>{{ d.agent }}</td></tr>
+</table>
+{% if !d.errors.is_empty() %}
+<h2>收集錯誤</h2>
+<table>{% for e in d.errors %}<tr><th>{{ e.0 }}</th><td class="error">{{ e.1 }}</td></tr>{% endfor %}</table>
+{% endif %}
+{% if nav.platform %}
+<form method="post" action="/devices/{{ d.id }}/group">
+  <input type="hidden" name="csrf" value="{{ nav.csrf }}">
+  <label>移到群組 <select name="group">{% for o in groups %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}</select></label>
+  <button>移動</button>
+</form>
+{% endif %}
+{% if nav.manage && d.can_retire %}
+<form method="post" action="/devices/{{ d.id }}/retire">
+  <input type="hidden" name="csrf" value="{{ nav.csrf }}">
+  <button class="danger">除役（撤銷憑證，Agent 將停止報到）</button>
+</form>
+{% endif %}
+<div class="tabs">
+  {% for t in tabs %}<button hx-get="/devices/{{ d.id }}/tab/{{ t.0 }}" hx-target="#tab">{{ t.1 }}</button>{% endfor %}
+</div>
+<div id="tab" hx-get="/devices/{{ d.id }}/tab/software" hx-trigger="load"></div>
+{% endblock %}

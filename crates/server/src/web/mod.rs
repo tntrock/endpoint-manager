@@ -113,6 +113,10 @@ pub fn web_router(state: AppState) -> Router {
         .route("/devices/approve-all", post(devices::approve_all))
         .route("/devices/{id}/approve", post(devices::approve))
         .route("/devices/{id}/reject", post(devices::reject))
+        .route("/devices/{id}", get(devices::detail))
+        .route("/devices/{id}/tab/{tab}", get(devices::tab))
+        .route("/devices/{id}/retire", post(devices::retire))
+        .route("/devices/{id}/group", post(devices::move_group))
         .route(
             "/static/htmx.min.js",
             get(|| async {
