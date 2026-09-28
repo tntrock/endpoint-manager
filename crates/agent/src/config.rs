@@ -56,6 +56,23 @@ pub fn merge_config(
     })
 }
 
+/// 安裝時寫入 root.pem（有提供才寫，否則沿用）與合併後的 config.json。資料目錄須已強化。
+pub fn apply_install_config(
+    data: &Path,
+    server_url: Option<&str>,
+    token: Option<&str>,
+    root_ca: Option<&str>,
+) -> anyhow::Result<()> {
+    let root_path = data.join("root.pem");
+    match root_ca {
+        Some(b64) => write_atomic(&root_path, root_pem_from_b64(b64)?.as_bytes())?,
+        None => anyhow::ensure!(root_path.exists(), "ROOT_CA is required on first install"),
+    }
+    let existing = AgentConfig::load(data).ok();
+    let enrolled = crate::state::AgentState::load(data)?.is_enrolled();
+    merge_config(existing, enrolled, server_url, token)?.save(data)
+}
+
 /// MSI 的 ROOT_CA 屬性（單行 base64 DER）→ PEM；不是一張可解析的 X.509 憑證就拒絕。
 pub fn root_pem_from_b64(b64: &str) -> anyhow::Result<String> {
     use rustls::pki_types::{CertificateDer, pem::PemObject};
@@ -138,6 +155,27 @@ mod tests {
                 .unwrap()
                 .enroll_token,
             None
+        );
+    }
+
+    /// 狀態檔只有 device_id（沒有憑證或私鑰）無法報到，還需要金鑰重新註冊。
+    #[test]
+    fn partial_state_keeps_token() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("root.pem"), "x").unwrap();
+        crate::state::AgentState {
+            device_id: Some(uuid::Uuid::new_v4()),
+            ..Default::default()
+        }
+        .save(dir.path())
+        .unwrap();
+        apply_install_config(dir.path(), Some("https://a:8443"), Some("tok"), None).unwrap();
+        assert_eq!(
+            AgentConfig::load(dir.path())
+                .unwrap()
+                .enroll_token
+                .as_deref(),
+            Some("tok")
         );
     }
 

@@ -12,8 +12,8 @@ use windows_service::service::{
 use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 
 use super::service::SERVICE_NAME;
-use crate::config::{AgentConfig, merge_config, root_pem_from_b64};
-use crate::state::{AgentState, harden_dir, write_atomic};
+use crate::config::apply_install_config;
+use crate::state::harden_dir;
 
 /// 先強化資料目錄，之後才寫入 root.pem 與 config.json。
 pub fn configure(
@@ -23,14 +23,7 @@ pub fn configure(
     root_ca: Option<&str>,
 ) -> anyhow::Result<()> {
     harden_dir(data)?;
-    let root_path = data.join("root.pem");
-    match root_ca {
-        Some(b64) => write_atomic(&root_path, root_pem_from_b64(b64)?.as_bytes())?,
-        None => anyhow::ensure!(root_path.exists(), "ROOT_CA is required on first install"),
-    }
-    let existing = AgentConfig::load(data).ok();
-    let enrolled = AgentState::load(data)?.device_id.is_some();
-    merge_config(existing, enrolled, server_url, token)?.save(data)
+    apply_install_config(data, server_url, token, root_ca)
 }
 
 /// 失敗後 60 秒重啟（3 次）、24 小時重置；非當機的失敗（結束代碼非 0）也套用。
