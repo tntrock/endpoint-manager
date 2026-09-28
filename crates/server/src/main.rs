@@ -6,7 +6,8 @@ use endpoint_server::{config::Config, tokens};
 const USAGE: &str = "usage:
   endpoint-server serve
   endpoint-server ca-init <dir> <server-dns-name>...
-  endpoint-server token-create <name> <max_uses> [group_name] [valid_days]";
+  endpoint-server token-create <name> <max_uses> [group_name] [valid_days]
+  endpoint-server admin-create <username>   (password from stdin)";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -22,6 +23,30 @@ async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("serve") => endpoint_server::serve(Config::from_env()?).await,
+        Some("admin-create") if args.len() >= 2 => {
+            let cfg = Config::from_env()?;
+            let pool = sqlx::PgPool::connect(&cfg.database_url).await?;
+            endpoint_server::db::migrate(&pool).await?;
+            eprintln!(
+                "輸入密碼（至少 {} 字元）：",
+                endpoint_server::web::auth::MIN_PASSWORD_LEN
+            );
+            let mut pw = String::new();
+            std::io::stdin().read_line(&mut pw)?;
+            let id = endpoint_server::accounts::create(
+                &pool,
+                &endpoint_server::accounts::NewAdmin {
+                    username: args[1].clone(),
+                    password: pw.trim_end_matches(['\r', '\n']).to_string(),
+                    role: endpoint_server::web::auth::Role::Platform,
+                    groups: vec![],
+                },
+                "cli",
+            )
+            .await?;
+            println!("platform admin id {id} created");
+            Ok(())
+        }
         Some("ca-init") if args.len() >= 3 => {
             endpoint_server::ca::init_ca(Path::new(&args[1]), args[2..].to_vec())?;
             println!(

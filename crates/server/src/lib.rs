@@ -1,5 +1,6 @@
 //! Endpoint Manager 伺服器。
 
+pub mod accounts;
 pub mod audit;
 pub mod ca;
 pub mod checkin;
@@ -18,6 +19,7 @@ pub mod ratelimit;
 pub mod renew;
 pub mod tls;
 pub mod tokens;
+pub mod web;
 
 use std::sync::Arc;
 use std::time::Duration;
