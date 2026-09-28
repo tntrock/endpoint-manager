@@ -33,6 +33,21 @@ impl HeartbeatBuffer {
         self.inner.lock().expect("heartbeat lock").insert(id, hot);
     }
 
+    /// 關閉前的最後一次寫入，最多等 limit（docker stop 預設只給有限時間）。回傳是否成功寫出。
+    pub async fn flush_before_exit(&self, pool: &PgPool, limit: std::time::Duration) -> bool {
+        match tokio::time::timeout(limit, self.flush(pool)).await {
+            Ok(Ok(_)) => true,
+            Ok(Err(e)) => {
+                tracing::error!(error = %e, "final heartbeat flush failed");
+                false
+            }
+            Err(_) => {
+                tracing::error!(?limit, "final heartbeat flush timed out");
+                false
+            }
+        }
+    }
+
     /// 批次寫入。資料庫拒絕某些列（資料錯誤）時改逐列寫入並丟棄壞列；
     /// 連線類錯誤則把資料放回（不覆蓋期間收到的較新資料），下次再試。
     pub async fn flush(&self, pool: &PgPool) -> Result<usize, sqlx::Error> {
@@ -101,4 +116,41 @@ async fn write_rows(pool: &PgPool, rows: &[(Uuid, HotFields)]) -> Result<(), sql
     .execute(pool)
     .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    /// docker stop 只給 30 秒（stop_grace_period）：資料庫卡住時，關閉前的寫入不能無限等待。
+    #[tokio::test]
+    async fn flush_before_exit_gives_up_after_limit() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(60))
+            .connect_lazy("postgres://u:p@10.255.255.1:5432/db")
+            .unwrap();
+        let hb = HeartbeatBuffer::new();
+        hb.record(
+            Uuid::new_v4(),
+            HotFields {
+                seen_at: Utc::now(),
+                ip: None,
+                logged_on_user: None,
+                boot_time: Utc::now(),
+                agent_version: "t".into(),
+                section_errors: serde_json::json!({}),
+            },
+        );
+        let start = Instant::now();
+        assert!(
+            !hb.flush_before_exit(&pool, Duration::from_millis(300))
+                .await
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            start.elapsed()
+        );
+    }
 }

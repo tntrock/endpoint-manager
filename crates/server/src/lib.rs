@@ -172,7 +172,11 @@ pub async fn serve(cfg: config::Config) -> anyhow::Result<()> {
         r = tls::serve_mtls(web_listener, web_tls, web::web_router(state.clone()), tls::ConnLimits::default()) => r?,
         _ = shutdown_signal() => tracing::info!("shutting down"),
     }
-    state.heartbeat.flush(&pool).await?;
+    // compose 的 stop_grace_period 為 30 秒，保留餘裕
+    state
+        .heartbeat
+        .flush_before_exit(&pool, Duration::from_secs(20))
+        .await;
     Ok(())
 }
 
