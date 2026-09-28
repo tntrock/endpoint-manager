@@ -1,0 +1,23 @@
+[package]
+name = "loadsim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+protocol.workspace = true
+endpoint-agent = { path = "../../crates/agent" }
+anyhow.workspace = true
+chrono.workspace = true
+rcgen.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+endpoint-server = { path = "../../crates/server" }
+sqlx.workspace = true
+tempfile.workspace = true
