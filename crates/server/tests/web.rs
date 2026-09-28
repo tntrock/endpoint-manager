@@ -774,3 +774,20 @@ async fn reset_password_unlocks_and_user_changes_own(pool: PgPool) {
         "改自己的密碼不會登出目前的工作階段"
     );
 }
+
+#[sqlx::test(migrations = false)]
+async fn audit_page_lists_logins_and_failures(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let _ = s
+        .web_client()
+        .post(s.web_url("/login"))
+        .form(&[("username", "ghost"), ("password", "<script>x</script>")])
+        .send()
+        .await
+        .unwrap();
+    let c = s.admin_client().await;
+    let (status, html) = s.page(&c, "/audit").await;
+    assert_eq!(status, 200);
+    assert!(html.contains("登入成功") && html.contains("登入失敗") && html.contains("ghost"));
+    assert!(!html.contains("<script>x"), "密碼不應出現在稽核記錄");
+}

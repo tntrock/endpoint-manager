@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>稽核記錄</h1>
+<table>
+  <tr><th>時間</th><th>操作者</th><th>動作</th><th>對象</th><th>細節</th></tr>
+  {% for r in rows %}<tr><td>{{ r.at }}</td><td>{{ r.actor }}</td><td>{{ r.action }}</td><td>{{ r.target }}</td><td class="muted">{{ r.detail }}</td></tr>{% endfor %}
+</table>
+<div class="pager">
+  {% if page > 0 %}<a href="/audit?page={{ page - 1 }}">上一頁</a>{% endif %}
+  <span class="muted">第 {{ page + 1 }} 頁</span>
+  {% if has_next %}<a href="/audit?page={{ page + 1 }}">下一頁</a>{% endif %}
+</div>
+{% endblock %}

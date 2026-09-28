@@ -4,6 +4,7 @@
 #![allow(clippy::result_large_err)]
 
 pub mod accounts;
+pub mod audit;
 pub mod auth;
 pub mod dashboard;
 pub mod devices;
@@ -23,7 +24,6 @@ use axum::routing::{get, post};
 use chrono::{DateTime, Utc};
 
 use crate::AppState;
-use auth::AdminSession;
 
 const CSP: &str = "default-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'";
 
@@ -130,6 +130,7 @@ pub fn web_router(state: AppState) -> Router {
         .route("/accounts/{id}/unlock", post(accounts::unlock))
         .route("/accounts/{id}/password", post(accounts::reset_password))
         .route("/password", get(password::form).post(password::submit))
+        .route("/audit", get(audit::page))
         .route("/devices/approve-all", post(devices::approve_all))
         .route("/devices/{id}/approve", post(devices::approve))
         .route("/devices/{id}/reject", post(devices::reject))
@@ -155,8 +156,6 @@ pub fn web_router(state: AppState) -> Router {
                 )
             }),
         )
-        // ponytail: 尚未實作的頁面先要求登入再回 404，Task 11 完成全部路由後移除
-        .fallback(|AdminSession(_): AdminSession| async { not_found() })
         .layer(middleware::from_fn(security_headers))
         .with_state(state)
 }
