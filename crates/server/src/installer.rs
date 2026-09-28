@@ -23,7 +23,7 @@ pub fn build_msi(
     token: &str,
     root_pem: &str,
 ) -> anyhow::Result<Vec<u8>> {
-    let existing = read_properties(template)?;
+    check_template(template)?;
     let mut pkg = Package::open(Cursor::new(template.to_vec()))?;
     let root = root_b64(root_pem);
     for (k, v) in [
@@ -31,10 +31,6 @@ pub fn build_msi(
         ("ENROLL_TOKEN", token),
         ("ROOT_CA", root.as_str()),
     ] {
-        anyhow::ensure!(
-            existing.contains_key(k),
-            "範本 MSI 缺少 {k} 屬性（請用 installer/agent.wxs 建置的範本）"
-        );
         pkg.update_rows(
             Update::table("Property")
                 .set("Value", Value::from(v))
@@ -44,6 +40,18 @@ pub fn build_msi(
     }
     pkg.summary_info_mut().set_uuid(uuid::Uuid::new_v4());
     Ok(pkg.into_inner()?.into_inner())
+}
+
+/// 範本必須是可讀的 MSI，且預先放好三個佔位屬性（只能更新既有列）。
+pub fn check_template(template: &[u8]) -> anyhow::Result<()> {
+    let existing = read_properties(template)?;
+    for k in ["SERVER_URL", "ENROLL_TOKEN", "ROOT_CA"] {
+        anyhow::ensure!(
+            existing.contains_key(k),
+            "範本 MSI 缺少 {k} 屬性（請用 installer/agent.wxs 建置的範本）"
+        );
+    }
+    Ok(())
 }
 
 pub fn read_properties(msi: &[u8]) -> anyhow::Result<BTreeMap<String, String>> {
@@ -133,7 +141,8 @@ pub fn sample_template() -> Vec<u8> {
     ])
 }
 
-fn template_with(props: &[(&str, &str)]) -> Vec<u8> {
+#[doc(hidden)]
+pub fn template_with(props: &[(&str, &str)]) -> Vec<u8> {
     let mut pkg =
         Package::create(PackageType::Installer, Cursor::new(Vec::new())).expect("create package");
     pkg.create_table(

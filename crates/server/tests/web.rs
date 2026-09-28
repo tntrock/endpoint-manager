@@ -945,3 +945,44 @@ async fn installer_token_requires_bounded_validity(pool: PgPool) {
         .unwrap();
     assert_eq!(n, 0);
 }
+
+#[sqlx::test(migrations = false)]
+async fn malformed_template_is_rejected_before_creating_token(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    std::fs::write(
+        s.state.agent_msi.as_ref().unwrap(),
+        endpoint_server::installer::template_with(&[("KEEP", "me")]),
+    )
+    .unwrap();
+    let c = s.admin_client().await;
+    let (_, html) = s.page(&c, "/tokens").await;
+    let r = c
+        .post(s.web_url("/tokens"))
+        .form(&[
+            ("csrf", csrf_from(&html).as_str()),
+            ("name", "bad template"),
+            ("max_uses", "5"),
+            ("valid_days", "30"),
+            ("server_url", "https://localhost:8443"),
+            ("download", "1"),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 503);
+    let n: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM enroll_tokens WHERE name = 'bad template'")
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+    assert_eq!(n, 0, "範本不正確時不可留下金鑰");
+}
+
+#[sqlx::test(migrations = false)]
+async fn missing_template_hides_download_button(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    std::fs::remove_file(s.state.agent_msi.as_ref().unwrap()).unwrap();
+    let c = s.admin_client().await;
+    let (_, html) = s.page(&c, "/tokens").await;
+    assert!(!html.contains("建立並下載安裝檔"));
+}
