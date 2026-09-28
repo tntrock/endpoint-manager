@@ -448,3 +448,138 @@ async fn software_search_is_scoped(pool: PgPool) {
         "只算自己群組：{html}"
     );
 }
+
+fn new_token_from(html: &str) -> String {
+    let marker = r#"<code id="new-token">"#;
+    let start = html.find(marker).expect("token shown once") + marker.len();
+    html[start..start + 64].to_string()
+}
+
+#[sqlx::test(migrations = false)]
+async fn token_created_in_web_can_enroll_and_be_revoked(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tp = s.group_id("台北總部").await;
+    let c = s.admin_client().await;
+    let (_, html) = s.page(&c, "/tokens").await;
+    let r = c
+        .post(s.web_url("/tokens"))
+        .form(&[
+            ("csrf", csrf_from(&html).as_str()),
+            ("name", "IT pilot"),
+            ("max_uses", "2"),
+            ("group", &tp.to_string()),
+            ("valid_days", "7"),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let token = new_token_from(&r.text().await.unwrap());
+    let a = s.enroll_ok(&token, None, None).await;
+    let g: Option<i64> = sqlx::query_scalar("SELECT group_id FROM devices WHERE id = $1")
+        .bind(a.device_id)
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    assert_eq!(g, Some(tp));
+
+    let detail: String =
+        sqlx::query_scalar("SELECT detail::text FROM audit_log WHERE action = 'token_create'")
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+    assert!(!detail.contains(&token), "明碼不可寫進稽核記錄");
+
+    let id: i64 = sqlx::query_scalar("SELECT id FROM enroll_tokens WHERE name = 'IT pilot'")
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    let (_, html) = s.page(&c, "/tokens").await;
+    assert!(!html.contains(&token), "列表不顯示明碼");
+    let r = c
+        .post(s.web_url(&format!("/tokens/{id}/revoke")))
+        .form(&[("csrf", csrf_from(&html).as_str())])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 303);
+    assert_eq!(s.enroll(&token, None, None).await.status(), 401);
+}
+
+#[sqlx::test(migrations = false)]
+async fn group_admin_tokens_are_scoped(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let kh = s.group_id("高雄廠").await;
+    let _ = s.create_group_token("高雄廠", 1).await;
+    let kh_token_id: i64 = sqlx::query_scalar("SELECT id FROM enroll_tokens")
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    let gary = s.login_as("gary", Role::GroupAdmin, &["台北總部"]).await;
+    let (status, html) = s.page(&gary, "/tokens").await;
+    assert_eq!(status, 200);
+    assert!(!html.contains("高雄廠 token"), "看不到別的群組的金鑰");
+    let csrf = csrf_from(&html);
+
+    let r = gary
+        .post(s.web_url("/tokens"))
+        .form(&[
+            ("csrf", csrf.as_str()),
+            ("name", "x"),
+            ("max_uses", "1"),
+            ("group", &kh.to_string()),
+            ("valid_days", ""),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 403, "不能替別的群組建立金鑰");
+    let r = gary
+        .post(s.web_url("/tokens"))
+        .form(&[
+            ("csrf", csrf.as_str()),
+            ("name", "x"),
+            ("max_uses", "1"),
+            ("group", ""),
+            ("valid_days", ""),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 403, "不能建立未分組的金鑰");
+    let r = gary
+        .post(s.web_url(&format!("/tokens/{kh_token_id}/revoke")))
+        .form(&[("csrf", csrf.as_str())])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 404);
+
+    let viewer = s.login_as("vera", Role::Viewer, &["台北總部"]).await;
+    assert_eq!(s.page(&viewer, "/tokens").await.0, 403);
+}
+
+#[sqlx::test(migrations = false)]
+async fn token_form_validates_input(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let c = s.admin_client().await;
+    let (_, html) = s.page(&c, "/tokens").await;
+    let r = c
+        .post(s.web_url("/tokens"))
+        .form(&[
+            ("csrf", csrf_from(&html).as_str()),
+            ("name", ""),
+            ("max_uses", "0"),
+            ("group", ""),
+            ("valid_days", ""),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 400);
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM enroll_tokens")
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 0);
+}
