@@ -28,7 +28,8 @@ impl Backoff {
 
 /// 0.8～1.2 的隨機倍率（用 UUID v4 的亂數，不另外引入 rand）。
 pub fn jitter() -> f64 {
-    0.8 + (Uuid::new_v4().as_u128() % 1001) as f64 / 1000.0 * 0.4
+    // 以整數算出 800～1200 再除以 1000，避免 0.8 + 0.4 的浮點誤差超出上限
+    (800 + (Uuid::new_v4().as_u128() % 401) as u32) as f64 / 1000.0
 }
 
 pub fn with_jitter(d: Duration, j: f64) -> Duration {
