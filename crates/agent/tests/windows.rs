@@ -139,7 +139,7 @@ fn harden_dir_takes_ownership_from_squatter() {
         !sddl.contains(";;;BU)") && !sddl.contains(";;;AU)"),
         "{sddl}"
     );
-    assert!(sddl.contains("O:BA"), "{sddl}");
+    assert!(sddl.contains("O:BA"), "{diag}");
     Command::new("icacls")
         .arg(&target)
         .args(["/reset", "/T", "/C", "/Q"])
