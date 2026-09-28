@@ -125,21 +125,20 @@ fn harden_dir_takes_ownership_from_squatter() {
     std::fs::write(target.join("state.json.tmp"), b"squatted").unwrap();
     endpoint_agent::state::harden_dir(&target).unwrap();
 
-    let save = dir.path().join("owner.txt");
-    Command::new("icacls")
-        .arg(target.join("state.json.tmp"))
-        .arg("/save")
-        .arg(&save)
-        .status()
+    // icacls /save 不含擁有者，改用 Get-Acl 取完整 SDDL（O: 擁有者、D: DACL）
+    let out = Command::new("powershell")
+        .args(["-NoProfile", "-Command"])
+        .arg(format!(
+            "(Get-Acl -LiteralPath '{}').Sddl",
+            target.join("state.json.tmp").display()
+        ))
+        .output()
         .unwrap();
-    let raw = std::fs::read(&save).unwrap();
-    let utf16: Vec<u16> = raw
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .map(|c| u16::from_le_bytes(*c))
-        .collect();
-    let sddl = String::from_utf16_lossy(&utf16);
+    let sddl = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(
+        !sddl.contains(";;;BU)") && !sddl.contains(";;;AU)"),
+        "{sddl}"
+    );
     assert!(sddl.contains("O:BA"), "{sddl}");
     Command::new("icacls")
         .arg(&target)
