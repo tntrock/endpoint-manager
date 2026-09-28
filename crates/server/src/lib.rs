@@ -92,7 +92,8 @@ pub async fn serve(cfg: config::Config) -> anyhow::Result<()> {
     db::migrate(&pool).await?;
     partitions::maintain_partitions(&pool, chrono::Utc::now()).await?;
 
-    let state = AppState::new(pool.clone(), ca::Ca::load(&cfg.ca_dir)?);
+    let state = AppState::new(pool.clone(), ca::Ca::load(&cfg.ca_dir)?)
+        .with_display_offset(cfg.display_utc_offset);
     let tls_cfg = tls::server_config(&cfg.ca_dir)?;
 
     let hb = state.heartbeat.clone();
@@ -119,8 +120,12 @@ pub async fn serve(cfg: config::Config) -> anyhow::Result<()> {
 
     let listener = tokio::net::TcpListener::bind(cfg.agent_listen).await?;
     tracing::info!(addr = %cfg.agent_listen, "agent API listening");
+    let web_listener = tokio::net::TcpListener::bind(cfg.web_listen).await?;
+    tracing::info!(addr = %cfg.web_listen, "admin web listening");
+    let web_tls = tls::web_server_config(&cfg.ca_dir)?;
     tokio::select! {
         r = tls::serve_mtls(listener, tls_cfg, agent_router(state.clone()), tls::ConnLimits::default()) => r?,
+        r = tls::serve_mtls(web_listener, web_tls, web::web_router(state.clone()), tls::ConnLimits::default()) => r?,
         _ = tokio::signal::ctrl_c() => tracing::info!("shutting down"),
     }
     state.heartbeat.flush(&pool).await?;
