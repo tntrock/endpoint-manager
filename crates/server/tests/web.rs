@@ -247,7 +247,7 @@ async fn approvals_respect_role_and_scope(pool: PgPool) {
     assert_eq!(r.status(), 404, "別的群組當作不存在");
     let r = gary
         .post(s.web_url("/devices/approve-all"))
-        .form(&[("csrf", csrf.as_str())])
+        .form(&[("csrf", csrf.as_str()), ("confirm", "1")])
         .send()
         .await
         .unwrap();

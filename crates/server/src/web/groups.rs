@@ -34,15 +34,17 @@ pub async fn list(
     if !s.all_devices() {
         return Ok(forbidden());
     }
-    let rows: Vec<(i64, String, i64, i64, i64)> = sqlx::query_as(
-        "SELECT g.id, g.name, \
-                (SELECT count(*) FROM devices d WHERE d.group_id = g.id AND d.status <> 'retired'), \
-                (SELECT count(*) FROM enroll_tokens t WHERE t.group_id = g.id), \
-                (SELECT count(*) FROM admin_groups a WHERE a.group_id = g.id) \
-         FROM device_groups g ORDER BY g.name",
-    )
-    .fetch_all(&st.pool)
-    .await?;
+    let groups: Vec<(i64, String)> =
+        sqlx::query_as("SELECT id, name FROM device_groups ORDER BY name")
+            .fetch_all(&st.pool)
+            .await?;
+    // 與刪除檢查同一個定義（groups::usage），群組不多，逐一查即可
+    let mut conn = st.pool.acquire().await?;
+    let mut rows = Vec::with_capacity(groups.len());
+    for (id, name) in groups {
+        let (devices, tokens, admins) = crate::groups::usage(&mut conn, id).await?;
+        rows.push((id, name, devices, tokens, admins));
+    }
     Ok(render(&GroupsPage {
         nav: Nav::from(&s),
         rows: rows

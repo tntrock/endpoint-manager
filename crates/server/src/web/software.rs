@@ -45,7 +45,8 @@ pub async fn search(
         sqlx::query_as(
             "SELECT sw.name, coalesce(sw.version, ''), count(DISTINCT sw.device_id) \
              FROM device_software sw \
-             JOIN devices d ON d.id = sw.device_id AND d.status <> 'retired' \
+             JOIN devices d ON d.id = sw.device_id \
+                  AND d.status NOT IN ('retired', 'pending_approval') \
              WHERE sw.name ILIKE $1 AND ($2::bool OR d.group_id = ANY($3::bigint[])) \
              GROUP BY 1, 2 ORDER BY lower(sw.name), 2 LIMIT $4",
         )

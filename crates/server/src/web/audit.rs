@@ -70,7 +70,7 @@ pub async fn page(
     if !s.all_devices() {
         return Ok(forbidden());
     }
-    let page = q.page.max(0);
+    let page = q.page.clamp(0, super::devices::MAX_PAGE);
     let mut rows: Vec<Row> = sqlx::query_as(
         "SELECT at, actor, action, target, detail::text FROM audit_log \
          ORDER BY id DESC LIMIT $1 OFFSET $2",

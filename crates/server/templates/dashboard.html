@@ -14,6 +14,7 @@
 {% if nav.manage %}
 <form method="post" action="/devices/approve-all">
   <input type="hidden" name="csrf" value="{{ nav.csrf }}">
+  <label><input type="checkbox" name="confirm" value="1" required> 我已確認這些都是預期的重灌</label>
   <button>全部核准（{{ pending.len() }}）</button>
 </form>
 {% endif %}

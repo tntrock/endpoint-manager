@@ -43,8 +43,9 @@ pub async fn page(State(st): State<AppState>, AdminSession(s): AdminSession) -> 
 async fn build(st: &AppState, s: &Session) -> Result<DashboardPage, AppError> {
     let cutoff = online_cutoff(st).await?;
     let (total, online, duplicate): (i64, i64, i64) = sqlx::query_as(
-        "SELECT count(*) FILTER (WHERE status <> 'retired'), \
-                count(*) FILTER (WHERE status <> 'retired' AND last_seen_at > $1), \
+        "SELECT count(*) FILTER (WHERE status NOT IN ('retired', 'pending_approval')), \
+                count(*) FILTER (WHERE status NOT IN ('retired', 'pending_approval') \
+                                   AND last_seen_at > $1), \
                 count(*) FILTER (WHERE status = 'duplicate_suspect') \
          FROM devices d WHERE ($2::bool OR d.group_id = ANY($3::bigint[]))",
     )
