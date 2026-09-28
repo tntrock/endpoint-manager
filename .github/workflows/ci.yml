@@ -55,7 +55,7 @@ jobs:
           cargo build --release -p endpoint-server
           ./target/release/endpoint-server.exe ca-init target/ci-pki localhost
           ./installer/build.ps1 -Out target/template.msi
-          ./installer/build.ps1 -Version 0.1.1 -Out target/upgrade.msi
+          ./installer/build.ps1 -Version 255.0.0 -Out target/upgrade.msi   # 永遠比目前版本新
           $env:EM_CA_DIR = "target/ci-pki"
           ./target/release/endpoint-server.exe agent-msi target/template.msi target/a.msi https://localhost:9 ci-secret-token-8f3a
           ./target/release/endpoint-server.exe agent-msi target/template.msi target/b.msi https://localhost:10 ci-second-token-2c7e
