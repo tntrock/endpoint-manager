@@ -1,0 +1,52 @@
+<!-- Endpoint Manager Agent 通用範本 MSI（WiX v5）。以 installer/build.ps1 建置。
+     SERVER_URL／ENROLL_TOKEN／ROOT_CA 由伺服器下載時寫入 Property 表，或以 msiexec 命令列指定。 -->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="Endpoint Manager Agent" Manufacturer="Endpoint Manager"
+           Version="$(Version)" UpgradeCode="C1FDEBF6-F5C5-46E4-A913-5B6690EB943B"
+           Scope="perMachine" Codepage="65001">
+    <MajorUpgrade DowngradeErrorMessage="已安裝較新版本的 Endpoint Manager Agent。" />
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- 值為單一空白（＝未提供）：伺服器以更新既有列的方式寫入，
+         msi crate 新增列會重排資料表，Windows Installer 會讀不到。 -->
+    <Property Id="SERVER_URL" Value=" " Secure="yes" />
+    <Property Id="ENROLL_TOKEN" Value=" " Secure="yes" Hidden="yes" />
+    <Property Id="ROOT_CA" Value=" " Secure="yes" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="EndpointManager">
+        <Component Id="AgentExe">
+          <File Id="AgentExe" Source="$(AgentExe)" KeyPath="yes" />
+          <ServiceInstall Name="EndpointManagerAgent" DisplayName="Endpoint Manager Agent"
+                          Description="回報電腦資產資訊給 Endpoint Manager 伺服器。"
+                          Type="ownProcess" Start="auto" ErrorControl="normal"
+                          Account="LocalSystem" Arguments="service" />
+          <ServiceControl Id="AgentSvc" Name="EndpointManagerAgent"
+                          Start="install" Stop="both" Remove="uninstall" Wait="yes" />
+          <RegistryKey Root="HKLM"
+                       Key="SYSTEM\CurrentControlSet\Services\EventLog\Application\EndpointManagerAgent">
+            <RegistryValue Name="EventMessageFile" Type="expandable"
+                           Value="%SystemRoot%\Microsoft.NET\Framework64\v4.0.30319\EventLogMessages.dll" />
+            <RegistryValue Name="TypesSupported" Type="integer" Value="7" />
+          </RegistryKey>
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="Main">
+      <ComponentRef Id="AgentExe" />
+    </Feature>
+
+    <!-- HideTarget：命令列含註冊金鑰，不寫入 MSI 記錄 -->
+    <CustomAction Id="Configure" FileRef="AgentExe"
+                  ExeCommand="configure --server-url &quot;[SERVER_URL]&quot; --token &quot;[ENROLL_TOKEN]&quot; --root-ca &quot;[ROOT_CA]&quot;"
+                  Execute="deferred" Impersonate="no" Return="check" HideTarget="yes" />
+    <CustomAction Id="Unconfigure" FileRef="AgentExe" ExeCommand="unconfigure"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
+    <InstallExecuteSequence>
+      <Custom Action="Configure" After="InstallServices" Condition="NOT REMOVE" />
+      <Custom Action="Unconfigure" Before="RemoveFiles"
+              Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+    </InstallExecuteSequence>
+  </Package>
+</Wix>

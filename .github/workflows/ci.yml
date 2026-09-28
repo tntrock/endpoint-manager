@@ -41,3 +41,32 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p endpoint-agent --lib --test windows
+
+  msi:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: dotnet tool install --global wix --version 5.0.2
+      - name: build, patch and test MSI
+        shell: pwsh
+        run: |
+          cargo build --release -p endpoint-server
+          ./target/release/endpoint-server.exe ca-init target/ci-pki localhost
+          ./installer/build.ps1 -Out target/template.msi
+          ./installer/build.ps1 -Version 0.1.1 -Out target/upgrade.msi
+          $env:EM_CA_DIR = "target/ci-pki"
+          ./target/release/endpoint-server.exe agent-msi target/template.msi target/a.msi https://localhost:9 ci-secret-token-8f3a
+          ./installer/test-msi.ps1 -Msi target/a.msi -UpgradeMsi target/upgrade.msi -Token ci-secret-token-8f3a -RootPem target/ci-pki/root.pem
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-msi
+          path: |
+            target/template.msi
+            target/release/endpoint-agent.exe
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: msi-logs
+          path: "*.log"

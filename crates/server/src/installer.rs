@@ -1,10 +1,12 @@
 //! 由通用範本 MSI 產生「已包好伺服器網址、註冊金鑰、根憑證」的安裝檔：
-//! 改寫 Property 表（先刪後插）並換新 package code。全部在記憶體中完成。
+//! 更新 Property 表的佔位列並換新 package code。全部在記憶體中完成。
+//! 只能更新既有列：msi crate 新增列時會把整張表依字母重排，Windows Installer 會讀不到。
 
 use std::collections::BTreeMap;
 use std::io::Cursor;
 
-use msi::{Column, Delete, Expr, Insert, Package, PackageType, Select, Value};
+use anyhow::Context;
+use msi::{Column, Expr, Insert, Package, PackageType, Select, Update, Value};
 
 /// 根憑證 PEM → 單行 base64（MSI 的 ROOT_CA 屬性）。
 pub fn root_b64(root_pem: &str) -> String {
@@ -21,6 +23,7 @@ pub fn build_msi(
     token: &str,
     root_pem: &str,
 ) -> anyhow::Result<Vec<u8>> {
+    let existing = read_properties(template)?;
     let mut pkg = Package::open(Cursor::new(template.to_vec()))?;
     let root = root_b64(root_pem);
     for (k, v) in [
@@ -28,8 +31,16 @@ pub fn build_msi(
         ("ENROLL_TOKEN", token),
         ("ROOT_CA", root.as_str()),
     ] {
-        pkg.delete_rows(Delete::from("Property").with(Expr::col("Property").eq(Expr::string(k))))?;
-        pkg.insert_rows(Insert::into("Property").row(vec![Value::from(k), Value::from(v)]))?;
+        anyhow::ensure!(
+            existing.contains_key(k),
+            "範本 MSI 缺少 {k} 屬性（請用 installer/agent.wxs 建置的範本）"
+        );
+        pkg.update_rows(
+            Update::table("Property")
+                .set("Value", Value::from(v))
+                .with(Expr::col("Property").eq(Expr::string(k))),
+        )
+        .with_context(|| format!("updating {k}"))?;
     }
     pkg.summary_info_mut().set_uuid(uuid::Uuid::new_v4());
     Ok(pkg.into_inner()?.into_inner())
@@ -69,9 +80,18 @@ pub fn check_server_url(url: &str, names: &[String]) -> Result<(), String> {
     }
 }
 
-/// 測試用：只有 Property 表的最小 MSI。
+/// 測試用：只有 Property 表的最小 MSI，含三個佔位屬性（與 installer/agent.wxs 相同）。
 #[doc(hidden)]
 pub fn sample_template() -> Vec<u8> {
+    template_with(&[
+        ("KEEP", "me"),
+        ("SERVER_URL", " "),
+        ("ENROLL_TOKEN", " "),
+        ("ROOT_CA", " "),
+    ])
+}
+
+fn template_with(props: &[(&str, &str)]) -> Vec<u8> {
     let mut pkg =
         Package::create(PackageType::Installer, Cursor::new(Vec::new())).expect("create package");
     pkg.create_table(
@@ -82,8 +102,10 @@ pub fn sample_template() -> Vec<u8> {
         ],
     )
     .expect("create Property table");
-    pkg.insert_rows(Insert::into("Property").row(vec![Value::from("KEEP"), Value::from("me")]))
-        .expect("insert");
+    for (k, v) in props {
+        pkg.insert_rows(Insert::into("Property").row(vec![Value::from(*k), Value::from(*v)]))
+            .expect("insert");
+    }
     pkg.into_inner().expect("into_inner").into_inner()
 }
 
@@ -110,6 +132,14 @@ mod tests {
             read_properties(&again).unwrap()["SERVER_URL"],
             "https://other.example.com:8443"
         );
+    }
+
+    /// 只能更新範本既有的列：新增列會讓 msi crate 重排資料表，Windows Installer 讀不到。
+    #[test]
+    fn template_without_placeholders_is_rejected() {
+        let t = template_with(&[("KEEP", "me")]);
+        let e = build_msi(&t, "https://em.example.com:8443", "tok", ROOT).unwrap_err();
+        assert!(format!("{e:#}").contains("SERVER_URL"), "{e:#}");
     }
 
     #[test]
