@@ -7,6 +7,9 @@ param(
     [Parameter(Mandatory)][string]$RootPem
 )
 $ErrorActionPreference = "Stop"
+# msiexec 只接受絕對路徑（相對路徑含 / 會回 1324）
+$Msi = (Resolve-Path $Msi).Path
+$UpgradeMsi = (Resolve-Path $UpgradeMsi).Path
 $svcName = "EndpointManagerAgent"
 $data = "C:\ProgramData\EndpointManager"
 $evtKey = "HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application\$svcName"
