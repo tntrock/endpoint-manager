@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="htmx-config" content='{"includeIndicatorStyles": false}'>
+<title>Endpoint Manager</title>
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/htmx.min.js" defer></script>
+</head>
+<body>
+{% if nav.logged_in %}
+<header>
+  <strong>Endpoint Manager</strong>
+  <nav>
+    <a href="/">儀表板</a>
+    <a href="/devices">裝置</a>
+    <a href="/software">軟體搜尋</a>
+    {% if nav.manage %}<a href="/tokens">註冊金鑰</a>{% endif %}
+    {% if nav.platform %}<a href="/groups">群組</a><a href="/accounts">帳號</a><a href="/audit">稽核記錄</a>{% endif %}
+  </nav>
+  <a href="/password">{{ nav.user }}（{{ nav.role }}）</a>
+  <form method="post" action="/logout"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button>登出</button></form>
+</header>
+{% endif %}
+<main>
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>

@@ -240,10 +240,7 @@ async fn move_device_changes_group_and_audits(pool: PgPool) {
     let s = TestServer::start(pool).await;
     let tok = s.create_group_token("台北總部", 1).await;
     let a = s.enroll_ok(&tok, None, None).await;
-    let mut c = s.pool.acquire().await.unwrap();
-    let kh = endpoint_server::groups::find_or_create(&mut c, "高雄廠")
-        .await
-        .unwrap();
+    let kh = s.group_id("高雄廠").await;
     endpoint_server::groups::move_device(&s.pool, a.device_id, Some(kh), "tester")
         .await
         .unwrap();

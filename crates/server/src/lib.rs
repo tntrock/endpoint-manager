@@ -39,6 +39,8 @@ pub struct AppState {
     pub ca: Arc<ca::Ca>,
     pub heartbeat: Arc<heartbeat::HeartbeatBuffer>,
     pub enroll_limiter: Arc<ratelimit::RateLimiter>,
+    /// 管理網頁顯示時間用的時區
+    pub display_offset: chrono::FixedOffset,
 }
 
 impl AppState {
@@ -51,7 +53,15 @@ impl AppState {
                 ENROLL_PER_IP_PER_MINUTE,
                 Duration::from_secs(60),
             )),
+            display_offset: chrono::FixedOffset::east_opt(8 * 3600).expect("valid offset"),
         }
+    }
+
+    pub fn with_display_offset(mut self, hours: i32) -> Self {
+        if let Some(o) = chrono::FixedOffset::east_opt(hours * 3600) {
+            self.display_offset = o;
+        }
+        self
     }
 }
 

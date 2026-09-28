@@ -2,6 +2,9 @@
 
 use argon2::password_hash::phc::PasswordHash;
 use argon2::{Argon2, PasswordHasher, PasswordVerifier};
+use axum::extract::FromRequestParts;
+use axum::http::{header, request::Parts};
+use axum::response::{IntoResponse, Redirect, Response};
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -224,6 +227,81 @@ pub fn session_cookie(token: &str) -> String {
 
 pub fn clear_cookie() -> &'static str {
     "em_session=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0"
+}
+
+fn cookie_value(parts: &Parts, name: &str) -> Option<String> {
+    parts
+        .headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|s| s.split(';'))
+        .map(str::trim)
+        .find_map(|kv| kv.strip_prefix(name)?.strip_prefix('=').map(str::to_string))
+}
+
+/// 已登入的管理員；未登入時轉到登入頁。
+pub struct AdminSession(pub Session);
+
+impl FromRequestParts<crate::AppState> for AdminSession {
+    type Rejection = Response;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &crate::AppState,
+    ) -> Result<Self, Response> {
+        let to_login = || Redirect::to("/login").into_response();
+        let token = cookie_value(parts, SESSION_COOKIE).ok_or_else(to_login)?;
+        match lookup_session(&state.pool, &token).await {
+            Ok(Some(s)) => Ok(AdminSession(s)),
+            Ok(None) => Err(to_login()),
+            Err(e) => Err(crate::error::AppError::from(e).into_response()),
+        }
+    }
+}
+
+pub fn check_csrf(s: &Session, got: &str) -> Result<(), Response> {
+    if csrf_ok(&s.csrf, got) {
+        Ok(())
+    } else {
+        Err(super::forbidden())
+    }
+}
+
+/// 版面共用資訊。
+pub struct Nav {
+    pub logged_in: bool,
+    pub user: String,
+    pub role: &'static str,
+    pub csrf: String,
+    pub platform: bool,
+    pub manage: bool,
+}
+
+impl Nav {
+    pub fn anonymous() -> Nav {
+        Nav {
+            logged_in: false,
+            user: String::new(),
+            role: "",
+            csrf: String::new(),
+            platform: false,
+            manage: false,
+        }
+    }
+}
+
+impl From<&Session> for Nav {
+    fn from(s: &Session) -> Nav {
+        Nav {
+            logged_in: true,
+            user: s.username.clone(),
+            role: s.role.label(),
+            csrf: s.csrf.clone(),
+            platform: s.all_devices(),
+            manage: s.can_manage(),
+        }
+    }
 }
 
 #[cfg(test)]

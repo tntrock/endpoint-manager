@@ -66,6 +66,18 @@ pub fn server_config(ca_dir: &Path) -> anyhow::Result<Arc<ServerConfig>> {
     Ok(Arc::new(cfg))
 }
 
+/// 管理網頁用：只提供伺服器憑證，不要求用戶端憑證。
+pub fn web_server_config(ca_dir: &Path) -> anyhow::Result<Arc<ServerConfig>> {
+    let certs =
+        CertificateDer::pem_file_iter(ca_dir.join("server.pem"))?.collect::<Result<Vec<_>, _>>()?;
+    let key = PrivateKeyDer::from_pem_file(ca_dir.join("server.key"))?;
+    let mut cfg = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)?;
+    cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
+    Ok(Arc::new(cfg))
+}
+
 pub async fn serve_mtls(
     listener: TcpListener,
     config: Arc<ServerConfig>,
