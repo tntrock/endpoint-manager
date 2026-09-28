@@ -15,24 +15,23 @@ use crate::tokens;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum DeviceMatch {
-    Reuse(Uuid),
+    /// 與既有裝置硬體相同（通常是重灌）：需管理員核准
+    SameHardware(Uuid),
     NewDuplicateSuspect,
     New,
 }
 
-/// 候選裝置：(id, bios_serial, 最近 10 分鐘內有報到)。
-/// 仍在線上的裝置不會被接管，避免硬體識別重複或被偽造時把正常電腦踢下線。
+/// 候選裝置：(id, bios_serial)。
 pub fn match_device(
-    candidates: &[(Uuid, Option<String>, bool)],
+    candidates: &[(Uuid, Option<String>)],
     bios_serial: Option<&str>,
 ) -> DeviceMatch {
     if let Some(serial) = normalize_serial(bios_serial)
-        && let Some((id, _, recent)) = candidates
+        && let Some((id, _)) = candidates
             .iter()
-            .find(|(_, s, _)| s.as_deref() == Some(serial))
-        && !recent
+            .find(|(_, s)| s.as_deref() == Some(serial))
     {
-        return DeviceMatch::Reuse(*id);
+        return DeviceMatch::SameHardware(*id);
     }
     if candidates.is_empty() {
         DeviceMatch::New
@@ -106,13 +105,10 @@ pub async fn enroll(
 
     let smbios = normalize_smbios(req.smbios_uuid.as_deref());
     let serial = normalize_serial(req.bios_serial.as_deref());
-    let candidates: Vec<(Uuid, Option<String>, bool)> = match &smbios {
+    let candidates: Vec<(Uuid, Option<String>)> = match &smbios {
         Some(u) => {
             sqlx::query_as(
-                "SELECT id, bios_serial, \
-                        coalesce(last_seen_at > now() - interval '10 minutes', false) \
-                 FROM devices \
-                 WHERE smbios_uuid = $1 AND status <> 'retired' FOR UPDATE",
+                "SELECT id, bios_serial FROM devices                  WHERE smbios_uuid = $1 AND status IN ('active', 'duplicate_suspect') FOR UPDATE",
             )
             .bind(u)
             .fetch_all(&mut *tx)
@@ -121,46 +117,26 @@ pub async fn enroll(
         None => vec![],
     };
 
-    let device_id = match match_device(&candidates, serial) {
-        DeviceMatch::Reuse(id) => {
-            sqlx::query(
-                "UPDATE device_certs SET revoked_at = now() \
-                 WHERE device_id = $1 AND revoked_at IS NULL",
-            )
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-            sqlx::query("UPDATE devices SET hostname = $2, enroll_token_id = $3 WHERE id = $1")
-                .bind(id)
-                .bind(&req.hostname)
-                .bind(token_id)
-                .execute(&mut *tx)
-                .await?;
-            id
-        }
-        m => {
-            let id = Uuid::new_v4();
-            let status = if m == DeviceMatch::NewDuplicateSuspect {
-                "duplicate_suspect"
-            } else {
-                "active"
-            };
-            sqlx::query(
-                "INSERT INTO devices (id, hostname, smbios_uuid, bios_serial, status, enroll_token_id, group_id) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7)",
-            )
-            .bind(id)
-            .bind(&req.hostname)
-            .bind(&smbios)
-            .bind(serial)
-            .bind(status)
-            .bind(token_id)
-            .bind(group_id)
-            .execute(&mut *tx)
-            .await?;
-            id
-        }
+    // 一律建立新裝置記錄；與既有裝置硬體相同時等待管理員核准，不自動接管
+    let (status, reenroll_of) = match match_device(&candidates, serial) {
+        DeviceMatch::SameHardware(old) => ("pending_approval", Some(old)),
+        DeviceMatch::NewDuplicateSuspect => ("duplicate_suspect", None),
+        DeviceMatch::New => ("active", None),
     };
+    let device_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO devices          (id, hostname, smbios_uuid, bios_serial, status, enroll_token_id, group_id, reenroll_of)          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+    )
+    .bind(device_id)
+    .bind(&req.hostname)
+    .bind(&smbios)
+    .bind(serial)
+    .bind(status)
+    .bind(token_id)
+    .bind(group_id)
+    .bind(reenroll_of)
+    .execute(&mut *tx)
+    .await?;
 
     let issued = st
         .ca
@@ -190,26 +166,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn same_serial_reuses() {
+    fn same_serial_is_same_hardware() {
         let id = Uuid::new_v4();
         assert_eq!(
-            match_device(&[(id, Some("SN1".into()), false)], Some("SN1")),
-            DeviceMatch::Reuse(id)
-        );
-    }
-
-    #[test]
-    fn recently_seen_device_is_never_taken_over() {
-        assert_eq!(
-            match_device(&[(Uuid::new_v4(), Some("SN1".into()), true)], Some("SN1")),
-            DeviceMatch::NewDuplicateSuspect
+            match_device(&[(id, Some("SN1".into()))], Some("SN1")),
+            DeviceMatch::SameHardware(id)
         );
     }
 
     #[test]
     fn different_serial_is_duplicate_suspect() {
         assert_eq!(
-            match_device(&[(Uuid::new_v4(), Some("SN1".into()), false)], Some("SN2")),
+            match_device(&[(Uuid::new_v4(), Some("SN1".into()))], Some("SN2")),
             DeviceMatch::NewDuplicateSuspect
         );
     }
@@ -217,7 +185,7 @@ mod tests {
     #[test]
     fn missing_serial_never_reuses() {
         assert_eq!(
-            match_device(&[(Uuid::new_v4(), None, false)], None),
+            match_device(&[(Uuid::new_v4(), None)], None),
             DeviceMatch::NewDuplicateSuspect
         );
     }

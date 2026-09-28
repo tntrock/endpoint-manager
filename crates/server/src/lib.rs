@@ -5,6 +5,7 @@ pub mod ca;
 pub mod checkin;
 pub mod config;
 pub mod db;
+pub mod devices;
 pub mod diff;
 pub mod enroll;
 pub mod error;
