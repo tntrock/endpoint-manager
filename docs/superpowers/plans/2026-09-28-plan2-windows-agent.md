@@ -80,10 +80,10 @@ crates/agent/
 
 ### Task 0: 分支
 
-- [ ] **Step 1**
+- [x] **Step 1**：本計畫文件已提交在分支 `feat/plan2-windows-agent`（從合併計畫 1 後的 main 分出），實作直接接在其後。
 
 ```bash
-cd /d/VSCode/endpoint-manager && git switch main && git pull && git switch -c feat/plan2-windows-agent
+cd /d/VSCode/endpoint-manager && git switch feat/plan2-windows-agent
 ```
 
 ---
