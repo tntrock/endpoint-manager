@@ -142,3 +142,120 @@ async fn static_assets_served(pool: PgPool) {
             .contains("css")
     );
 }
+
+#[sqlx::test(migrations = false)]
+async fn dashboard_counts_and_device_list(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_group_token("台北總部", 5).await;
+    let a = s.enroll_ok(&tok, None, None).await;
+    let c = s.admin_client().await;
+    let (_, html) = s.page(&c, "/").await;
+    assert!(html.contains("裝置總數"));
+    let (status, html) = s.page(&c, "/devices").await;
+    assert_eq!(status, 200);
+    assert!(html.contains("PC-001") && html.contains("台北總部"));
+    assert!(html.contains(&format!("/devices/{}", a.device_id)));
+}
+
+#[sqlx::test(migrations = false)]
+async fn group_admin_sees_only_own_group(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tp = s.create_group_token("台北總部", 1).await;
+    let kh = s.create_group_token("高雄廠", 1).await;
+    let mine = s.enroll_ok(&tp, None, None).await;
+    let other = s.enroll_ok(&kh, None, None).await;
+    let c = s.login_as("gary", Role::GroupAdmin, &["台北總部"]).await;
+
+    let (_, html) = s.page(&c, "/devices").await;
+    assert!(html.contains(&mine.device_id.to_string()));
+    assert!(!html.contains(&other.device_id.to_string()));
+    let (_, html) = s.page(&c, "/devices?status=all").await;
+    assert!(!html.contains(&other.device_id.to_string()));
+    let (_, html) = s.page(&c, "/").await;
+    assert!(
+        html.contains("裝置總數<b>1</b>"),
+        "儀表板只算自己群組：{html}"
+    );
+}
+
+#[sqlx::test(migrations = false)]
+async fn hostile_hostname_is_escaped(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(1).await;
+    let a = s.enroll_ok(&tok, None, None).await;
+    sqlx::query("UPDATE devices SET hostname = '<script>alert(1)</script>', logged_on_user = '\"><img src=x onerror=alert(1)>' WHERE id = $1")
+        .bind(a.device_id)
+        .execute(&s.pool)
+        .await
+        .unwrap();
+    let c = s.admin_client().await;
+    let (_, html) = s.page(&c, "/devices").await;
+    assert!(!html.contains("<script>alert(1)"));
+    assert!(!html.contains("<img src=x"));
+    assert!(html.contains("&#60;script&#62;"));
+}
+
+#[sqlx::test(migrations = false)]
+async fn search_treats_wildcards_literally(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(2).await;
+    let a = s.enroll_ok(&tok, None, None).await;
+    let b = s.enroll_ok(&tok, None, None).await;
+    for (id, name) in [(a.device_id, "SALES_01"), (b.device_id, "SALESX01")] {
+        sqlx::query("UPDATE devices SET hostname = $2 WHERE id = $1")
+            .bind(id)
+            .bind(name)
+            .execute(&s.pool)
+            .await
+            .unwrap();
+    }
+    let c = s.admin_client().await;
+    let (_, html) = s.page(&c, "/devices?q=SALES_").await;
+    assert!(html.contains("SALES_01"));
+    assert!(!html.contains("SALESX01"));
+}
+
+#[sqlx::test(migrations = false)]
+async fn approvals_respect_role_and_scope(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tp = s.create_group_token("台北總部", 5).await;
+    let kh = s.create_group_token("高雄廠", 5).await;
+    let _ = s.enroll_ok(&tp, Some("UUID-T"), Some("SN-T")).await;
+    let tp_new = s.enroll_ok(&tp, Some("UUID-T"), Some("SN-T")).await;
+    let _ = s.enroll_ok(&kh, Some("UUID-K"), Some("SN-K")).await;
+    let kh_new = s.enroll_ok(&kh, Some("UUID-K"), Some("SN-K")).await;
+
+    let viewer = s.login_as("vera", Role::Viewer, &["台北總部"]).await;
+    let (_, html) = s.page(&viewer, "/").await;
+    let r = viewer
+        .post(s.web_url(&format!("/devices/{}/approve", tp_new.device_id)))
+        .form(&[("csrf", csrf_from(&html).as_str())])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 403, "檢視者不能核准");
+
+    let gary = s.login_as("gary", Role::GroupAdmin, &["台北總部"]).await;
+    let (_, html) = s.page(&gary, "/").await;
+    let csrf = csrf_from(&html);
+    let r = gary
+        .post(s.web_url(&format!("/devices/{}/approve", kh_new.device_id)))
+        .form(&[("csrf", csrf.as_str())])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 404, "別的群組當作不存在");
+    let r = gary
+        .post(s.web_url("/devices/approve-all"))
+        .form(&[("csrf", csrf.as_str())])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 303);
+    let pending: Vec<uuid::Uuid> =
+        sqlx::query_scalar("SELECT id FROM devices WHERE status = 'pending_approval'")
+            .fetch_all(&s.pool)
+            .await
+            .unwrap();
+    assert_eq!(pending, vec![kh_new.device_id], "只核准自己群組的");
+}

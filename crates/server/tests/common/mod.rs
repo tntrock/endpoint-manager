@@ -175,10 +175,8 @@ impl TestServer {
     }
 
     pub async fn create_group_token(&self, group: &str, max_uses: i32) -> String {
-        let mut c = self.pool.acquire().await.unwrap();
-        let gid = endpoint_server::groups::find_or_create(&mut c, group)
-            .await
-            .unwrap();
+        // 先歸還連線再建立金鑰，避免同時佔用兩條連線導致連線池逾時
+        let gid = self.group_id(group).await;
         tokens::create_token(
             &self.pool,
             &tokens::NewToken {

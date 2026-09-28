@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>裝置</h1>
+<form method="get" action="/devices">
+  <input name="q" value="{{ q }}" placeholder="電腦名稱／使用者／IP">
+  <select name="status">
+    {% for o in statuses %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}
+  </select>
+  <select name="group">
+    {% for o in groups %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}
+  </select>
+  {% if !software.is_empty() %}
+  <input type="hidden" name="software" value="{{ software }}">
+  <input type="hidden" name="version" value="{{ version }}">
+  <span class="muted">安裝了「{{ software }} {{ version }}」</span>
+  {% endif %}
+  <button>搜尋</button>
+</form>
+<table>
+  <tr><th>電腦名稱</th><th>群組</th><th>網域</th><th>作業系統</th><th>使用者</th><th>IP</th><th>最後報到</th><th>狀態</th></tr>
+  {% for d in rows %}
+  <tr>
+    <td><a href="/devices/{{ d.id }}">{{ d.hostname }}</a></td>
+    <td>{{ d.group }}</td><td>{{ d.domain }}</td><td>{{ d.os }}</td><td>{{ d.user }}</td><td>{{ d.ip }}</td>
+    <td>{{ d.last_seen }}</td>
+    <td><span class="badge {{ d.badge }}">{{ d.badge_label }}</span></td>
+  </tr>
+  {% endfor %}
+</table>
+<div class="pager">
+  {% if page > 0 %}<a href="{{ prev_url }}">上一頁</a>{% endif %}
+  <span class="muted">第 {{ page + 1 }} 頁</span>
+  {% if has_next %}<a href="{{ next_url }}">下一頁</a>{% endif %}
+</div>
+{% endblock %}

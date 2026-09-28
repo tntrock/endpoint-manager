@@ -5,6 +5,7 @@
 
 pub mod auth;
 pub mod dashboard;
+pub mod devices;
 pub mod login;
 
 use askama::Template;
@@ -108,6 +109,10 @@ pub fn web_router(state: AppState) -> Router {
         .route("/", get(dashboard::page))
         .route("/login", get(login::form).post(login::submit))
         .route("/logout", post(login::logout))
+        .route("/devices", get(devices::list))
+        .route("/devices/approve-all", post(devices::approve_all))
+        .route("/devices/{id}/approve", post(devices::approve))
+        .route("/devices/{id}/reject", post(devices::reject))
         .route(
             "/static/htmx.min.js",
             get(|| async {

@@ -1,4 +1,36 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>儀表板</h1>
+<div class="cards">
+  <div class="card">裝置總數<b>{{ total }}</b></div>
+  <div class="card online">在線<b>{{ online }}</b></div>
+  <div class="card offline">離線<b>{{ total - online }}</b></div>
+  <div class="card duplicate_suspect">疑似重複<b>{{ duplicate }}</b></div>
+  <div class="card pending_approval">待核准<b>{{ pending.len() }}</b></div>
+</div>
+{% if !pending.is_empty() %}
+<h2>待核准的重新註冊</h2>
+<p class="muted">硬體識別與既有裝置相同（通常是重灌）。核准後新憑證會接手原裝置的記錄；若不是預期的重灌，請拒絕。</p>
+{% if nav.manage %}
+<form method="post" action="/devices/approve-all">
+  <input type="hidden" name="csrf" value="{{ nav.csrf }}">
+  <button>全部核准（{{ pending.len() }}）</button>
+</form>
+{% endif %}
+<table>
+  <tr><th>新註冊</th><th>原裝置</th><th>群組</th><th>註冊時間</th><th></th></tr>
+  {% for p in pending %}
+  <tr>
+    <td><a href="/devices/{{ p.id }}">{{ p.hostname }}</a></td>
+    <td><a href="/devices/{{ p.old_id }}">{{ p.old_hostname }}</a></td>
+    <td>{{ p.group }}</td>
+    <td>{{ p.enrolled_at }}</td>
+    <td>{% if nav.manage %}
+      <form class="inline" method="post" action="/devices/{{ p.id }}/approve"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button>核准</button></form>
+      <form class="inline" method="post" action="/devices/{{ p.id }}/reject"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="danger">拒絕</button></form>
+    {% endif %}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
 {% endblock %}
