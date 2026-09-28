@@ -32,6 +32,16 @@ pub async fn approve_in(
     .await?
     .context("device is not pending approval")?;
     let old = old.context("pending device has no original device")?;
+    // 待核准期間原裝置可能已被除役：不可讓它復活
+    let old_status: Option<String> =
+        sqlx::query_scalar("SELECT status FROM devices WHERE id = $1 FOR UPDATE")
+            .bind(old)
+            .fetch_optional(&mut *conn)
+            .await?;
+    anyhow::ensure!(
+        matches!(old_status.as_deref(), Some("active" | "duplicate_suspect")),
+        "原裝置已除役或不存在，請拒絕這筆重新註冊"
+    );
 
     revoke_certs(conn, old).await?;
     sqlx::query("UPDATE device_certs SET device_id = $1 WHERE device_id = $2")
@@ -51,6 +61,11 @@ pub async fn approve_in(
         .execute(&mut *conn)
         .await?;
     sqlx::query("DELETE FROM devices WHERE id = $1")
+        .bind(pending)
+        .execute(&mut *conn)
+        .await?;
+    // 變更歷史是分割資料表、沒有外鍵，要自己刪
+    sqlx::query("DELETE FROM inventory_changes WHERE device_id = $1")
         .bind(pending)
         .execute(&mut *conn)
         .await?;

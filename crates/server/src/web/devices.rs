@@ -15,6 +15,8 @@ use crate::db::load_settings;
 use crate::error::AppError;
 
 pub const PAGE_SIZE: i64 = 50;
+/// 頁碼上限：避免 page * PAGE_SIZE 溢位
+pub const MAX_PAGE: i64 = 100_000;
 
 pub async fn online_cutoff(st: &AppState) -> Result<DateTime<Utc>, sqlx::Error> {
     let s = load_settings(&st.pool).await?;
@@ -148,7 +150,7 @@ pub async fn list(
     Query(q): Query<ListQuery>,
 ) -> Result<Response, AppError> {
     let cutoff = online_cutoff(&st).await?;
-    let page = q.page.max(0);
+    let page = q.page.clamp(0, MAX_PAGE);
     let group_filter: Option<i64> = q.group.parse().ok();
     let mut rows: Vec<ListRow> = sqlx::query_as(
         "SELECT d.id, d.hostname, g.name, coalesce(d.domain, ''), coalesce(d.os_caption, ''), \
@@ -297,14 +299,28 @@ pub async fn reject(
     Ok(Redirect::to("/").into_response())
 }
 
+#[derive(Deserialize)]
+pub struct ApproveAllForm {
+    csrf: String,
+    #[serde(default)]
+    confirm: String,
+}
+
 pub async fn approve_all(
     State(st): State<AppState>,
     AdminSession(s): AdminSession,
-    Form(f): Form<CsrfForm>,
+    Form(f): Form<ApproveAllForm>,
 ) -> Result<Response, Response> {
     check_csrf(&s, &f.csrf)?;
     if !s.can_manage() {
         return Err(forbidden());
+    }
+    if f.confirm.is_empty() {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            "請勾選確認後再全部核准",
+        )
+            .into_response());
     }
     let ids: Vec<Uuid> = sqlx::query_scalar(
         "SELECT d.id FROM devices d JOIN devices o ON o.id = d.reenroll_of \
@@ -317,13 +333,12 @@ pub async fn approve_all(
     .fetch_all(&st.pool)
     .await
     .map_err(db_error)?;
-    let mut tx = st.pool.begin().await.map_err(db_error)?;
+    // 逐台核准：其中一台失敗（例如原裝置已除役）不影響其他台，失敗的留在待核准清單
     for id in ids {
-        crate::devices::approve_in(&mut tx, id, &s.username)
-            .await
-            .map_err(action_error)?;
+        if let Err(e) = crate::devices::approve(&st.pool, id, &s.username).await {
+            tracing::warn!(device_id = %id, error = %format!("{e:#}"), "approve-all skipped a device");
+        }
     }
-    tx.commit().await.map_err(db_error)?;
     Ok(Redirect::to("/").into_response())
 }
 

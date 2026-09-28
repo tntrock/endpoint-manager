@@ -37,7 +37,9 @@ pub async fn list(
     let rows: Vec<(i64, String, i64, i64, i64)> = sqlx::query_as(
         "SELECT g.id, g.name, \
                 (SELECT count(*) FROM devices d WHERE d.group_id = g.id AND d.status <> 'retired'), \
-                (SELECT count(*) FROM enroll_tokens t WHERE t.group_id = g.id), \
+                (SELECT count(*) FROM enroll_tokens t WHERE t.group_id = g.id \
+                   AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at > now()) \
+                   AND t.used_count < t.max_uses), \
                 (SELECT count(*) FROM admin_groups a WHERE a.group_id = g.id) \
          FROM device_groups g ORDER BY g.name",
     )

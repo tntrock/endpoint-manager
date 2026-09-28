@@ -62,20 +62,39 @@ pub async fn create(pool: &PgPool, name: &str, actor: &str) -> anyhow::Result<i6
     Ok(id)
 }
 
-/// 只能刪除沒有裝置與金鑰的群組；指派給管理員的關聯會一併移除。
+/// 群組內「仍有效」的裝置與金鑰（與群組頁面顯示的數字相同）。
+pub const ACTIVE_DEVICES: &str =
+    "SELECT count(*) FROM devices WHERE group_id = $1 AND status <> 'retired'";
+pub const ACTIVE_TOKENS: &str = "SELECT count(*) FROM enroll_tokens WHERE group_id = $1 \
+     AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now()) \
+     AND used_count < max_uses";
+
+/// 還有有效裝置、有效金鑰或被指派的管理員時不能刪除（管理員可能因此沒有任何群組）。
+/// 已除役的裝置與失效的金鑰改為未分組。
 pub async fn delete(pool: &PgPool, id: i64, actor: &str) -> anyhow::Result<()> {
     let mut tx = pool.begin().await?;
-    let (devices, tokens): (i64, i64) = sqlx::query_as(
-        "SELECT (SELECT count(*) FROM devices WHERE group_id = $1), \
-                (SELECT count(*) FROM enroll_tokens WHERE group_id = $1)",
-    )
-    .bind(id)
-    .fetch_one(&mut *tx)
-    .await?;
+    // 鎖住群組列，避免檢查後又有人把裝置、金鑰或管理員加進來
+    sqlx::query("SELECT id FROM device_groups WHERE id = $1 FOR UPDATE")
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("群組不存在"))?;
+    let count = |sql: &'static str| sqlx::query_scalar::<_, i64>(sql).bind(id);
+    let devices = count(ACTIVE_DEVICES).fetch_one(&mut *tx).await?;
+    let tokens = count(ACTIVE_TOKENS).fetch_one(&mut *tx).await?;
+    let admins = count("SELECT count(*) FROM admin_groups WHERE group_id = $1")
+        .fetch_one(&mut *tx)
+        .await?;
     anyhow::ensure!(
-        devices == 0 && tokens == 0,
-        "群組內還有 {devices} 台裝置、{tokens} 把金鑰，無法刪除"
+        devices == 0 && tokens == 0 && admins == 0,
+        "群組內還有 {devices} 台裝置、{tokens} 把有效金鑰、{admins} 位管理員，無法刪除"
     );
+    for sql in [
+        "UPDATE devices SET group_id = NULL WHERE group_id = $1",
+        "UPDATE enroll_tokens SET group_id = NULL WHERE group_id = $1",
+    ] {
+        sqlx::query(sql).bind(id).execute(&mut *tx).await?;
+    }
     let name: Option<String> =
         sqlx::query_scalar("DELETE FROM device_groups WHERE id = $1 RETURNING name")
             .bind(id)

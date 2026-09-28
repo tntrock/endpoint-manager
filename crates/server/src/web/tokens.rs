@@ -12,7 +12,7 @@ use super::devices::{SelectOption, db_error, group_options};
 use super::login::CsrfForm;
 use super::{fmt_time, forbidden, not_found, render};
 use crate::AppState;
-use crate::tokens::{NewToken, create_token, revoke_token};
+use crate::tokens::{NewToken, create_token_in, revoke_token};
 
 /// 內含於安裝檔的金鑰最長有效天數
 const INSTALLER_MAX_DAYS: i64 = 90;
@@ -109,7 +109,10 @@ async fn page_for(
         groups: group_options(st, s, "", false).await.map_err(db_error)?,
         rows,
         // 檔案可能在伺服器啟動後才放進來，每次顯示時檢查
-        installer: st.agent_msi.as_ref().is_some_and(|p| p.is_file()),
+        installer: match &st.agent_msi {
+            Some(p) => tokio::fs::metadata(p).await.is_ok_and(|m| m.is_file()),
+            None => false,
+        },
         public_url: st.agent_public_url.clone(),
     }))
 }
@@ -204,8 +207,10 @@ pub async fn create(
     } else {
         None
     };
-    let (id, token) = create_token(
-        &st.pool,
+    // 金鑰與稽核記錄同一個交易：不會有沒留下記錄的金鑰
+    let mut tx = st.pool.begin().await.map_err(db_error)?;
+    let (id, token) = create_token_in(
+        &mut tx,
         &NewToken {
             name: name.into(),
             group_id: group,
@@ -216,9 +221,8 @@ pub async fn create(
     )
     .await
     .map_err(db_error)?;
-    let mut c = st.pool.acquire().await.map_err(db_error)?;
     crate::audit::record(
-        &mut c,
+        &mut tx,
         &s.username,
         "token_create",
         Some(&id.to_string()),
@@ -229,7 +233,7 @@ pub async fn create(
     )
     .await
     .map_err(db_error)?;
-    drop(c);
+    tx.commit().await.map_err(db_error)?;
     if let Some((url, template)) = installer {
         let root = st.ca.root_pem().to_string();
         let msi = tokio::task::spawn_blocking(move || {

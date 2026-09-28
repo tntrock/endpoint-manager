@@ -22,6 +22,14 @@ fn generate_token() -> String {
 }
 
 pub async fn create_token(pool: &PgPool, t: &NewToken) -> Result<(i64, String), sqlx::Error> {
+    create_token_in(&mut *pool.acquire().await?, t).await
+}
+
+/// 在呼叫端的交易內建立（與稽核記錄一起提交）。
+pub async fn create_token_in(
+    conn: &mut PgConnection,
+    t: &NewToken,
+) -> Result<(i64, String), sqlx::Error> {
     let token = generate_token();
     let id: i64 = sqlx::query_scalar(
         "INSERT INTO enroll_tokens (name, token_hash, group_id, expires_at, max_uses, created_by) \
@@ -33,7 +41,7 @@ pub async fn create_token(pool: &PgPool, t: &NewToken) -> Result<(i64, String), 
     .bind(t.expires_at)
     .bind(t.max_uses)
     .bind(&t.created_by)
-    .fetch_one(pool)
+    .fetch_one(conn)
     .await?;
     Ok((id, token))
 }
