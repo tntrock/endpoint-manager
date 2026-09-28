@@ -583,3 +583,194 @@ async fn token_form_validates_input(pool: PgPool) {
         .unwrap();
     assert_eq!(n, 0);
 }
+
+async fn admin_id(s: &TestServer, name: &str) -> i64 {
+    sqlx::query_scalar("SELECT id FROM admins WHERE username = $1")
+        .bind(name)
+        .fetch_one(&s.pool)
+        .await
+        .unwrap()
+}
+
+#[sqlx::test(migrations = false)]
+async fn non_platform_cannot_open_admin_pages(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let gary = s.login_as("gary", Role::GroupAdmin, &["台北總部"]).await;
+    for path in ["/groups", "/accounts", "/audit"] {
+        assert_eq!(s.page(&gary, path).await.0, 403, "{path}");
+    }
+}
+
+#[sqlx::test(migrations = false)]
+async fn platform_admin_manages_groups(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let c = s.admin_client().await;
+    let (_, html) = s.page(&c, "/groups").await;
+    let csrf = csrf_from(&html);
+    let r = c
+        .post(s.web_url("/groups"))
+        .form(&[("csrf", csrf.as_str()), ("name", "新竹辦公室")])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 303);
+    let id: i64 = sqlx::query_scalar("SELECT id FROM device_groups WHERE name = '新竹辦公室'")
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+
+    let _ = s.create_group_token("台北總部", 1).await;
+    let busy = s.group_id("台北總部").await;
+    let r = c
+        .post(s.web_url(&format!("/groups/{busy}/delete")))
+        .form(&[("csrf", csrf.as_str())])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 409, "有金鑰的群組不能刪");
+    let r = c
+        .post(s.web_url(&format!("/groups/{id}/delete")))
+        .form(&[("csrf", csrf.as_str())])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 303);
+}
+
+#[sqlx::test(migrations = false)]
+async fn platform_admin_creates_group_admin_who_can_log_in(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tp = s.group_id("台北總部").await;
+    let kh = s.group_id("高雄廠").await;
+    let c = s.admin_client().await;
+    let (_, html) = s.page(&c, "/accounts").await;
+    let body = format!(
+        "csrf={}&username=henry&role=group_admin&groups={tp}&groups={kh}&password=henry-long-password",
+        csrf_from(&html)
+    );
+    let r = c
+        .post(s.web_url("/accounts"))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 303);
+    let groups: Vec<i64> = sqlx::query_scalar(
+        "SELECT group_id FROM admin_groups JOIN admins a ON a.id = admin_id \
+         WHERE a.username = 'henry' ORDER BY group_id",
+    )
+    .fetch_all(&s.pool)
+    .await
+    .unwrap();
+    let mut expected = vec![tp, kh];
+    expected.sort();
+    assert_eq!(groups, expected);
+
+    let r = s
+        .web_client()
+        .post(s.web_url("/login"))
+        .form(&[("username", "henry"), ("password", "henry-long-password")])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 303);
+}
+
+#[sqlx::test(migrations = false)]
+async fn disable_kills_sessions(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let gary = s.login_as("gary", Role::GroupAdmin, &["台北總部"]).await;
+    assert_eq!(s.page(&gary, "/").await.0, 200);
+    let id = admin_id(&s, "gary").await;
+    let c = s.admin_client().await;
+    let (_, html) = s.page(&c, &format!("/accounts/{id}")).await;
+    let r = c
+        .post(s.web_url(&format!("/accounts/{id}/disable")))
+        .form(&[("csrf", csrf_from(&html).as_str())])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 303);
+    assert_eq!(s.page(&gary, "/").await.0, 303, "被停用後立即登出");
+}
+
+#[sqlx::test(migrations = false)]
+async fn platform_admin_cannot_disable_self(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let c = s.admin_client().await;
+    let id = admin_id(&s, "admin").await;
+    let (_, html) = s.page(&c, &format!("/accounts/{id}")).await;
+    let r = c
+        .post(s.web_url(&format!("/accounts/{id}/disable")))
+        .form(&[("csrf", csrf_from(&html).as_str())])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 409);
+}
+
+#[sqlx::test(migrations = false)]
+async fn reset_password_unlocks_and_user_changes_own(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let _ = s.login_as("gary", Role::GroupAdmin, &["台北總部"]).await;
+    sqlx::query(
+        "UPDATE admins SET locked_until = now() + interval '10 minutes' WHERE username = 'gary'",
+    )
+    .execute(&s.pool)
+    .await
+    .unwrap();
+    let id = admin_id(&s, "gary").await;
+    let c = s.admin_client().await;
+    let (_, html) = s.page(&c, &format!("/accounts/{id}")).await;
+    let r = c
+        .post(s.web_url(&format!("/accounts/{id}/password")))
+        .form(&[
+            ("csrf", csrf_from(&html).as_str()),
+            ("password", "temporary-password-1"),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 303);
+
+    let g = s.web_client();
+    let r = g
+        .post(s.web_url("/login"))
+        .form(&[("username", "gary"), ("password", "temporary-password-1")])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 303, "重設後可登入（鎖定已解除）");
+    let (_, html) = s.page(&g, "/password").await;
+    let csrf = csrf_from(&html);
+    let r = g
+        .post(s.web_url("/password"))
+        .form(&[
+            ("csrf", csrf.as_str()),
+            ("current", "wrong-password-xx"),
+            ("new", "gary-new-password"),
+            ("confirm", "gary-new-password"),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 400);
+    let r = g
+        .post(s.web_url("/password"))
+        .form(&[
+            ("csrf", csrf.as_str()),
+            ("current", "temporary-password-1"),
+            ("new", "gary-new-password"),
+            ("confirm", "gary-new-password"),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(
+        s.page(&g, "/").await.0,
+        200,
+        "改自己的密碼不會登出目前的工作階段"
+    );
+}

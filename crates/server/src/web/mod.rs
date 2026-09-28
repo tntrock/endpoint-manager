@@ -3,10 +3,13 @@
 //! handler 以 `Result<Response, Response>` 回傳錯誤頁（axum 慣用寫法），允許較大的 Err。
 #![allow(clippy::result_large_err)]
 
+pub mod accounts;
 pub mod auth;
 pub mod dashboard;
 pub mod devices;
+pub mod groups;
 pub mod login;
+pub mod password;
 pub mod software;
 pub mod tokens;
 
@@ -115,6 +118,18 @@ pub fn web_router(state: AppState) -> Router {
         .route("/software", get(software::search))
         .route("/tokens", get(tokens::list).post(tokens::create))
         .route("/tokens/{id}/revoke", post(tokens::revoke))
+        .route("/groups", get(groups::list).post(groups::create))
+        .route("/groups/{id}/delete", post(groups::delete))
+        .route("/accounts", get(accounts::list).post(accounts::create))
+        .route(
+            "/accounts/{id}",
+            get(accounts::detail).post(accounts::update),
+        )
+        .route("/accounts/{id}/disable", post(accounts::disable))
+        .route("/accounts/{id}/enable", post(accounts::enable))
+        .route("/accounts/{id}/unlock", post(accounts::unlock))
+        .route("/accounts/{id}/password", post(accounts::reset_password))
+        .route("/password", get(password::form).post(password::submit))
         .route("/devices/approve-all", post(devices::approve_all))
         .route("/devices/{id}/approve", post(devices::approve))
         .route("/devices/{id}/reject", post(devices::reject))
