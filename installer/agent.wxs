@@ -4,7 +4,10 @@
   <Package Name="Endpoint Manager Agent" Manufacturer="Endpoint Manager"
            Version="$(Version)" UpgradeCode="C1FDEBF6-F5C5-46E4-A913-5B6690EB943B"
            Scope="perMachine" Codepage="65001">
-    <MajorUpgrade DowngradeErrorMessage="已安裝較新版本的 Endpoint Manager Agent。" />
+    <!-- 伺服器每次產生安裝檔都換新 ProductCode：同版本也能用另一個安裝檔升級（改網址、換群組） -->
+    <!-- afterInstallInitialize：移除舊版納入同一個交易，升級失敗會還原舊版 -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes" Schedule="afterInstallInitialize"
+                  DowngradeErrorMessage="已安裝較新版本的 Endpoint Manager Agent。" />
     <MediaTemplate EmbedCab="yes" />
 
     <!-- 值為單一空白（＝未提供）：伺服器以更新既有列的方式寫入，
@@ -12,6 +15,11 @@
     <Property Id="SERVER_URL" Value=" " Secure="yes" />
     <Property Id="ENROLL_TOKEN" Value=" " Secure="yes" Hidden="yes" />
     <Property Id="ROOT_CA" Value=" " Secure="yes" />
+
+    <!-- 安裝前資料目錄是否已存在（升級或重裝）：決定安裝失敗回復時能不能刪除 -->
+    <Property Id="EM_DATA_EXISTS">
+      <DirectorySearch Id="EmDataSearch" Path="[CommonAppDataFolder]EndpointManager" Depth="0" />
+    </Property>
 
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="EndpointManager">
@@ -43,7 +51,12 @@
                   Execute="deferred" Impersonate="no" Return="check" HideTarget="yes" />
     <CustomAction Id="Unconfigure" FileRef="AgentExe" ExeCommand="unconfigure"
                   Execute="deferred" Impersonate="no" Return="ignore" />
+    <!-- 安裝失敗回復：這次才建立的資料目錄（可能已寫入金鑰）一併刪除；原本就有的不動 -->
+    <CustomAction Id="ConfigureRollback" FileRef="AgentExe" ExeCommand="unconfigure"
+                  Execute="rollback" Impersonate="no" Return="ignore" />
     <InstallExecuteSequence>
+      <Custom Action="ConfigureRollback" Before="Configure"
+              Condition="NOT REMOVE AND NOT EM_DATA_EXISTS" />
       <Custom Action="Configure" After="InstallServices" Condition="NOT REMOVE" />
       <Custom Action="Unconfigure" Before="RemoveFiles"
               Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />

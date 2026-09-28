@@ -23,18 +23,17 @@ pub fn build_msi(
     token: &str,
     root_pem: &str,
 ) -> anyhow::Result<Vec<u8>> {
-    let existing = read_properties(template)?;
+    check_template(template)?;
     let mut pkg = Package::open(Cursor::new(template.to_vec()))?;
     let root = root_b64(root_pem);
+    // 每個下載都是不同的產品：同版本也能以另一個安裝檔升級（範本設 AllowSameVersionUpgrades）
+    let product_code = format!("{{{}}}", uuid::Uuid::new_v4()).to_uppercase();
     for (k, v) in [
         ("SERVER_URL", server_url),
         ("ENROLL_TOKEN", token),
         ("ROOT_CA", root.as_str()),
+        ("ProductCode", product_code.as_str()),
     ] {
-        anyhow::ensure!(
-            existing.contains_key(k),
-            "範本 MSI 缺少 {k} 屬性（請用 installer/agent.wxs 建置的範本）"
-        );
         pkg.update_rows(
             Update::table("Property")
                 .set("Value", Value::from(v))
@@ -44,6 +43,18 @@ pub fn build_msi(
     }
     pkg.summary_info_mut().set_uuid(uuid::Uuid::new_v4());
     Ok(pkg.into_inner()?.into_inner())
+}
+
+/// 範本必須是可讀的 MSI，且預先放好要改寫的屬性（只能更新既有列）。
+pub fn check_template(template: &[u8]) -> anyhow::Result<()> {
+    let existing = read_properties(template)?;
+    for k in ["SERVER_URL", "ENROLL_TOKEN", "ROOT_CA", "ProductCode"] {
+        anyhow::ensure!(
+            existing.contains_key(k),
+            "範本 MSI 缺少 {k} 屬性（請用 installer/agent.wxs 建置的範本）"
+        );
+    }
+    Ok(())
 }
 
 pub fn read_properties(msi: &[u8]) -> anyhow::Result<BTreeMap<String, String>> {
@@ -86,7 +97,7 @@ pub fn normalize_server_url(url: &str, names: &[String]) -> Result<String, Strin
         .ok()
         .filter(|p| *p != 0)
         .ok_or("伺服器網址的埠須為 1～65535")?;
-    if !names.iter().any(|n| n.eq_ignore_ascii_case(&host)) {
+    if !names.iter().any(|n| san_matches(n, &host)) {
         return Err(format!(
             "「{host}」不在伺服器憑證的名稱內（{}），Agent 會無法連線",
             names.join("、")
@@ -95,10 +106,21 @@ pub fn normalize_server_url(url: &str, names: &[String]) -> Result<String, Strin
     Ok(url_of(&host, port))
 }
 
+/// 憑證名稱是否涵蓋主機：完全相同（不分大小寫），或 `*.網域` 涵蓋恰好多一層的名稱。
+fn san_matches(name: &str, host: &str) -> bool {
+    match name.strip_prefix("*.") {
+        Some(domain) => host
+            .split_once('.')
+            .is_some_and(|(label, rest)| !label.is_empty() && rest.eq_ignore_ascii_case(domain)),
+        None => name.eq_ignore_ascii_case(host),
+    }
+}
+
 /// 未設定 EM_AGENT_PUBLIC_URL 時，表單預設填入伺服器憑證的第一個名稱與 Agent API 的埠。
 pub fn default_public_url(names: &[String], agent_port: u16) -> String {
     names
-        .first()
+        .iter()
+        .find(|n| !n.starts_with("*."))
         .map(|h| url_of(h, agent_port))
         .unwrap_or_default()
 }
@@ -116,13 +138,15 @@ fn url_of(host: &str, port: u16) -> String {
 pub fn sample_template() -> Vec<u8> {
     template_with(&[
         ("KEEP", "me"),
+        ("ProductCode", "{00000000-0000-0000-0000-000000000001}"),
         ("SERVER_URL", " "),
         ("ENROLL_TOKEN", " "),
         ("ROOT_CA", " "),
     ])
 }
 
-fn template_with(props: &[(&str, &str)]) -> Vec<u8> {
+#[doc(hidden)]
+pub fn template_with(props: &[(&str, &str)]) -> Vec<u8> {
     let mut pkg =
         Package::create(PackageType::Installer, Cursor::new(Vec::new())).expect("create package");
     pkg.create_table(
@@ -157,6 +181,18 @@ mod tests {
         assert_eq!(p["KEEP"], "me", "其他屬性不動");
         let b = build_msi(&t, "https://em.example.com:8443", "tok-2", ROOT).unwrap();
         assert_ne!(package_code(&a), package_code(&b));
+        // 每個下載都是不同的產品，同版本也能用另一個安裝檔升級（改網址、換群組）
+        let pb = read_properties(&b).unwrap();
+        let tp = read_properties(&t).unwrap();
+        assert_ne!(p["ProductCode"], tp["ProductCode"]);
+        assert_ne!(p["ProductCode"], pb["ProductCode"]);
+        assert!(
+            uuid::Uuid::parse_str(p["ProductCode"].trim_matches(['{', '}'])).is_ok()
+                && p["ProductCode"].starts_with('{')
+                && p["ProductCode"] == p["ProductCode"].to_uppercase(),
+            "{}",
+            p["ProductCode"]
+        );
         // 範本已有同名屬性時覆寫而不是重複
         let again = build_msi(&a, "https://other.example.com:8443", "tok-3", ROOT).unwrap();
         assert_eq!(
@@ -226,6 +262,21 @@ mod tests {
     }
 
     #[test]
+    fn server_url_matches_wildcard_san_and_ipv6_variants() {
+        let names = vec!["*.example.com".to_string(), "::1".to_string()];
+        let ok = |u: &str| normalize_server_url(u, &names);
+        assert_eq!(
+            ok("https://em.example.com:8443").unwrap(),
+            "https://em.example.com:8443"
+        );
+        // 萬用字元只涵蓋一層
+        assert!(ok("https://a.b.example.com:8443").is_err());
+        assert!(ok("https://example.com:8443").is_err());
+        // IPv6 寫法不同但位址相同
+        assert_eq!(ok("https://[0:0::1]:8443").unwrap(), "https://[::1]:8443");
+    }
+
+    #[test]
     fn default_public_url_uses_first_name_and_agent_port() {
         assert_eq!(
             default_public_url(&["em.example.com".into(), "10.1.2.3".into()], 8443),
@@ -236,6 +287,10 @@ mod tests {
             "https://[::1]:8443"
         );
         assert_eq!(default_public_url(&[], 8443), "");
+        assert_eq!(
+            default_public_url(&["*.example.com".into(), "em.example.com".into()], 8443),
+            "https://em.example.com:8443"
+        );
     }
 
     fn package_code(msi: &[u8]) -> uuid::Uuid {

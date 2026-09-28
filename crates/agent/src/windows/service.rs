@@ -67,7 +67,7 @@ fn run_service() -> anyhow::Result<()> {
     handle.set_service_status(status(ServiceState::Running, OK))?;
 
     let dir = super::agent_dir();
-    let result = crate::state::harden_dir(&dir).and_then(|()| {
+    let result = super::secdir::verify_data_dir(&dir).and_then(|()| {
         let rt = tokio::runtime::Runtime::new()?;
         let r = rt.block_on(super::run(&dir, rx));
         let _ = handle.set_service_status(status(ServiceState::StopPending, OK));

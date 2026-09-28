@@ -108,7 +108,8 @@ async fn page_for(
         new_token,
         groups: group_options(st, s, "", false).await.map_err(db_error)?,
         rows,
-        installer: st.agent_msi.is_some(),
+        // 檔案可能在伺服器啟動後才放進來，每次顯示時檢查
+        installer: st.agent_msi.as_ref().is_some_and(|p| p.is_file()),
         public_url: st.agent_public_url.clone(),
     }))
 }
@@ -194,6 +195,10 @@ pub async fn create(
         let template = tokio::fs::read(path).await.map_err(|e| {
             tracing::error!(error = %e, path = %path.display(), "cannot read agent MSI template");
             (StatusCode::SERVICE_UNAVAILABLE, "讀不到安裝檔範本").into_response()
+        })?;
+        crate::installer::check_template(&template).map_err(|e| {
+            tracing::error!(error = %format!("{e:#}"), path = %path.display(), "bad agent MSI template");
+            (StatusCode::SERVICE_UNAVAILABLE, "安裝檔範本不正確").into_response()
         })?;
         Some((url, template))
     } else {

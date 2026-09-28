@@ -56,6 +56,29 @@ pub fn merge_config(
     })
 }
 
+/// 安裝時寫入 root.pem（有提供才寫，否則沿用）與合併後的 config.json。資料目錄須已可信。
+/// 先全部驗證再寫檔，失敗時不留下只改了一半的設定。
+pub fn apply_install_config(
+    data: &Path,
+    server_url: Option<&str>,
+    token: Option<&str>,
+    root_ca: Option<&str>,
+) -> anyhow::Result<()> {
+    let root_path = data.join("root.pem");
+    let root_pem = root_ca.map(root_pem_from_b64).transpose()?;
+    anyhow::ensure!(
+        root_pem.is_some() || root_path.exists(),
+        "ROOT_CA is required on first install"
+    );
+    let existing = AgentConfig::load(data).ok();
+    let enrolled = crate::state::AgentState::load(data)?.is_enrolled();
+    let config = merge_config(existing, enrolled, server_url, token)?;
+    if let Some(pem) = root_pem {
+        write_atomic(&root_path, pem.as_bytes())?;
+    }
+    config.save(data)
+}
+
 /// MSI 的 ROOT_CA 屬性（單行 base64 DER）→ PEM；不是一張可解析的 X.509 憑證就拒絕。
 pub fn root_pem_from_b64(b64: &str) -> anyhow::Result<String> {
     use rustls::pki_types::{CertificateDer, pem::PemObject};
@@ -138,6 +161,45 @@ mod tests {
                 .unwrap()
                 .enroll_token,
             None
+        );
+    }
+
+    /// 驗證全部通過才寫檔：失敗的安裝回復後，不能留下換過的 root.pem。
+    #[test]
+    fn invalid_config_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("root.pem"), "old").unwrap();
+        let key = rcgen::KeyPair::generate().unwrap();
+        let pem = rcgen::CertificateParams::default()
+            .self_signed(&key)
+            .unwrap()
+            .pem();
+        let b64: String = pem.lines().filter(|l| !l.starts_with("-----")).collect();
+        assert!(apply_install_config(dir.path(), Some("http://a:8443"), None, Some(&b64)).is_err());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("root.pem")).unwrap(),
+            "old"
+        );
+    }
+
+    /// 狀態檔只有 device_id（沒有憑證或私鑰）無法報到，還需要金鑰重新註冊。
+    #[test]
+    fn partial_state_keeps_token() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("root.pem"), "x").unwrap();
+        crate::state::AgentState {
+            device_id: Some(uuid::Uuid::new_v4()),
+            ..Default::default()
+        }
+        .save(dir.path())
+        .unwrap();
+        apply_install_config(dir.path(), Some("https://a:8443"), Some("tok"), None).unwrap();
+        assert_eq!(
+            AgentConfig::load(dir.path())
+                .unwrap()
+                .enroll_token
+                .as_deref(),
+            Some("tok")
         );
     }
 

@@ -85,53 +85,81 @@ impl AgentState {
     }
 }
 
-/// 建立目錄；Windows 上移除繼承權限，只留 SYSTEM 與 Administrators（以 SID 指定，不受語系影響）。
-pub fn secure_dir(dir: &Path) -> anyhow::Result<()> {
-    std::fs::create_dir_all(dir)?;
-    #[cfg(windows)]
-    {
-        let status = std::process::Command::new("icacls")
-            .arg(dir)
-            .args([
-                "/inheritance:r",
-                "/grant:r",
-                "*S-1-5-18:(OI)(CI)F",
-                "*S-1-5-32-544:(OI)(CI)F",
-            ])
-            .stdout(std::process::Stdio::null())
-            .status()?;
-        anyhow::ensure!(status.success(), "icacls failed on {}", dir.display());
-    }
-    Ok(())
-}
+/// 資料目錄的安全描述元（SDDL）：擁有者 Administrators，DACL 受保護（不繼承），
+/// 只有 SYSTEM 與 Administrators 完全控制。建立目錄時直接套用。
+pub const DATA_DIR_SDDL: &str = "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
 
-/// 服務模式用：先把目錄與其下所有檔案的擁有者改為 Administrators 並重設子項 ACL，
-/// 再套用 secure_dir。防止一般使用者搶先建立目錄或暫存檔、以擁有者身分改回權限。
-/// 需要系統管理員權限。
-pub fn harden_dir(dir: &Path) -> anyhow::Result<()> {
-    std::fs::create_dir_all(dir)?;
-    #[cfg(windows)]
-    for args in [
-        &["/setowner", "*S-1-5-32-544", "/T", "/C", "/Q"][..],
-        &["/reset", "/T", "/C", "/Q"][..],
-    ] {
-        let status = std::process::Command::new("icacls")
-            .arg(dir)
-            .args(args)
-            .stdout(std::process::Stdio::null())
-            .status()?;
-        anyhow::ensure!(
-            status.success(),
-            "icacls {args:?} failed on {}",
-            dir.display()
-        );
+/// 目錄現有的安全描述元是否可信：擁有者為 SYSTEM／Administrators，DACL 受保護，
+/// 而且恰好只有 SYSTEM 與 Administrators 的完全控制（沒有其他項目、沒有繼承項目）。
+/// 用在搶先建立目錄的一般使用者：他可能是擁有者，或自己加了權限項目。
+pub fn sddl_is_trusted(sddl: &str) -> bool {
+    const SYSTEM: [&str; 2] = ["SY", "S-1-5-18"];
+    const ADMINS: [&str; 2] = ["BA", "S-1-5-32-544"];
+    let Some(owner) = sddl
+        .strip_prefix("O:")
+        .map(|r| r.split(['G', 'D']).next().unwrap_or_default())
+    else {
+        return false;
+    };
+    if !SYSTEM.contains(&owner) && !ADMINS.contains(&owner) {
+        return false;
     }
-    secure_dir(dir)
+    let Some((_, dacl)) = sddl.split_once("D:") else {
+        return false;
+    };
+    let (flags, aces) = dacl.split_at(dacl.find('(').unwrap_or(dacl.len()));
+    if !flags.contains('P') {
+        return false;
+    }
+    let (mut system, mut admins) = (false, false);
+    for ace in aces.split(['(', ')']).filter(|a| !a.is_empty()) {
+        let f: Vec<&str> = ace.split(';').collect();
+        let full = f.len() == 6
+            && f[0] == "A"
+            && matches!(f[1], "OICI" | "CIOI")
+            && matches!(f[2], "FA" | "0x1f01ff");
+        match f.get(5) {
+            Some(sid) if full && SYSTEM.contains(sid) && !system => system = true,
+            Some(sid) if full && ADMINS.contains(sid) && !admins => admins = true,
+            _ => return false,
+        }
+    }
+    system && admins
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trusted_sddl_is_exactly_system_and_admins() {
+        for ok in [
+            "O:BAG:SYD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)",
+            "O:SYD:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)",
+            "O:S-1-5-32-544D:P(A;CIOI;0x1f01ff;;;S-1-5-18)(A;OICI;FA;;;S-1-5-32-544)",
+        ] {
+            assert!(sddl_is_trusted(ok), "{ok}");
+        }
+        for bad in [
+            // 擁有者是一般使用者：可以隨時改回權限
+            "O:S-1-5-21-1-2-3-1001D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)",
+            // 沒有 P：會繼承 ProgramData（Users 可讀）
+            "O:BAD:AI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)",
+            // 多一個使用者自己加的項目
+            "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;S-1-5-21-1-2-3-1001)",
+            "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;BU)",
+            // 拒絕項目、繼承項目、缺少其中一個、權限不足
+            "O:BAD:P(D;OICI;FA;;;BA)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)",
+            "O:BAD:P(A;OICIID;FA;;;SY)(A;OICI;FA;;;BA)",
+            "O:BAD:P(A;OICI;FA;;;SY)",
+            "O:BAD:P(A;OICI;FR;;;SY)(A;OICI;FA;;;BA)",
+            // 沒有 DACL
+            "O:BAG:SY",
+            "",
+        ] {
+            assert!(!sddl_is_trusted(bad), "{bad}");
+        }
+    }
 
     #[test]
     fn missing_state_is_default() {
