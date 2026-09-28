@@ -1,0 +1,5 @@
+<p class="muted">共 {{ rows.len() }} 筆{% if truncated %}（僅顯示前 {{ rows.len() }} 筆）{% endif %}</p>
+<table>
+  <tr>{% for h in headers %}<th>{{ h }}</th>{% endfor %}</tr>
+  {% for row in rows %}<tr>{% for cell in row %}<td>{{ cell }}</td>{% endfor %}</tr>{% endfor %}
+</table>

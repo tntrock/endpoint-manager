@@ -48,7 +48,7 @@ async fn env(pool: PgPool, token_uses: i32) -> Env {
         &pool,
         &tokens::NewToken {
             name: "e2e".into(),
-            group_label: None,
+            group_id: None,
             expires_at: None,
             max_uses: token_uses,
             created_by: "test".into(),

@@ -58,32 +58,6 @@ async fn concurrent_enroll_does_not_exceed_max_uses(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = false)]
-async fn reenroll_same_hardware_reuses_device_and_revokes_old_cert(pool: PgPool) {
-    let s = TestServer::start(pool).await;
-    let tok = s.create_token(5).await;
-    let first = s.enroll_ok(&tok, Some("UUID-A"), Some("SN-A")).await;
-    let second = s.enroll_ok(&tok, Some("uuid-a"), Some("SN-A")).await;
-    assert_eq!(first.device_id, second.device_id);
-
-    let old = s
-        .client(Some(&first))
-        .post(s.url("/v1/checkin"))
-        .json(&checkin_body())
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(old.status(), 401);
-    let new = s
-        .client(Some(&second))
-        .post(s.url("/v1/checkin"))
-        .json(&checkin_body())
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(new.status(), 200);
-}
-
-#[sqlx::test(migrations = false)]
 async fn same_smbios_different_serial_marked_duplicate_suspect(pool: PgPool) {
     let s = TestServer::start(pool).await;
     let tok = s.create_token(5).await;
@@ -144,26 +118,176 @@ async fn nul_in_hostname_is_400(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = false)]
-async fn active_device_is_not_taken_over_by_same_hardware_ids(pool: PgPool) {
+async fn device_joins_token_group(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_group_token("台北總部", 1).await;
+    let a = s.enroll_ok(&tok, None, None).await;
+    let name: String = sqlx::query_scalar(
+        "SELECT g.name FROM devices d JOIN device_groups g ON g.id = d.group_id WHERE d.id = $1",
+    )
+    .bind(a.device_id)
+    .fetch_one(&s.pool)
+    .await
+    .unwrap();
+    assert_eq!(name, "台北總部");
+}
+
+async fn status_of(s: &TestServer, id: uuid::Uuid) -> (String, Option<uuid::Uuid>) {
+    sqlx::query_as("SELECT status, reenroll_of FROM devices WHERE id = $1")
+        .bind(id)
+        .fetch_one(&s.pool)
+        .await
+        .unwrap()
+}
+
+async fn checkin_status(s: &TestServer, a: &common::TestAgent) -> u16 {
+    s.client(Some(a))
+        .post(s.url("/v1/checkin"))
+        .json(&checkin_body())
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .as_u16()
+}
+
+#[sqlx::test(migrations = false)]
+async fn same_hardware_reenroll_waits_for_approval(pool: PgPool) {
     let s = TestServer::start(pool).await;
     let tok = s.create_token(5).await;
-    let a = s.enroll_ok(&tok, Some("UUID-A"), Some("SN-A")).await;
-    s.client(Some(&a))
-        .post(s.url("/v1/checkin"))
-        .json(&checkin_body())
-        .send()
-        .await
-        .unwrap();
-    s.state.heartbeat.flush(&s.pool).await.unwrap();
+    let old = s.enroll_ok(&tok, Some("UUID-A"), Some("SN-A")).await;
+    let new = s.enroll_ok(&tok, Some("uuid-a"), Some("SN-A")).await;
+    assert_ne!(old.device_id, new.device_id);
+    assert_eq!(
+        status_of(&s, new.device_id).await,
+        ("pending_approval".into(), Some(old.device_id))
+    );
+    assert_eq!(checkin_status(&s, &old).await, 200, "舊裝置不受影響");
+    assert_eq!(checkin_status(&s, &new).await, 200, "待核准裝置可報到");
+}
 
-    let b = s.enroll_ok(&tok, Some("UUID-A"), Some("SN-A")).await;
-    assert_ne!(a.device_id, b.device_id);
-    let still = s
-        .client(Some(&a))
-        .post(s.url("/v1/checkin"))
-        .json(&checkin_body())
-        .send()
+#[sqlx::test(migrations = false)]
+async fn approve_moves_new_cert_to_old_device(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_group_token("台北總部", 5).await;
+    let old = s.enroll_ok(&tok, Some("UUID-A"), Some("SN-A")).await;
+    let new = s.enroll_ok(&tok, Some("UUID-A"), Some("SN-A")).await;
+    let merged = endpoint_server::devices::approve(&s.pool, new.device_id, "tester")
         .await
         .unwrap();
-    assert_eq!(still.status(), 200, "online device keeps its certificate");
+    assert_eq!(merged, old.device_id);
+    assert_eq!(checkin_status(&s, &old).await, 401, "舊憑證失效");
+    assert_eq!(checkin_status(&s, &new).await, 200, "新憑證可用");
+    let owner: uuid::Uuid =
+        sqlx::query_scalar("SELECT device_id FROM device_certs WHERE revoked_at IS NULL")
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+    assert_eq!(owner, old.device_id, "資料歸到舊裝置");
+    let (n, grouped): (i64, i64) = sqlx::query_as("SELECT count(*), count(group_id) FROM devices")
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    assert_eq!((n, grouped), (1, 1), "待核准記錄已刪除，舊裝置保留群組");
+    assert_eq!(status_of(&s, old.device_id).await.0, "active");
+}
+
+#[sqlx::test(migrations = false)]
+async fn reject_revokes_pending_device(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(5).await;
+    let old = s.enroll_ok(&tok, Some("UUID-A"), Some("SN-A")).await;
+    let new = s.enroll_ok(&tok, Some("UUID-A"), Some("SN-A")).await;
+    endpoint_server::devices::reject(&s.pool, new.device_id, "tester")
+        .await
+        .unwrap();
+    assert_eq!(checkin_status(&s, &new).await, 401);
+    assert_eq!(checkin_status(&s, &old).await, 200);
+    assert_eq!(status_of(&s, new.device_id).await.0, "retired");
+}
+
+#[sqlx::test(migrations = false)]
+async fn retire_revokes_all_certs(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(5).await;
+    let a = s.enroll_ok(&tok, None, None).await;
+    endpoint_server::devices::retire(&s.pool, a.device_id, "tester")
+        .await
+        .unwrap();
+    assert_eq!(checkin_status(&s, &a).await, 401);
+    let action: String =
+        sqlx::query_scalar("SELECT action FROM audit_log ORDER BY id DESC LIMIT 1")
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+    assert_eq!(action, "device_retire");
+}
+
+#[sqlx::test(migrations = false)]
+async fn approve_rejects_non_pending_device(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(5).await;
+    let a = s.enroll_ok(&tok, None, None).await;
+    assert!(
+        endpoint_server::devices::approve(&s.pool, a.device_id, "tester")
+            .await
+            .is_err()
+    );
+}
+
+#[sqlx::test(migrations = false)]
+async fn move_device_changes_group_and_audits(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_group_token("台北總部", 1).await;
+    let a = s.enroll_ok(&tok, None, None).await;
+    let kh = s.group_id("高雄廠").await;
+    endpoint_server::groups::move_device(&s.pool, a.device_id, Some(kh), "tester")
+        .await
+        .unwrap();
+    let g: Option<i64> = sqlx::query_scalar("SELECT group_id FROM devices WHERE id = $1")
+        .bind(a.device_id)
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    assert_eq!(g, Some(kh));
+}
+
+#[sqlx::test(migrations = false)]
+async fn approved_reinstall_records_inventory_diff(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(5).await;
+    let old = s.enroll_ok(&tok, Some("UUID-A"), Some("SN-A")).await;
+    let upload = |agent: &common::TestAgent, ver: &str| {
+        let up = protocol::InventoryUpload {
+            schema_version: protocol::SCHEMA_VERSION,
+            payload: protocol::InventoryPayload::Software(vec![protocol::SoftwareItem {
+                name: "7-Zip".into(),
+                version: Some(ver.into()),
+                publisher: None,
+                install_date: None,
+                arch: protocol::Arch::X64,
+            }]),
+        };
+        s.client(Some(agent))
+            .put(s.url("/v1/inventory/software"))
+            .json(&up)
+            .send()
+    };
+    assert_eq!(upload(&old, "1.0").await.unwrap().status(), 204);
+    let new = s.enroll_ok(&tok, Some("UUID-A"), Some("SN-A")).await;
+    endpoint_server::devices::approve(&s.pool, new.device_id, "tester")
+        .await
+        .unwrap();
+    assert_eq!(upload(&new, "2.0").await.unwrap().status(), 204);
+    let changes: Vec<(String, String)> =
+        sqlx::query_as("SELECT change, item_key FROM inventory_changes WHERE device_id = $1")
+            .bind(old.device_id)
+            .fetch_all(&s.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        changes,
+        vec![("updated".to_string(), "7-Zip|x64|".to_string())],
+        "重灌前後的差異要記入歷史"
+    );
 }

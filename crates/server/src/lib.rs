@@ -1,12 +1,16 @@
 //! Endpoint Manager 伺服器。
 
+pub mod accounts;
+pub mod audit;
 pub mod ca;
 pub mod checkin;
 pub mod config;
 pub mod db;
+pub mod devices;
 pub mod diff;
 pub mod enroll;
 pub mod error;
+pub mod groups;
 pub mod heartbeat;
 pub mod identity;
 pub mod inventory;
@@ -15,6 +19,7 @@ pub mod ratelimit;
 pub mod renew;
 pub mod tls;
 pub mod tokens;
+pub mod web;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -27,6 +32,8 @@ use sqlx::PgPool;
 
 pub const MAX_BODY_BYTES: usize = 5 * 1024 * 1024;
 pub const ENROLL_PER_IP_PER_MINUTE: u32 = 60;
+/// 管理網頁登入：每個 IP 每分鐘最多嘗試次數
+pub const LOGIN_PER_IP_PER_MINUTE: u32 = 30;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -34,6 +41,9 @@ pub struct AppState {
     pub ca: Arc<ca::Ca>,
     pub heartbeat: Arc<heartbeat::HeartbeatBuffer>,
     pub enroll_limiter: Arc<ratelimit::RateLimiter>,
+    pub login_limiter: Arc<ratelimit::RateLimiter>,
+    /// 管理網頁顯示時間用的時區
+    pub display_offset: chrono::FixedOffset,
 }
 
 impl AppState {
@@ -46,7 +56,19 @@ impl AppState {
                 ENROLL_PER_IP_PER_MINUTE,
                 Duration::from_secs(60),
             )),
+            login_limiter: Arc::new(ratelimit::RateLimiter::new(
+                LOGIN_PER_IP_PER_MINUTE,
+                Duration::from_secs(60),
+            )),
+            display_offset: chrono::FixedOffset::east_opt(8 * 3600).expect("valid offset"),
         }
+    }
+
+    pub fn with_display_offset(mut self, hours: i32) -> Self {
+        if let Some(o) = chrono::FixedOffset::east_opt(hours * 3600) {
+            self.display_offset = o;
+        }
+        self
     }
 }
 
@@ -77,7 +99,8 @@ pub async fn serve(cfg: config::Config) -> anyhow::Result<()> {
     db::migrate(&pool).await?;
     partitions::maintain_partitions(&pool, chrono::Utc::now()).await?;
 
-    let state = AppState::new(pool.clone(), ca::Ca::load(&cfg.ca_dir)?);
+    let state = AppState::new(pool.clone(), ca::Ca::load(&cfg.ca_dir)?)
+        .with_display_offset(cfg.display_utc_offset);
     let tls_cfg = tls::server_config(&cfg.ca_dir)?;
 
     let hb = state.heartbeat.clone();
@@ -104,8 +127,12 @@ pub async fn serve(cfg: config::Config) -> anyhow::Result<()> {
 
     let listener = tokio::net::TcpListener::bind(cfg.agent_listen).await?;
     tracing::info!(addr = %cfg.agent_listen, "agent API listening");
+    let web_listener = tokio::net::TcpListener::bind(cfg.web_listen).await?;
+    tracing::info!(addr = %cfg.web_listen, "admin web listening");
+    let web_tls = tls::web_server_config(&cfg.ca_dir)?;
     tokio::select! {
         r = tls::serve_mtls(listener, tls_cfg, agent_router(state.clone()), tls::ConnLimits::default()) => r?,
+        r = tls::serve_mtls(web_listener, web_tls, web::web_router(state.clone()), tls::ConnLimits::default()) => r?,
         _ = tokio::signal::ctrl_c() => tracing::info!("shutting down"),
     }
     state.heartbeat.flush(&pool).await?;

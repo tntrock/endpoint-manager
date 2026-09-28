@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 pub struct NewToken {
     pub name: String,
-    pub group_label: Option<String>,
+    pub group_id: Option<i64>,
     pub expires_at: Option<DateTime<Utc>>,
     pub max_uses: i32,
     pub created_by: String,
@@ -24,12 +24,12 @@ fn generate_token() -> String {
 pub async fn create_token(pool: &PgPool, t: &NewToken) -> Result<(i64, String), sqlx::Error> {
     let token = generate_token();
     let id: i64 = sqlx::query_scalar(
-        "INSERT INTO enroll_tokens (name, token_hash, group_label, expires_at, max_uses, created_by) \
+        "INSERT INTO enroll_tokens (name, token_hash, group_id, expires_at, max_uses, created_by) \
          VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
     )
     .bind(&t.name)
     .bind(hash_token(&token))
-    .bind(&t.group_label)
+    .bind(t.group_id)
     .bind(t.expires_at)
     .bind(t.max_uses)
     .bind(&t.created_by)
@@ -38,21 +38,43 @@ pub async fn create_token(pool: &PgPool, t: &NewToken) -> Result<(i64, String), 
     Ok((id, token))
 }
 
-/// 單一 UPDATE 完成檢查與遞增，並發時也不會超過 max_uses。
+/// 單一 UPDATE 完成檢查與遞增，並發時也不會超過 max_uses。回傳 (金鑰 id, 群組 id)。
 pub async fn consume_token(
     conn: &mut PgConnection,
     token: &str,
-) -> Result<Option<i64>, sqlx::Error> {
-    sqlx::query_scalar(
+) -> Result<Option<(i64, Option<i64>)>, sqlx::Error> {
+    sqlx::query_as(
         "UPDATE enroll_tokens SET used_count = used_count + 1 \
          WHERE token_hash = $1 AND revoked_at IS NULL \
            AND (expires_at IS NULL OR expires_at > now()) \
            AND used_count < max_uses \
-         RETURNING id",
+         RETURNING id, group_id",
     )
     .bind(hash_token(token))
     .fetch_optional(conn)
     .await
+}
+
+pub async fn revoke_token(pool: &PgPool, id: i64, actor: &str) -> anyhow::Result<()> {
+    let mut tx = pool.begin().await?;
+    let n = sqlx::query(
+        "UPDATE enroll_tokens SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL",
+    )
+    .bind(id)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    anyhow::ensure!(n == 1, "token not found or already revoked");
+    crate::audit::record(
+        &mut tx,
+        actor,
+        "token_revoke",
+        Some(&id.to_string()),
+        serde_json::json!({}),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -62,7 +84,7 @@ mod tests {
     fn new_token(max_uses: i32, expires_at: Option<DateTime<Utc>>) -> NewToken {
         NewToken {
             name: "t".into(),
-            group_label: None,
+            group_id: None,
             expires_at,
             max_uses,
             created_by: "test".into(),
@@ -74,7 +96,7 @@ mod tests {
         crate::db::migrate(&pool).await.unwrap();
         let (id, tok) = create_token(&pool, &new_token(1, None)).await.unwrap();
         let mut c = pool.acquire().await.unwrap();
-        assert_eq!(consume_token(&mut c, &tok).await.unwrap(), Some(id));
+        assert_eq!(consume_token(&mut c, &tok).await.unwrap(), Some((id, None)));
         assert_eq!(consume_token(&mut c, &tok).await.unwrap(), None);
     }
 
