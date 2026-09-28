@@ -475,3 +475,37 @@ async fn shutdown_interrupts_a_running_cycle(pool: PgPool) {
         "run_agent must return promptly on shutdown"
     );
 }
+
+#[sqlx::test(migrations = false)]
+async fn expired_certificate_stops_agent(pool: PgPool) {
+    let e = env(pool, 1).await;
+    let (csr_pem, key_pem) = {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let csr = rcgen::CertificateParams::default()
+            .serialize_request(&key)
+            .unwrap()
+            .pem()
+            .unwrap();
+        (csr, key.serialize_pem())
+    };
+    // 400 天前簽發、效期 365 天 → 已過期
+    let issued = ca::Ca::load(e._pki.path())
+        .unwrap()
+        .sign_device_csr(
+            &csr_pem,
+            uuid::Uuid::new_v4(),
+            chrono::Utc::now() - chrono::Duration::days(400),
+        )
+        .unwrap();
+    endpoint_agent::state::AgentState {
+        device_id: Some(uuid::Uuid::new_v4()),
+        chain_pem: Some(issued.pem),
+        key_pem: Some(key_pem),
+        ..Default::default()
+    }
+    .save(e.dir.path())
+    .unwrap();
+
+    let mut a = Agent::new(e.dir.path(), Fake::new()).unwrap();
+    assert_eq!(a.run_cycle().await, Cycle::Stop);
+}

@@ -25,7 +25,8 @@ pub enum ClientError {
 
 impl From<reqwest::Error> for ClientError {
     fn from(e: reqwest::Error) -> Self {
-        tracing::debug!(error = %e, "request failed");
+        // 保留完整原因（TLS 驗證失敗、連線被拒…），服務模式只記錄 INFO 以上
+        tracing::warn!(error = ?e, "request failed");
         ClientError::Retry(None)
     }
 }

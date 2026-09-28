@@ -477,6 +477,7 @@ dependencies = [
  "windows-sys 0.61.2",
  "winreg",
  "wmi",
+ "x509-parser",
 ]
 
 [[package]]

@@ -68,6 +68,14 @@ impl AgentState {
         self.device_id.is_some() && self.chain_pem.is_some() && self.key_pem.is_some()
     }
 
+    /// 裝置憑證（chain 的第一張）的到期時間。
+    pub fn cert_not_after(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        use rustls::pki_types::{CertificateDer, pem::PemObject};
+        let der = CertificateDer::from_pem_slice(self.chain_pem.as_ref()?.as_bytes()).ok()?;
+        let (_, cert) = x509_parser::parse_x509_certificate(&der).ok()?;
+        chrono::DateTime::from_timestamp(cert.validity().not_after.timestamp(), 0)
+    }
+
     pub fn identity_pem(&self) -> Option<String> {
         Some(format!(
             "{}{}",
