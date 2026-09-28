@@ -4,7 +4,7 @@ use anyhow::{Context, ensure};
 use sqlx::{PgConnection, PgPool};
 
 use crate::audit;
-use crate::web::auth::{MIN_PASSWORD_LEN, Role, hash_password, verify_password};
+use crate::web::auth::{MIN_PASSWORD_LEN, Role, hash_password};
 
 pub struct NewAdmin {
     pub username: String,
@@ -59,8 +59,16 @@ async fn kill_sessions(conn: &mut PgConnection, id: i64) -> Result<(), sqlx::Err
     Ok(())
 }
 
+/// pg_advisory_xact_lock 的鍵：平台管理員數量檢查
+const PLATFORM_ADMIN_LOCK: i64 = 0x454d_0001;
+
 /// 交易結束前確認至少還有一個啟用中的平台管理員。
+/// 先取得同一把交易鎖依序檢查，避免兩個交易各自只看到自己的變更而同時通過（write skew）。
 async fn ensure_platform_admin_left(conn: &mut PgConnection) -> anyhow::Result<()> {
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(PLATFORM_ADMIN_LOCK)
+        .execute(&mut *conn)
+        .await?;
     let n: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM admins WHERE role = 'platform_admin' AND disabled_at IS NULL",
     )
@@ -112,11 +120,12 @@ pub async fn update(
 ) -> anyhow::Result<()> {
     check_role_groups(role, groups)?;
     let mut tx = pool.begin().await?;
-    let current: String = sqlx::query_scalar("SELECT role FROM admins WHERE id = $1 FOR UPDATE")
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await?
-        .context("帳號不存在")?;
+    let (current, username): (String, String) =
+        sqlx::query_as("SELECT role, username FROM admins WHERE id = $1 FOR UPDATE")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .context("帳號不存在")?;
     ensure!(
         id != actor_id || current == role.as_str(),
         "不能變更自己的角色"
@@ -135,7 +144,7 @@ pub async fn update(
         &mut tx,
         actor,
         "admin_update",
-        Some(&id.to_string()),
+        Some(&username),
         serde_json::json!({ "role": role.as_str(), "groups": groups }),
     )
     .await?;
@@ -152,16 +161,15 @@ pub async fn set_disabled(
 ) -> anyhow::Result<()> {
     ensure!(id != actor_id, "不能停用或啟用自己");
     let mut tx = pool.begin().await?;
-    let n = sqlx::query(
+    let username: String = sqlx::query_scalar(
         "UPDATE admins SET disabled_at = CASE WHEN $2 THEN coalesce(disabled_at, now()) ELSE NULL END \
-         WHERE id = $1",
+         WHERE id = $1 RETURNING username",
     )
     .bind(id)
     .bind(disabled)
-    .execute(&mut *tx)
+    .fetch_optional(&mut *tx)
     .await?
-    .rows_affected();
-    ensure!(n == 1, "帳號不存在");
+    .context("帳號不存在")?;
     kill_sessions(&mut tx, id).await?;
     ensure_platform_admin_left(&mut tx).await?;
     audit::record(
@@ -172,7 +180,7 @@ pub async fn set_disabled(
         } else {
             "admin_enable"
         },
-        Some(&id.to_string()),
+        Some(&username),
         serde_json::json!({}),
     )
     .await?;
@@ -189,21 +197,21 @@ pub async fn reset_password(
     check_password(new_password)?;
     let hash = hash_password(new_password)?;
     let mut tx = pool.begin().await?;
-    let n = sqlx::query(
-        "UPDATE admins SET password_hash = $2, failed_logins = 0, locked_until = NULL WHERE id = $1",
+    let username: String = sqlx::query_scalar(
+        "UPDATE admins SET password_hash = $2, failed_logins = 0, locked_until = NULL \
+         WHERE id = $1 RETURNING username",
     )
     .bind(id)
     .bind(hash)
-    .execute(&mut *tx)
+    .fetch_optional(&mut *tx)
     .await?
-    .rows_affected();
-    ensure!(n == 1, "帳號不存在");
+    .context("帳號不存在")?;
     kill_sessions(&mut tx, id).await?;
     audit::record(
         &mut tx,
         actor,
         "admin_password_reset",
-        Some(&id.to_string()),
+        Some(&username),
         serde_json::json!({}),
     )
     .await?;
@@ -213,17 +221,18 @@ pub async fn reset_password(
 
 pub async fn unlock(pool: &PgPool, id: i64, actor: &str) -> anyhow::Result<()> {
     let mut tx = pool.begin().await?;
-    let n = sqlx::query("UPDATE admins SET failed_logins = 0, locked_until = NULL WHERE id = $1")
-        .bind(id)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
-    ensure!(n == 1, "帳號不存在");
+    let username: String = sqlx::query_scalar(
+        "UPDATE admins SET failed_logins = 0, locked_until = NULL WHERE id = $1 RETURNING username",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .context("帳號不存在")?;
     audit::record(
         &mut tx,
         actor,
         "admin_unlock",
-        Some(&id.to_string()),
+        Some(&username),
         serde_json::json!({}),
     )
     .await?;
@@ -240,15 +249,33 @@ pub async fn change_own_password(
     keep_token_hash: &str,
 ) -> anyhow::Result<()> {
     check_password(new)?;
-    let (username, hash): (String, String) =
-        sqlx::query_as("SELECT username, password_hash FROM admins WHERE id = $1")
-            .bind(admin_id)
-            .fetch_one(pool)
-            .await?;
-    ensure!(verify_password(current, &hash), "目前密碼錯誤");
-    let new_hash = hash_password(new)?;
     let mut tx = pool.begin().await?;
-    sqlx::query("UPDATE admins SET password_hash = $2 WHERE id = $1")
+    let (username, hash, locked): (String, String, bool) = sqlx::query_as(
+        "SELECT username, password_hash, coalesce(locked_until > now(), false) \
+         FROM admins WHERE id = $1 FOR UPDATE",
+    )
+    .bind(admin_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    ensure!(!locked, "帳號已鎖定，請稍後再試");
+    // 目前密碼輸錯與登入共用失敗次數：到上限就鎖定並登出所有工作階段
+    if !crate::web::auth::verify_blocking(current, &hash).await {
+        if crate::web::auth::record_failure(&mut tx, admin_id).await? {
+            kill_sessions(&mut tx, admin_id).await?;
+        }
+        audit::record(
+            &mut tx,
+            &username,
+            "password_change_failed",
+            None,
+            serde_json::json!({}),
+        )
+        .await?;
+        tx.commit().await?;
+        anyhow::bail!("目前密碼錯誤");
+    }
+    let new_hash = hash_password(new)?;
+    sqlx::query("UPDATE admins SET password_hash = $2, failed_logins = 0 WHERE id = $1")
         .bind(admin_id)
         .bind(new_hash)
         .execute(&mut *tx)
@@ -413,5 +440,124 @@ mod tests {
             "new-long-password",
             &hash
         ));
+    }
+
+    async fn platform(pool: &PgPool, name: &str) -> i64 {
+        create(
+            pool,
+            &NewAdmin {
+                username: name.into(),
+                password: format!("{name}-long-password"),
+                role: Role::Platform,
+                groups: vec![],
+            },
+            "root",
+        )
+        .await
+        .unwrap()
+    }
+
+    /// 兩個平台管理員同時停用對方：各自的交易只看得到自己的變更，檢查都通過，結果一個都不剩。
+    #[sqlx::test(migrations = false)]
+    async fn concurrent_disables_keep_one_platform_admin(pool: PgPool) {
+        let (root, g) = setup(&pool).await;
+        for round in 0..10 {
+            let a = platform(&pool, &format!("a{round}")).await;
+            let b = platform(&pool, &format!("b{round}")).await;
+            // 只留 a、b 兩個平台管理員
+            sqlx::query("UPDATE admins SET disabled_at = now() WHERE role = 'platform_admin' AND id NOT IN ($1, $2)")
+                .bind(a)
+                .bind(b)
+                .execute(&pool)
+                .await
+                .unwrap();
+            let (_ra, _rb) = tokio::join!(
+                set_disabled(&pool, b, true, a, "a"),
+                set_disabled(&pool, a, true, b, "b"),
+            );
+            let n: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM admins WHERE role = 'platform_admin' AND disabled_at IS NULL",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert!(n >= 1, "round {round}: no platform admin left");
+            let _ = (root, g);
+        }
+    }
+
+    /// 稽核記錄的對象用帳號名稱，不是內部數字 id。
+    #[sqlx::test(migrations = false)]
+    async fn admin_audit_targets_are_usernames(pool: PgPool) {
+        let (root, g) = setup(&pool).await;
+        let bob = create(
+            &pool,
+            &NewAdmin {
+                username: "bob".into(),
+                password: "bob-long-password".into(),
+                role: Role::Viewer,
+                groups: vec![g],
+            },
+            "root",
+        )
+        .await
+        .unwrap();
+        update(&pool, bob, Role::GroupAdmin, &[g], root, "root")
+            .await
+            .unwrap();
+        set_disabled(&pool, bob, true, root, "root").await.unwrap();
+        set_disabled(&pool, bob, false, root, "root").await.unwrap();
+        reset_password(&pool, bob, "bob-new-long-password", "root")
+            .await
+            .unwrap();
+        unlock(&pool, bob, "root").await.unwrap();
+        let targets: Vec<Option<String>> = sqlx::query_scalar(
+            "SELECT target FROM audit_log WHERE action LIKE 'admin_%' AND action <> 'admin_create'",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(targets.len(), 5);
+        assert!(
+            targets.iter().all(|t| t.as_deref() == Some("bob")),
+            "{targets:?}"
+        );
+    }
+
+    /// 修改密碼時輸錯目前密碼，與登入共用失敗次數：到上限就鎖定並登出所有工作階段。
+    #[sqlx::test(migrations = false)]
+    async fn wrong_current_password_locks_account(pool: PgPool) {
+        let (root, _) = setup(&pool).await;
+        sqlx::query(
+            "INSERT INTO sessions (token_hash, admin_id, csrf_token, expires_at) \
+             VALUES ('h', $1, 'c', now() + interval '1 hour')",
+        )
+        .bind(root)
+        .execute(&pool)
+        .await
+        .unwrap();
+        for _ in 0..crate::web::auth::MAX_FAILED_LOGINS {
+            assert!(
+                change_own_password(&pool, root, "wrong-password-xx", "new-long-password", "h")
+                    .await
+                    .is_err()
+            );
+        }
+        let (locked, sessions): (bool, i64) = sqlx::query_as(
+            "SELECT locked_until > now(), (SELECT count(*) FROM sessions WHERE admin_id = $1) \
+             FROM admins WHERE id = $1",
+        )
+        .bind(root)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(locked, "達到上限要鎖定");
+        assert_eq!(sessions, 0, "鎖定時登出所有工作階段");
+        // 鎖定中：即使密碼正確也不能改
+        assert!(
+            change_own_password(&pool, root, "root-long-password", "new-long-password", "h")
+                .await
+                .is_err()
+        );
     }
 }

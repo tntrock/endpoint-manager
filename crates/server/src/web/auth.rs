@@ -109,7 +109,7 @@ pub const MAX_USERNAME_LEN: usize = 64;
 static HASH_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
 
 /// 在 blocking 執行緒上驗證密碼，並限制同時運算數量。
-async fn verify_blocking(password: &str, phc: &str) -> bool {
+pub(crate) async fn verify_blocking(password: &str, phc: &str) -> bool {
     let Ok(_slot) = HASH_SLOTS.acquire().await else {
         return false;
     };
@@ -117,6 +117,26 @@ async fn verify_blocking(password: &str, phc: &str) -> bool {
     tokio::task::spawn_blocking(move || verify_password(&pw, &phc))
         .await
         .unwrap_or(false)
+}
+
+/// 密碼錯誤一次（登入與修改密碼共用）：累計到上限就鎖定並歸零。回傳是否因此被鎖定。
+/// 呼叫端須已鎖住該帳號的列（FOR UPDATE）。
+pub(crate) async fn record_failure(
+    conn: &mut sqlx::PgConnection,
+    admin_id: i64,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "UPDATE admins SET \
+           locked_until = CASE WHEN failed_logins + 1 >= $2 \
+                               THEN now() + make_interval(mins => $3) ELSE locked_until END, \
+           failed_logins = CASE WHEN failed_logins + 1 >= $2 THEN 0 ELSE failed_logins + 1 END \
+         WHERE id = $1 RETURNING coalesce(locked_until > now(), false)",
+    )
+    .bind(admin_id)
+    .bind(MAX_FAILED_LOGINS)
+    .bind(LOCK_MINUTES)
+    .fetch_one(conn)
+    .await
 }
 
 pub async fn login(pool: &PgPool, username: &str, password: &str) -> anyhow::Result<LoginOutcome> {
@@ -147,19 +167,9 @@ pub async fn login(pool: &PgPool, username: &str, password: &str) -> anyhow::Res
     // 鎖定期間仍做一次雜湊（固定耗時），但不採用結果
     let password_ok = verify_blocking(password, &hash).await;
     if locked || !password_ok {
-        sqlx::query(
-            "UPDATE admins SET \
-               locked_until = CASE WHEN failed_logins + 1 >= $2 \
-                                   THEN now() + make_interval(mins => $3) ELSE locked_until END, \
-               failed_logins = CASE WHEN failed_logins + 1 >= $2 THEN 0 ELSE failed_logins + 1 END \
-             WHERE id = $1 AND NOT $4",
-        )
-        .bind(admin_id)
-        .bind(MAX_FAILED_LOGINS)
-        .bind(LOCK_MINUTES)
-        .bind(locked)
-        .execute(&mut *tx)
-        .await?;
+        if !locked {
+            record_failure(&mut tx, admin_id).await?;
+        }
         let reason = if locked { "locked" } else { "password" };
         crate::audit::record(
             &mut tx,
