@@ -126,7 +126,9 @@ fn harden_dir_takes_ownership_from_squatter() {
     endpoint_agent::state::harden_dir(&target).unwrap();
 
     // icacls /save 不含擁有者，改用 Get-Acl 取完整 SDDL（O: 擁有者、D: DACL）
+    // CI 的 PSModulePath 指向 PowerShell 7 模組，Windows PowerShell 會載入失敗
     let out = Command::new("powershell")
+        .env_remove("PSModulePath")
         .args(["-NoProfile", "-Command"])
         .arg(format!(
             "(Get-Acl -LiteralPath '{}').Sddl",
