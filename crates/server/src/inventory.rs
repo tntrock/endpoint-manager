@@ -20,6 +20,9 @@ use crate::identity::AuthedDevice;
 
 pub const MAX_DECOMPRESSED_BYTES: u64 = 50 * 1024 * 1024;
 
+/// 同時在 blocking 執行緒上解析的上傳數量上限（最壞約 8 × 50MB 加上解析後的資料）
+static UPLOAD_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(8);
+
 pub fn decode_body(headers: &HeaderMap, body: &[u8]) -> Result<Vec<u8>, AppError> {
     let gzip = headers
         .get(header::CONTENT_ENCODING)
@@ -47,7 +50,27 @@ pub async fn upload(
 ) -> Result<StatusCode, AppError> {
     let section =
         Section::parse(&section).ok_or_else(|| AppError::BadRequest("unknown section".into()))?;
-    let raw = decode_body(&headers, &body)?;
+    // 解壓縮（最多 50MB）、JSON 解析、驗證與雜湊都是 CPU 工作，放到 blocking 執行緒，
+    // 不佔住處理報到的 async 執行緒。同時解析的數量有上限：每個可能解壓成 50MB，
+    // 全車隊同時上傳時不能把記憶體撐爆
+    let _slot = UPLOAD_SLOTS
+        .acquire()
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+    let (payload, hash) =
+        tokio::task::spawn_blocking(move || parse_upload(section, &headers, &body))
+            .await
+            .map_err(|e| AppError::Internal(e.into()))??;
+    store_section(&st.pool, device.device_id, &payload, &hash).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn parse_upload(
+    section: Section,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Result<(InventoryPayload, String), AppError> {
+    let raw = decode_body(headers, body)?;
     let upload: InventoryUpload =
         serde_json::from_slice(&raw).map_err(|e| AppError::BadRequest(e.to_string()))?;
     if upload.schema_version > SCHEMA_VERSION {
@@ -57,14 +80,16 @@ pub async fn upload(
         return Err(AppError::BadRequest("section mismatch".into()));
     }
     upload.payload.validate()?;
-    store_section(&st.pool, device.device_id, &upload.payload).await?;
-    Ok(StatusCode::NO_CONTENT)
+    let hash = upload.payload.canonical_hash();
+    Ok((upload.payload, hash))
 }
 
+/// hash 須為 payload.canonical_hash()（呼叫端已在 blocking 執行緒算好）。
 pub async fn store_section(
     pool: &PgPool,
     device_id: Uuid,
     payload: &InventoryPayload,
+    hash: &str,
 ) -> Result<(), AppError> {
     let section = payload.section();
     let mut tx = pool.begin().await?;
@@ -76,18 +101,24 @@ pub async fn store_section(
 
     // 第一次上傳只當基準線，不寫變更記錄
     if let Some(old) = load_payload(&mut tx, device_id, section).await? {
-        for c in diff(&items_of(&old), &items_of(payload)) {
+        let changes = diff(&items_of(&old), &items_of(payload));
+        if !changes.is_empty() {
+            // 一次寫入所有變更（重灌後可能有上千筆）
+            let kinds: Vec<&str> = changes.iter().map(|c| c.kind.as_str()).collect();
+            let keys: Vec<&str> = changes.iter().map(|c| c.key.as_str()).collect();
+            let olds: Vec<Option<&str>> = changes.iter().map(|c| c.old.as_deref()).collect();
+            let news: Vec<Option<&str>> = changes.iter().map(|c| c.new.as_deref()).collect();
             sqlx::query(
                 "INSERT INTO inventory_changes \
                  (device_id, section, change, item_key, old_value, new_value) \
-                 VALUES ($1, $2, $3, $4, $5, $6)",
+                 SELECT $1, $2, * FROM UNNEST($3::text[], $4::text[], $5::text[], $6::text[])",
             )
             .bind(device_id)
             .bind(section.as_str())
-            .bind(c.kind.as_str())
-            .bind(&c.key)
-            .bind(&c.old)
-            .bind(&c.new)
+            .bind(&kinds)
+            .bind(&keys)
+            .bind(&olds)
+            .bind(&news)
             .execute(&mut *tx)
             .await?;
         }
@@ -100,7 +131,7 @@ pub async fn store_section(
     )
     .bind(device_id)
     .bind(section.as_str())
-    .bind(payload.canonical_hash())
+    .bind(hash)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
