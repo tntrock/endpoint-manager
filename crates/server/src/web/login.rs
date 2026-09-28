@@ -2,7 +2,10 @@
 //! 跨站送出的登入只會讓攻擊者登入自己的帳號，影響有限。
 
 use askama::Template;
-use axum::extract::{Form, State};
+use std::net::SocketAddr;
+use std::time::Instant;
+
+use axum::extract::{ConnectInfo, Form, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Redirect, Response};
 use serde::Deserialize;
@@ -34,8 +37,12 @@ pub struct LoginForm {
 
 pub async fn submit(
     State(st): State<AppState>,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
     Form(f): Form<LoginForm>,
 ) -> Result<Response, AppError> {
+    if !st.login_limiter.check(remote.ip(), Instant::now()) {
+        return Err(AppError::TooManyRequests);
+    }
     match auth::login(&st.pool, f.username.trim(), &f.password).await? {
         LoginOutcome::Ok { session_token } => Ok((
             [(header::SET_COOKIE, auth::session_cookie(&session_token))],

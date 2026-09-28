@@ -32,6 +32,8 @@ use sqlx::PgPool;
 
 pub const MAX_BODY_BYTES: usize = 5 * 1024 * 1024;
 pub const ENROLL_PER_IP_PER_MINUTE: u32 = 60;
+/// 管理網頁登入：每個 IP 每分鐘最多嘗試次數
+pub const LOGIN_PER_IP_PER_MINUTE: u32 = 30;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -39,6 +41,7 @@ pub struct AppState {
     pub ca: Arc<ca::Ca>,
     pub heartbeat: Arc<heartbeat::HeartbeatBuffer>,
     pub enroll_limiter: Arc<ratelimit::RateLimiter>,
+    pub login_limiter: Arc<ratelimit::RateLimiter>,
     /// 管理網頁顯示時間用的時區
     pub display_offset: chrono::FixedOffset,
 }
@@ -51,6 +54,10 @@ impl AppState {
             heartbeat: Arc::new(heartbeat::HeartbeatBuffer::new()),
             enroll_limiter: Arc::new(ratelimit::RateLimiter::new(
                 ENROLL_PER_IP_PER_MINUTE,
+                Duration::from_secs(60),
+            )),
+            login_limiter: Arc::new(ratelimit::RateLimiter::new(
+                LOGIN_PER_IP_PER_MINUTE,
                 Duration::from_secs(60),
             )),
             display_offset: chrono::FixedOffset::east_opt(8 * 3600).expect("valid offset"),

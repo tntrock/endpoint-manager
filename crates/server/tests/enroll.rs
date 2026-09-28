@@ -279,13 +279,12 @@ async fn approved_reinstall_records_inventory_diff(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(upload(&new, "2.0").await.unwrap().status(), 204);
-    let changes: Vec<(String, String)> = sqlx::query_as(
-        "SELECT change, item_key FROM inventory_changes WHERE device_id = $1",
-    )
-    .bind(old.device_id)
-    .fetch_all(&s.pool)
-    .await
-    .unwrap();
+    let changes: Vec<(String, String)> =
+        sqlx::query_as("SELECT change, item_key FROM inventory_changes WHERE device_id = $1")
+            .bind(old.device_id)
+            .fetch_all(&s.pool)
+            .await
+            .unwrap();
     assert_eq!(
         changes,
         vec![("updated".to_string(), "7-Zip|x64|".to_string())],

@@ -102,47 +102,68 @@ fn dummy_hash() -> &'static str {
     H.get_or_init(|| hash_password("dummy-password-for-timing").expect("hash"))
 }
 
+/// 帳號名稱上限；超過的直接當作登入失敗，稽核記錄只存截斷後的值。
+pub const MAX_USERNAME_LEN: usize = 64;
+
+/// 同時進行的密碼雜湊運算上限：大量登入請求不會佔滿 tokio 工作執行緒、拖慢 Agent 報到。
+static HASH_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
+
+/// 在 blocking 執行緒上驗證密碼，並限制同時運算數量。
+async fn verify_blocking(password: &str, phc: &str) -> bool {
+    let Ok(_slot) = HASH_SLOTS.acquire().await else {
+        return false;
+    };
+    let (pw, phc) = (password.to_string(), phc.to_string());
+    tokio::task::spawn_blocking(move || verify_password(&pw, &phc))
+        .await
+        .unwrap_or(false)
+}
+
 pub async fn login(pool: &PgPool, username: &str, password: &str) -> anyhow::Result<LoginOutcome> {
+    let username: String = username.chars().take(MAX_USERNAME_LEN).collect();
+    let mut tx = pool.begin().await?;
+    // FOR UPDATE：同一帳號的登入依序處理，平行請求無法繞過失敗次數上限
     let row: Option<(i64, String, Option<DateTime<Utc>>)> = sqlx::query_as(
-        "SELECT id, password_hash, locked_until FROM admins WHERE username = $1 AND disabled_at IS NULL",
+        "SELECT id, password_hash, locked_until FROM admins \
+         WHERE username = $1 AND disabled_at IS NULL FOR UPDATE",
     )
-    .bind(username)
-    .fetch_optional(pool)
+    .bind(&username)
+    .fetch_optional(&mut *tx)
     .await?;
     let Some((admin_id, hash, locked_until)) = row else {
-        verify_password(password, dummy_hash());
-        let mut c = pool.acquire().await?;
+        verify_blocking(password, dummy_hash()).await;
         crate::audit::record(
-            &mut c,
-            username,
+            &mut tx,
+            &username,
             "login_failed",
             None,
             serde_json::json!({ "reason": "unknown_or_disabled" }),
         )
         .await?;
+        tx.commit().await?;
         return Ok(LoginOutcome::Failed);
     };
     let locked = locked_until.is_some_and(|t| t > Utc::now());
-    let ok = verify_password(password, &hash) && !locked;
-
-    let mut tx = pool.begin().await?;
-    if !ok {
+    // 鎖定期間仍做一次雜湊（固定耗時），但不採用結果
+    let password_ok = verify_blocking(password, &hash).await;
+    if locked || !password_ok {
         sqlx::query(
             "UPDATE admins SET \
                locked_until = CASE WHEN failed_logins + 1 >= $2 \
                                    THEN now() + make_interval(mins => $3) ELSE locked_until END, \
                failed_logins = CASE WHEN failed_logins + 1 >= $2 THEN 0 ELSE failed_logins + 1 END \
-             WHERE id = $1",
+             WHERE id = $1 AND NOT $4",
         )
         .bind(admin_id)
         .bind(MAX_FAILED_LOGINS)
         .bind(LOCK_MINUTES)
+        .bind(locked)
         .execute(&mut *tx)
         .await?;
         let reason = if locked { "locked" } else { "password" };
         crate::audit::record(
             &mut tx,
-            username,
+            &username,
             "login_failed",
             None,
             serde_json::json!({ "reason": reason }),
@@ -169,7 +190,7 @@ pub async fn login(pool: &PgPool, username: &str, password: &str) -> anyhow::Res
     sqlx::query("DELETE FROM sessions WHERE expires_at < now()")
         .execute(&mut *tx)
         .await?;
-    crate::audit::record(&mut tx, username, "login", None, serde_json::json!({})).await?;
+    crate::audit::record(&mut tx, &username, "login", None, serde_json::json!({})).await?;
     tx.commit().await?;
     Ok(LoginOutcome::Ok {
         session_token: token,
@@ -390,6 +411,42 @@ mod tests {
             .await
             .unwrap();
         assert!(ok(&pool, "alice-long-password").await.is_none());
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn concurrent_failures_cannot_bypass_lockout(pool: PgPool) {
+        setup(&pool).await;
+        let attempts = (0..20).map(|_| login(&pool, "alice", "nope-nope-nope"));
+        for r in futures_util::future::join_all(attempts).await {
+            assert!(matches!(r.unwrap(), LoginOutcome::Failed));
+        }
+        let checked: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM audit_log WHERE action = 'login_failed' \
+             AND detail->>'reason' = 'password'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            checked,
+            i64::from(MAX_FAILED_LOGINS),
+            "只有前 5 次真的比對密碼，其餘因鎖定直接拒絕"
+        );
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn oversized_username_is_not_stored_verbatim(pool: PgPool) {
+        setup(&pool).await;
+        let huge = "x".repeat(10_000);
+        assert!(matches!(
+            login(&pool, &huge, "whatever-password").await.unwrap(),
+            LoginOutcome::Failed
+        ));
+        let len: i32 = sqlx::query_scalar("SELECT max(length(actor)) FROM audit_log")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert!(len <= 64, "{len}");
     }
 
     #[test]

@@ -791,3 +791,21 @@ async fn audit_page_lists_logins_and_failures(pool: PgPool) {
     assert!(html.contains("登入成功") && html.contains("登入失敗") && html.contains("ghost"));
     assert!(!html.contains("<script>x"), "密碼不應出現在稽核記錄");
 }
+
+#[sqlx::test(migrations = false)]
+async fn login_is_rate_limited_per_ip(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let c = s.web_client();
+    let mut statuses = vec![];
+    for _ in 0..(endpoint_server::LOGIN_PER_IP_PER_MINUTE + 1) {
+        let r = c
+            .post(s.web_url("/login"))
+            .form(&[("username", "ghost"), ("password", "whatever-password")])
+            .send()
+            .await
+            .unwrap();
+        statuses.push(r.status().as_u16());
+    }
+    assert!(statuses[..statuses.len() - 1].iter().all(|&s| s == 401));
+    assert_eq!(*statuses.last().unwrap(), 429);
+}
