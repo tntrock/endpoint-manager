@@ -25,10 +25,10 @@ pub fn backoff(failures: i32) -> chrono::Duration {
     chrono::Duration::minutes((1i64 << exp).min(60))
 }
 
-/// 門檻以上、且變成違規，或違規解除（變成無結果或豁免）的事件；違規變成「未知」不算解除
+/// 門檻以上、且變成或離開「違規」的事件。違規變成「未知」也列在解除（帶 to=unknown），
+/// 與「未知→違規」列為新增對稱：狀態來回跳動時新增與解除成對出現，接收端可依 to 區分。
 const RELEVANT: &str = "e.id > $1 AND e.id <= $2 AND e.severity = ANY($3) \
-     AND ((e.to_status = 'violating' AND e.from_status <> 'violating') \
-          OR (e.from_status = 'violating' AND e.to_status IN ('none', 'exempt')))";
+     AND (e.to_status = 'violating') <> (e.from_status = 'violating')";
 
 type EventRow = (
     i64,
@@ -227,11 +227,12 @@ pub async fn run_channel(
         }
         Err(err) => {
             tracing::warn!(channel, error = %err, "notification failed");
-            // 積壓上限跳過的部分即使送失敗也不回頭
+            // 積壓上限跳過的部分即使送失敗也不回頭。
+            // 也比對 failures：送出途中管理員換了網址（清掉重試狀態）時，不用舊網址的失敗覆寫
             sqlx::query(
                 "UPDATE notify_channels SET last_event_id = $2, failures = failures + 1, \
                  next_attempt_at = $3, last_error = $4, dropped = $5 \
-                 WHERE channel = $1 AND last_event_id = $6",
+                 WHERE channel = $1 AND last_event_id = $6 AND failures = $7",
             )
             .bind(channel)
             .bind(cursor)
@@ -239,6 +240,7 @@ pub async fn run_channel(
             .bind(&err)
             .bind(dropped)
             .bind(read_cursor)
+            .bind(failures)
             .execute(pool)
             .await?;
         }

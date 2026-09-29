@@ -132,7 +132,8 @@ pub async fn save_settings(pool: &PgPool, s: &NotifySettings, actor: &str) -> an
     } else if s.webhook_url.is_some() && before.webhook_url != s.webhook_url {
         // 換了網址（例如修好故障的網址）：清掉重試等待，游標不動
         sqlx::query(
-            "UPDATE notify_channels SET failures = 0, next_attempt_at = NULL, last_error = NULL              WHERE channel = 'webhook'",
+            "UPDATE notify_channels SET failures = 0, next_attempt_at = NULL, last_error = NULL \
+             WHERE channel = 'webhook'",
         )
         .execute(&mut *tx)
         .await?;

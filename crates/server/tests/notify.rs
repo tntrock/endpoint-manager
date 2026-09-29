@@ -431,16 +431,17 @@ async fn in_flight_send_does_not_overwrite_cursor_reset(pool: PgPool) {
     assert_eq!(channel_row(&s).await.0, 999999);
 }
 
-/// 違規變成「未知」（規則參數壞掉、資料不足）不是「已解除」
+/// 違規變成「未知」列在「解除」清單並帶 to=unknown（與未知→違規列為新增對稱，
+/// 狀態來回跳動時新增與解除成對出現；接收端可依 to 區分）
 #[sqlx::test(migrations = false)]
-async fn violating_to_unknown_is_not_resolved(pool: PgPool) {
+async fn violating_to_unknown_is_listed_with_to_unknown(pool: PgPool) {
     let s = TestServer::start(pool).await;
     let tok = s.create_token(1).await;
     let a = s.enroll_ok(&tok, None, None).await;
     let (url, seen) = receiver(StatusCode::OK).await;
     enable_webhook(&s, &url).await;
     event(&s, a.device_id, "high", "violating", "unknown").await;
-    event(&s, a.device_id, "high", "violating", "none").await;
+    event(&s, a.device_id, "high", "unknown", "violating").await;
     let settings = notify::load_settings(&s.pool).await.unwrap();
     let secrets = notify::NotifySecrets::default();
     worker::run_channel(
@@ -454,7 +455,57 @@ async fn violating_to_unknown_is_not_resolved(pool: PgPool) {
     .await
     .unwrap();
     let v: serde_json::Value = serde_json::from_str(&seen.lock().unwrap()[0].1).unwrap();
-    assert_eq!(v["total_resolved"], 1);
+    assert_eq!(
+        (v["total_new"].as_i64(), v["total_resolved"].as_i64()),
+        (Some(1), Some(1))
+    );
+    assert_eq!(v["resolved"][0]["to"], "unknown");
+}
+
+/// 送出途中管理員修好網址（重試狀態被清掉）：舊網址的失敗不能把重試等待寫回去
+#[sqlx::test(migrations = false)]
+async fn in_flight_failure_does_not_undo_backoff_reset(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(1).await;
+    let a = s.enroll_ok(&tok, None, None).await;
+    let db = s.pool.clone();
+    let app = Router::new().route(
+        "/hook",
+        post(move || {
+            let db = db.clone();
+            async move {
+                sqlx::query(
+                    "UPDATE notify_channels SET failures = 0, next_attempt_at = NULL,                      last_error = NULL",
+                )
+                .execute(&db)
+                .await
+                .unwrap();
+                StatusCode::SERVICE_UNAVAILABLE
+            }
+        }),
+    );
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/hook", l.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+    enable_webhook(&s, &url).await;
+    sqlx::query("UPDATE notify_channels SET failures = 5")
+        .execute(&s.pool)
+        .await
+        .unwrap();
+    event(&s, a.device_id, "high", "none", "violating").await;
+    let settings = notify::load_settings(&s.pool).await.unwrap();
+    let secrets = notify::NotifySecrets::default();
+    worker::run_channel(
+        &s.pool,
+        "webhook",
+        &settings,
+        &secrets,
+        &senders(),
+        Utc::now(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(channel_row(&s).await.1, 0, "重設後的重試狀態不被舊失敗覆寫");
 }
 
 /// 連線失敗的錯誤訊息要帶原因（拒絕連線、DNS、TLS、逾時），不能只有「error sending request」
