@@ -11,8 +11,9 @@ use uuid::Uuid;
 use super::store::{load_ruleset, refresh_device, refresh_device_fresh};
 
 pub const BATCH: i64 = 1000;
-/// 全量重算時同時處理的裝置數（`EM_RECOMPUTE_CONCURRENCY`，1–32，預設 8）
-pub const DEFAULT_CONCURRENCY: usize = 8;
+/// 全量重算時同時處理的裝置數（`EM_RECOMPUTE_CONCURRENCY`，1–32，預設 4）。
+/// 負載測試：8 路時重算較快，但會把資料庫佔滿，重算期間報到 p99 升到約 600ms
+pub const DEFAULT_CONCURRENCY: usize = 4;
 
 fn concurrency() -> usize {
     static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
