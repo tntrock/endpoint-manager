@@ -543,11 +543,16 @@ async fn approve_is_not_blocked_by_key_share(pool: PgPool) {
         .execute(&mut *holder)
         .await
         .unwrap();
-    let approve = endpoint_server::devices::approve(&s.pool, new.device_id, "admin");
-    let r = tokio::time::timeout(std::time::Duration::from_secs(3), approve).await;
+    // 用 lock_timeout 判斷「在等鎖」，不受機器快慢影響
+    let mut tx = s.pool.begin().await.unwrap();
+    sqlx::query("SET LOCAL lock_timeout = '2s'")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let r = endpoint_server::devices::approve_in(&mut tx, new.device_id, "admin").await;
     holder.rollback().await.unwrap();
-    assert!(r.is_ok(), "核准被 KEY SHARE 鎖卡住");
-    r.unwrap().unwrap();
+    assert!(r.is_ok(), "核准被 KEY SHARE 鎖卡住：{:#}", r.unwrap_err());
+    tx.commit().await.unwrap();
 }
 
 /// 每日快照要包含沒有違規的啟用規則（趨勢圖顯示 0 而不是缺一天）
