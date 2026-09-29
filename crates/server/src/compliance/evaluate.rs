@@ -229,6 +229,55 @@ fn check_one(c: &Check, f: &DeviceFacts) -> Option<(Status, Value)> {
     }
 }
 
+fn software_list(d: &Value) -> String {
+    let items = d["software"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+    let mut s = items
+        .iter()
+        .map(|i| {
+            let name = i["name"].as_str().unwrap_or("");
+            match i["version"].as_str() {
+                Some(v) => format!("{name} {v}"),
+                None => name.to_string(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("、");
+    // 白名單細節只列前 50 筆，另附總數
+    if let Some(total) = d["total"].as_u64()
+        && total as usize > items.len()
+    {
+        s = format!("{s} 等 {total} 套");
+    }
+    s
+}
+
+/// 給人看的一行摘要（網頁、CSV、通知共用）。
+pub fn summarize(d: &Value) -> String {
+    let s = |k: &str| d[k].as_str().unwrap_or("").to_string();
+    match d["reason"].as_str() {
+        Some("no_data") => return "尚未收到盤點資料".into(),
+        Some("rule_error") => return format!("規則參數錯誤：{}", s("error")),
+        Some("missing") => return "未安裝".into(),
+        Some("outdated") => return format!("版本過舊：{}", software_list(d)),
+        Some("version_missing") => return format!("版本不明：{}", software_list(d)),
+        Some("ubr_missing") => return format!("Agent 未回報 UBR（組建 {}）", s("build")),
+        Some("build_unparsable") => return format!("無法解析組建號：{}", s("build")),
+        _ => {}
+    }
+    if d.get("kb").is_some() {
+        format!("缺少 {}", s("kb"))
+    } else if let (Some(ubr), Some(min)) = (d["ubr"].as_u64(), d["min_ubr"].as_u64()) {
+        let b = s("build");
+        format!("組建 {b}.{ubr}，需要 {b}.{min} 以上")
+    } else if d.get("build").is_some() {
+        format!("組建 {} 低於最低支援版本", s("build"))
+    } else if d.get("software").is_some() {
+        software_list(d)
+    } else {
+        d.to_string()
+    }
+}
+
 /// 回傳所有有結果（違規、未知、豁免）的規則；通過的規則不產生 Outcome。依規則順序。
 pub fn evaluate(facts: &DeviceFacts, rules: &RuleSet) -> Vec<Outcome> {
     if !facts.active {
@@ -294,6 +343,51 @@ mod tests {
                 exclude: vec![],
                 check: Params::parse(kind, &params).map(|p| p.compile()),
             }],
+        }
+    }
+
+    #[test]
+    fn summaries() {
+        let cases = [
+            (json!({"reason": "no_data"}), "尚未收到盤點資料"),
+            (
+                json!({"reason": "rule_error", "error": "x"}),
+                "規則參數錯誤：x",
+            ),
+            (json!({"reason": "missing"}), "未安裝"),
+            (
+                json!({"reason": "outdated", "software": [{"name": "Falcon", "version": "7.1"}]}),
+                "版本過舊：Falcon 7.1",
+            ),
+            (
+                json!({"reason": "version_missing", "software": [{"name": "A", "version": null}]}),
+                "版本不明：A",
+            ),
+            (
+                json!({"reason": "ubr_missing", "build": "22631"}),
+                "Agent 未回報 UBR（組建 22631）",
+            ),
+            (
+                json!({"reason": "build_unparsable", "build": "abc"}),
+                "無法解析組建號：abc",
+            ),
+            (json!({"kb": "KB5031455"}), "缺少 KB5031455"),
+            (
+                json!({"build": "22631", "ubr": 4000, "min_ubr": 4317}),
+                "組建 22631.4000，需要 22631.4317 以上",
+            ),
+            (json!({"build": "19044"}), "組建 19044 低於最低支援版本"),
+            (
+                json!({"software": [{"name": "A", "version": "1"}, {"name": "B", "version": null}]}),
+                "A 1、B",
+            ),
+            (
+                json!({"software": [{"name": "A", "version": null}], "total": 60}),
+                "A 等 60 套",
+            ),
+        ];
+        for (d, want) in cases {
+            assert_eq!(summarize(&d), want, "{d}");
         }
     }
 
