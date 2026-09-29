@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 
 use endpoint_agent::client::ServerClient;
 use protocol::{
-    Arch, CheckinRequest, EnrollRequest, InventoryPayload, InventoryUpload, SCHEMA_VERSION,
-    Section, SoftwareItem,
+    Arch, CheckinRequest, EnrollRequest, InventoryPayload, InventoryUpload, Probe, RegKind,
+    RegState, RegistryQuery, RegistryValue, SCHEMA_VERSION, Section, SecurityInfo, SoftwareItem,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
@@ -80,7 +80,8 @@ fn client(t: &Target, d: Option<&Device>) -> anyhow::Result<ServerClient> {
 fn checkin_req(section_hashes: BTreeMap<Section, String>) -> CheckinRequest {
     CheckinRequest {
         schema_version: SCHEMA_VERSION,
-        agent_version: "loadsim".into(),
+        // 模擬支援組態區段的 Agent（組態規則要求 0.3.0 以上）
+        agent_version: "0.3.0".into(),
         boot_time: chrono::Utc::now() - chrono::Duration::hours(1),
         logged_on_user: Some(r"LOADSIM\user".into()),
         ip_addresses: vec!["10.0.0.1".into()],
@@ -196,6 +197,91 @@ pub async fn upload(
     (report, unverified.load(Ordering::Relaxed))
 }
 
+/// 固定的安全設定：偶數台公用防火牆關閉
+pub fn security(device: usize) -> SecurityInfo {
+    SecurityInfo {
+        firewall: Probe::Ok(protocol::FirewallInfo {
+            domain: true,
+            private: true,
+            public: device % 2 == 1,
+        }),
+        bitlocker: Probe::Ok(vec![protocol::VolumeInfo {
+            drive: "C:".into(),
+            is_system: true,
+            protected: true,
+        }]),
+        defender: Probe::Ok(protocol::DefenderInfo {
+            active: true,
+            realtime: true,
+            tamper: true,
+            signature_updated: Some(chrono::Utc::now()),
+        }),
+        password: Probe::Ok(protocol::PasswordPolicy {
+            min_length: 8,
+            max_age_days: 90,
+            lockout_threshold: 10,
+        }),
+        admins: Probe::Ok(vec![protocol::AccountInfo {
+            name: format!(r"LOADSIM-{device:05}\Administrator"),
+            sid: "S-1-5-21-1-2-3-500".into(),
+        }]),
+    }
+}
+
+/// 對伺服器下發的每個查詢回一個 DWORD，值為裝置編號 % 2
+pub fn registry(device: usize, queries: &[RegistryQuery]) -> Vec<RegistryValue> {
+    queries
+        .iter()
+        .map(|q| RegistryValue {
+            path: q.path.clone(),
+            name: q.name.clone(),
+            state: RegState::Present,
+            kind: RegKind::Dword,
+            data: (device % 2).to_string(),
+        })
+        .collect()
+}
+
+/// 每台：報到取得查詢清單 → 上傳 security 與 registry → 以新雜湊再報到，確認伺服器不再要求。
+pub async fn config(t: &Target, devices: &[Device], concurrency: usize) -> (Report, usize) {
+    let sem = Arc::new(Semaphore::new(concurrency));
+    let unverified = Arc::new(AtomicUsize::new(0));
+    let start = Instant::now();
+    let mut set = JoinSet::new();
+    for (n, d) in devices.iter().enumerate() {
+        let permit = sem.clone().acquire_owned().await.expect("semaphore open");
+        let (t, d, unverified) = (t.clone(), d.clone(), unverified.clone());
+        set.spawn(async move {
+            let _permit = permit;
+            let c = client(&t, Some(&d)).ok()?;
+            let s = Instant::now();
+            let first = c.checkin(&checkin_req(BTreeMap::new())).await.ok()?;
+            let mut hashes = BTreeMap::new();
+            for payload in [
+                InventoryPayload::Security(security(n)),
+                InventoryPayload::Registry(registry(n, &first.registry_queries)),
+            ] {
+                hashes.insert(payload.section(), payload.canonical_hash());
+                c.upload(&InventoryUpload {
+                    schema_version: SCHEMA_VERSION,
+                    payload,
+                })
+                .await
+                .ok()?;
+            }
+            let resp = c.checkin(&checkin_req(hashes)).await.ok()?;
+            if resp.request_sections.contains(&Section::Security)
+                || resp.request_sections.contains(&Section::Registry)
+            {
+                unverified.fetch_add(1, Ordering::Relaxed);
+            }
+            Some(s.elapsed())
+        });
+    }
+    let report = collect(set, start).await;
+    (report, unverified.load(Ordering::Relaxed))
+}
+
 async fn collect(mut set: JoinSet<Option<Duration>>, start: Instant) -> Report {
     let (mut lat, mut errors) = (Vec::new(), 0);
     while let Some(r) = set.join_next().await {
@@ -226,5 +312,21 @@ mod tests {
         assert_eq!(a.len(), 150);
         assert_eq!(a, software(7, 150));
         protocol::InventoryPayload::Software(a).validate().unwrap();
+    }
+
+    #[test]
+    fn config_payloads_are_valid() {
+        let q: Vec<RegistryQuery> = (0..1000)
+            .map(|i| RegistryQuery {
+                path: format!(r"HKLM\SOFTWARE\Loadsim\K{}", i / 100),
+                name: format!("V{i}"),
+            })
+            .collect();
+        let r = registry(3, &q);
+        assert_eq!((r.len(), r[0].data.as_str()), (1000, "1"));
+        protocol::InventoryPayload::Registry(r).validate().unwrap();
+        protocol::InventoryPayload::Security(security(2))
+            .validate()
+            .unwrap();
     }
 }
