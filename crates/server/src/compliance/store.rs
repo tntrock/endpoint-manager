@@ -113,6 +113,12 @@ pub async fn load_facts(
         software,
         kbs,
         exempt,
+        // 計畫 9 Task 3 載入
+        security: None,
+        registry: None,
+        services: None,
+        agent_version: None,
+        now: chrono::Utc::now(),
     }))
 }
 
@@ -351,6 +357,11 @@ pub async fn load_facts_bulk(
                 software: has(id, "software").then(|| sw.remove(&id).unwrap_or_default()),
                 kbs: has(id, "patches").then(|| kbs.remove(&id).unwrap_or_default()),
                 exempt: vec![],
+                security: None,
+                registry: None,
+                services: None,
+                agent_version: None,
+                now: chrono::Utc::now(),
             };
             (id, facts)
         })
