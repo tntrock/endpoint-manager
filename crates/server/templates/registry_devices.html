@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>登錄檔值：裝置清單</h1>
+<p><a href="/registry?path={{ path|urlencode }}&name={{ name|urlencode }}">← 回到查詢</a></p>
+<p><code>{{ path }}\{{ name }}</code>：{{ state }}，值 <code>{{ data }}</code></p>
+<table>
+  <tr><th>主機名稱</th><th>裝置 ID</th></tr>
+  {% for r in rows %}<tr><td><a href="/devices/{{ r.0 }}">{{ r.1 }}</a></td><td>{{ r.0 }}</td></tr>{% endfor %}
+</table>
+{% if truncated %}<p class="muted">只顯示前 500 台。</p>{% endif %}
+{% endblock %}

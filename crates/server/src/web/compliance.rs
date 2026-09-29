@@ -704,3 +704,145 @@ mod tests {
         assert_eq!(csv_field("多行\n文字"), "\"多行\n文字\"");
     }
 }
+
+/// 安全設定分頁的一列：項目、值；error 為收集失敗時的訊息
+pub struct SecurityLine {
+    pub label: String,
+    pub value: String,
+    pub error: bool,
+}
+
+#[derive(Template)]
+#[template(path = "security_tab.html")]
+struct SecurityTab {
+    updated: Option<String>,
+    lines: Vec<SecurityLine>,
+}
+
+fn security_lines(st: &AppState, info: &protocol::SecurityInfo) -> Vec<SecurityLine> {
+    use protocol::Probe;
+    let on = |b: bool| if b { "啟用" } else { "停用" };
+    let mut out = vec![];
+    let mut push = |label: &str, value: String, error: bool| {
+        out.push(SecurityLine {
+            label: label.into(),
+            value,
+            error,
+        })
+    };
+    match &info.firewall {
+        Probe::Ok(f) => push(
+            "防火牆",
+            format!(
+                "網域：{}、私人：{}、公用：{}",
+                on(f.domain),
+                on(f.private),
+                on(f.public)
+            ),
+            false,
+        ),
+        Probe::Error(e) => push("防火牆", e.clone(), true),
+    }
+    match &info.bitlocker {
+        Probe::Ok(v) if v.is_empty() => push("BitLocker", "沒有固定磁碟".into(), false),
+        Probe::Ok(v) => push(
+            "BitLocker",
+            v.iter()
+                .map(|x| {
+                    format!(
+                        "{}{}：{}",
+                        x.drive,
+                        if x.is_system { "（系統）" } else { "" },
+                        if x.protected {
+                            "保護中"
+                        } else {
+                            "未保護"
+                        }
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("、"),
+            false,
+        ),
+        Probe::Error(e) => push("BitLocker", e.clone(), true),
+    }
+    match &info.defender {
+        Probe::Ok(d) => push(
+            "Defender",
+            format!(
+                "作用中：{}、即時保護：{}、防竄改：{}、病毒碼更新：{}",
+                if d.active { "是" } else { "否" },
+                on(d.realtime),
+                on(d.tamper),
+                d.signature_updated
+                    .map(|t| super::fmt_time(st, Some(t)))
+                    .unwrap_or_else(|| "未知".into())
+            ),
+            false,
+        ),
+        Probe::Error(e) => push("Defender", e.clone(), true),
+    }
+    match &info.password {
+        Probe::Ok(p) => push(
+            "密碼原則（本機）",
+            format!(
+                "最短 {} 碼、最長使用：{}、鎖定門檻：{}",
+                p.min_length,
+                if p.max_age_days == 0 {
+                    "永不過期".to_string()
+                } else {
+                    format!("{} 天", p.max_age_days)
+                },
+                if p.lockout_threshold == 0 {
+                    "不鎖定".to_string()
+                } else {
+                    format!("{} 次", p.lockout_threshold)
+                }
+            ),
+            false,
+        ),
+        Probe::Error(e) => push("密碼原則（本機）", e.clone(), true),
+    }
+    match &info.admins {
+        Probe::Ok(a) => push(
+            "本機管理員",
+            a.iter()
+                .map(|x| format!("{}（{}）", x.name, x.sid))
+                .collect::<Vec<_>>()
+                .join("、"),
+            false,
+        ),
+        Probe::Error(e) => push("本機管理員", e.clone(), true),
+    }
+    out
+}
+
+type SecurityDbRow = (String, String, String, String, String, DateTime<Utc>);
+
+/// 裝置頁的「安全設定」分頁（htmx 片段）。範圍外的裝置回 404。
+pub async fn security_tab(st: &AppState, s: &Session, id: Uuid) -> Result<Response, AppError> {
+    if device_group_in_scope(st, s, id).await?.is_none() {
+        return Ok(not_found());
+    }
+    let row: Option<SecurityDbRow> = sqlx::query_as(
+        "SELECT sec.firewall::text, sec.bitlocker::text, sec.defender::text, \
+                sec.password::text, sec.admins::text, i.updated_at \
+         FROM device_security sec JOIN inventory_sections i \
+              ON i.device_id = sec.device_id AND i.section = 'security' \
+         WHERE sec.device_id = $1",
+    )
+    .bind(id)
+    .fetch_optional(&st.pool)
+    .await?;
+    let (updated, lines) = match row {
+        None => (None, vec![]),
+        Some((a, b, c, d, e, at)) => {
+            let info = crate::inventory::security_from_row((a, b, c, d, e));
+            (
+                Some(super::fmt_time(st, Some(at))),
+                security_lines(st, &info),
+            )
+        }
+    };
+    Ok(render(&SecurityTab { updated, lines }))
+}
