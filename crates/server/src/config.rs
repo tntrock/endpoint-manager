@@ -19,6 +19,11 @@ pub struct Config {
     pub agent_msi: Option<PathBuf>,
     /// 下載安裝檔時預設的伺服器網址（例：https://em.example.com:8443）
     pub agent_public_url: String,
+    /// 合規通知：SMTP 密碼、Webhook 簽章密鑰（只從環境變數讀）
+    pub smtp_password: Option<String>,
+    pub webhook_secret: Option<String>,
+    /// 管理網頁的對外網址（通知內的連結）
+    pub web_public_url: String,
 }
 
 impl Config {
@@ -61,6 +66,12 @@ impl Config {
                 .filter(|s| !s.is_empty())
                 .map(PathBuf::from),
             agent_public_url: get("EM_AGENT_PUBLIC_URL").unwrap_or_default(),
+            smtp_password: get("EM_SMTP_PASSWORD").filter(|s| !s.is_empty()),
+            webhook_secret: get("EM_WEBHOOK_SECRET").filter(|s| !s.is_empty()),
+            web_public_url: get("EM_WEB_PUBLIC_URL")
+                .unwrap_or_default()
+                .trim_end_matches('/')
+                .to_string(),
         })
     }
 }
@@ -90,6 +101,21 @@ mod tests {
             _ => None,
         });
         assert!(bad.is_err());
+    }
+
+    #[test]
+    fn notify_secrets_env() {
+        let c = Config::from_lookup(|k| match k {
+            "DATABASE_URL" => Some("postgres://x".into()),
+            "EM_SMTP_PASSWORD" => Some("pw".into()),
+            "EM_WEBHOOK_SECRET" => Some("".into()),
+            "EM_WEB_PUBLIC_URL" => Some("https://em.example.com/".into()),
+            _ => None,
+        })
+        .unwrap();
+        assert_eq!(c.smtp_password.as_deref(), Some("pw"));
+        assert_eq!(c.webhook_secret, None, "空字串視為未設定");
+        assert_eq!(c.web_public_url, "https://em.example.com", "去掉結尾斜線");
     }
 
     #[test]

@@ -16,6 +16,7 @@ pub mod heartbeat;
 pub mod identity;
 pub mod installer;
 pub mod inventory;
+pub mod notify;
 pub mod partitions;
 pub mod ratelimit;
 pub mod renew;
@@ -53,6 +54,8 @@ pub struct AppState {
     pub server_names: Arc<Vec<String>>,
     /// 合規規則快取
     pub rules: Arc<compliance::RuleCache>,
+    /// 通知用的機密與網址
+    pub notify: Arc<notify::NotifySecrets>,
 }
 
 impl AppState {
@@ -74,6 +77,7 @@ impl AppState {
             agent_public_url: String::new(),
             server_names: Arc::new(vec![]),
             rules: Arc::new(compliance::RuleCache::new()),
+            notify: Arc::new(notify::NotifySecrets::default()),
         }
     }
 
@@ -86,6 +90,11 @@ impl AppState {
         self.agent_msi = msi;
         self.agent_public_url = public_url;
         self.server_names = Arc::new(server_names);
+        self
+    }
+
+    pub fn with_notify(mut self, secrets: notify::NotifySecrets) -> Self {
+        self.notify = Arc::new(secrets);
         self
     }
 
@@ -141,7 +150,12 @@ pub async fn serve(cfg: config::Config) -> anyhow::Result<()> {
     let state = AppState::new(pool.clone(), ca::Ca::load(&cfg.ca_dir)?)
         .with_display_offset(cfg.display_utc_offset)
         .with_enroll_limit(cfg.enroll_per_ip_per_minute)
-        .with_installer(cfg.agent_msi.clone(), public_url, server_names);
+        .with_installer(cfg.agent_msi.clone(), public_url, server_names)
+        .with_notify(notify::NotifySecrets {
+            smtp_password: cfg.smtp_password.clone(),
+            webhook_secret: cfg.webhook_secret.clone(),
+            web_public_url: cfg.web_public_url.clone(),
+        });
     let tls_cfg = tls::server_config(&cfg.ca_dir)?;
 
     let hb = state.heartbeat.clone();
