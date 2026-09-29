@@ -120,6 +120,7 @@ pub fn web_router(state: AppState) -> Router {
         .route("/software", get(software::search))
         .route("/compliance", get(compliance::overview))
         .route("/compliance/violations", get(compliance::violations))
+        .route("/compliance/violations.csv", get(compliance::export_csv))
         .route("/compliance/rules", get(rules::list).post(rules::create))
         .route("/compliance/rules/new", get(rules::new_form))
         .route("/compliance/rules/preview", post(rules::preview))

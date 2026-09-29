@@ -1,8 +1,10 @@
 //! 合規：總覽、違規清單、CSV 匯出、裝置頁的合規分頁與豁免。所有裝置資料都以群組範圍過濾。
 
 use askama::Template;
+use axum::body::Body;
 use axum::extract::{Query, State};
-use axum::response::Response;
+use axum::http::header;
+use axum::response::{IntoResponse, Response};
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::Deserialize;
 use uuid::Uuid;
@@ -318,4 +320,133 @@ pub async fn overview(
             .collect(),
         trend_max,
     }))
+}
+
+/// 每個欄位都加引號；以 = + - @ Tab CR 開頭時前面加 '，避免 Excel 當公式執行（CSV 注入）。
+pub fn csv_field(s: &str) -> String {
+    let risky = s.starts_with(['=', '+', '-', '@', '\t', '\r']);
+    let body = s.replace('"', "\"\"");
+    if risky {
+        format!("\"'{body}\"")
+    } else {
+        format!("\"{body}\"")
+    }
+}
+
+const CSV_BATCH: i64 = 5000;
+const CSV_HEADER: &str = "\u{feff}裝置ID,電腦名稱,群組,規則,嚴重度,狀態,細節,開始時間(UTC)\r\n";
+
+fn csv_rows(rows: &[RawViolation]) -> String {
+    let mut chunk = String::new();
+    for (device, _, host, group, rule, sev, status, detail, since) in rows {
+        let detail: serde_json::Value = serde_json::from_str(detail).unwrap_or_default();
+        let fields = [
+            device.to_string(),
+            host.clone(),
+            group.clone().unwrap_or_else(|| "未分組".into()),
+            rule.clone(),
+            severity_of(sev).label().into(),
+            status_label(status).into(),
+            summarize(&detail),
+            since.format("%Y-%m-%d %H:%M:%S").to_string(),
+        ];
+        let line: Vec<String> = fields.iter().map(|x| csv_field(x)).collect();
+        chunk.push_str(&line.join(","));
+        chunk.push_str("\r\n");
+    }
+    chunk
+}
+
+/// 依清單的篩選條件匯出 CSV。以 (device_id, rule_id) 分批讀取、邊讀邊送，不把全部結果放進記憶體。
+pub async fn export_csv(
+    State(st): State<AppState>,
+    AdminSession(s): AdminSession,
+    Query(f): Query<ViolationFilter>,
+) -> Result<Response, AppError> {
+    let mut conn = st.pool.acquire().await?;
+    crate::audit::record(
+        &mut conn,
+        &s.username,
+        "compliance_export",
+        None,
+        serde_json::json!({
+            "rule": f.rule, "severity": f.severity, "status": f.status,
+            "group": f.group, "q": f.q
+        }),
+    )
+    .await?;
+    drop(conn);
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<String, std::io::Error>>(4);
+    tokio::spawn(async move {
+        if tx.send(Ok(CSV_HEADER.into())).await.is_err() {
+            return;
+        }
+        let sql = format!(
+            "{} AND (v.device_id, v.rule_id) > ($9, $10) \
+             ORDER BY v.device_id, v.rule_id LIMIT $11",
+            violation_select()
+        );
+        let mut after: (Uuid, i64) = (Uuid::nil(), -1);
+        loop {
+            let rows: Result<Vec<RawViolation>, _> =
+                sqlx::query_as(sqlx::AssertSqlSafe(sql.clone()))
+                    .bind(s.all_devices())
+                    .bind(&s.groups)
+                    .bind(&f.rule)
+                    .bind(&f.severity)
+                    .bind(&f.status)
+                    .bind(&f.group)
+                    .bind(&f.q)
+                    .bind(escape_like(&f.q))
+                    .bind(after.0)
+                    .bind(after.1)
+                    .bind(CSV_BATCH)
+                    .fetch_all(&st.pool)
+                    .await;
+            let rows = match rows {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::error!(error = %e, "csv export failed");
+                    let _ = tx.send(Err(std::io::Error::other("database error"))).await;
+                    return;
+                }
+            };
+            let Some(last) = rows.last() else { return };
+            after = (last.0, last.1);
+            if tx.send(Ok(csv_rows(&rows))).await.is_err() || (rows.len() as i64) < CSV_BATCH {
+                return;
+            }
+        }
+    });
+    let stream = futures_util::stream::unfold(rx, |mut rx| async move {
+        rx.recv().await.map(|item| (item, rx))
+    });
+    Ok((
+        [
+            (header::CONTENT_TYPE, "text/csv; charset=utf-8"),
+            (
+                header::CONTENT_DISPOSITION,
+                "attachment; filename=\"violations.csv\"",
+            ),
+        ],
+        Body::from_stream(stream),
+    )
+        .into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::csv_field;
+
+    #[test]
+    fn csv_quotes_and_neutralizes_formulas() {
+        assert_eq!(csv_field("plain"), "\"plain\"");
+        assert_eq!(csv_field("a\"b"), "\"a\"\"b\"");
+        assert_eq!(csv_field("=cmd|' /C calc'!A0"), "\"'=cmd|' /C calc'!A0\"");
+        for p in ["+1", "-1", "@SUM(A1)", "\tx", "\rx"] {
+            assert!(csv_field(p).starts_with("\"'"), "{p:?}");
+        }
+        assert_eq!(csv_field("多行\n文字"), "\"多行\n文字\"");
+    }
 }

@@ -210,3 +210,35 @@ async fn violations_are_scoped_by_group(pool: PgPool) {
     let (_, html) = s.page(&g, "/compliance/violations?q=nomatch").await;
     assert!(!html.contains(&id(&taipei)));
 }
+
+#[sqlx::test(migrations = false)]
+async fn csv_export_is_scoped_bom_and_safe(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    add_rule_via_admin(&s, "forbidden_software", serde_json::json!({"name": "=*"})).await;
+    let taipei = device_in(&s, "台北", &["=cmd|' /C calc'!A0"]).await;
+    let kaohsiung = device_in(&s, "高雄", &["=evil"]).await;
+    let g = s.login_as("gary", Role::GroupAdmin, &["台北"]).await;
+    let r = g
+        .get(s.web_url("/compliance/violations.csv"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    assert!(
+        r.headers()["content-type"]
+            .to_str()
+            .unwrap()
+            .starts_with("text/csv")
+    );
+    let body = r.text().await.unwrap();
+    assert!(body.starts_with('\u{feff}'), "BOM");
+    assert!(body.contains(&taipei.device_id.to_string()));
+    assert!(!body.contains(&kaohsiung.device_id.to_string()), "範圍外");
+    assert!(body.contains("\"'=cmd"), "公式開頭加 '：{body}");
+    let n: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM audit_log WHERE action = 'compliance_export'")
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+    assert_eq!(n, 1);
+}
