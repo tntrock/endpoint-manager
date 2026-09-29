@@ -3,6 +3,7 @@
 pub mod admin;
 pub mod evaluate;
 pub mod matcher;
+pub mod preview;
 pub mod rules;
 pub mod store;
 pub mod worker;

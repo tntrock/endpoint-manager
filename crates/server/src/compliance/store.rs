@@ -272,3 +272,66 @@ pub async fn refresh_device_fresh(conn: &mut PgConnection, id: Uuid) -> Result<(
     // generation 不符會在 refresh_device_in 取鎖後載入最新規則
     refresh_device_in(conn, &RuleSet::empty(), id).await
 }
+
+type BulkDeviceRow = (Uuid, String, Option<i64>, Option<String>, Option<i32>);
+type BulkSoftwareRow = (Uuid, String, Option<String>, Option<String>);
+
+/// 一次讀一批裝置的事實（預覽用；不含豁免、不加鎖）。
+pub async fn load_facts_bulk(
+    conn: &mut PgConnection,
+    ids: &[Uuid],
+) -> Result<Vec<(Uuid, DeviceFacts)>, sqlx::Error> {
+    let devices: Vec<BulkDeviceRow> = sqlx::query_as(
+        "SELECT id, status, group_id, os_build, os_ubr FROM devices WHERE id = ANY($1) ORDER BY id",
+    )
+    .bind(ids)
+    .fetch_all(&mut *conn)
+    .await?;
+    let sections: Vec<(Uuid, String)> = sqlx::query_as(
+        "SELECT device_id, section FROM inventory_sections WHERE device_id = ANY($1)",
+    )
+    .bind(ids)
+    .fetch_all(&mut *conn)
+    .await?;
+    let software: Vec<BulkSoftwareRow> = sqlx::query_as(
+        "SELECT device_id, name, version, publisher FROM device_software WHERE device_id = ANY($1)",
+    )
+    .bind(ids)
+    .fetch_all(&mut *conn)
+    .await?;
+    let patches: Vec<(Uuid, String)> =
+        sqlx::query_as("SELECT device_id, kb FROM device_patches WHERE device_id = ANY($1)")
+            .bind(ids)
+            .fetch_all(&mut *conn)
+            .await?;
+    let mut sw: HashMap<Uuid, Vec<SoftwareFact>> = HashMap::new();
+    for (d, name, version, publisher) in software {
+        sw.entry(d).or_default().push(SoftwareFact {
+            name,
+            version,
+            publisher,
+        });
+    }
+    let mut kbs: HashMap<Uuid, Vec<String>> = HashMap::new();
+    for (d, kb) in patches {
+        kbs.entry(d).or_default().push(kb);
+    }
+    let mut has: std::collections::HashSet<(Uuid, String)> = std::collections::HashSet::new();
+    has.extend(sections);
+    let has = |d: Uuid, s: &str| has.contains(&(d, s.to_string()));
+    Ok(devices
+        .into_iter()
+        .map(|(id, status, group_id, os_build, os_ubr)| {
+            let facts = DeviceFacts {
+                active: status == "active",
+                group_id,
+                os_build: has(id, "basic").then(|| os_build.unwrap_or_default()),
+                os_ubr: os_ubr.and_then(|u| u32::try_from(u).ok()),
+                software: has(id, "software").then(|| sw.remove(&id).unwrap_or_default()),
+                kbs: has(id, "patches").then(|| kbs.remove(&id).unwrap_or_default()),
+                exempt: vec![],
+            };
+            (id, facts)
+        })
+        .collect())
+}
