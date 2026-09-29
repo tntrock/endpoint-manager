@@ -19,6 +19,8 @@ pub struct Config {
     pub agent_msi: Option<PathBuf>,
     /// 下載安裝檔時預設的伺服器網址（例：https://em.example.com:8443）
     pub agent_public_url: String,
+    /// 合規通知的 Webhook 簽章密鑰（只從環境變數讀）
+    pub webhook_secret: Option<String>,
 }
 
 impl Config {
@@ -61,6 +63,7 @@ impl Config {
                 .filter(|s| !s.is_empty())
                 .map(PathBuf::from),
             agent_public_url: get("EM_AGENT_PUBLIC_URL").unwrap_or_default(),
+            webhook_secret: get("EM_WEBHOOK_SECRET").filter(|s| !s.is_empty()),
         })
     }
 }
@@ -90,6 +93,17 @@ mod tests {
             _ => None,
         });
         assert!(bad.is_err());
+    }
+
+    #[test]
+    fn notify_secrets_env() {
+        let c = Config::from_lookup(|k| match k {
+            "DATABASE_URL" => Some("postgres://x".into()),
+            "EM_WEBHOOK_SECRET" => Some("".into()),
+            _ => None,
+        })
+        .unwrap();
+        assert_eq!(c.webhook_secret, None, "空字串視為未設定");
     }
 
     #[test]

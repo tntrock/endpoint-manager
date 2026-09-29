@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>通知設定</h1>
+<p><a href="/compliance">← 合規總覽</a></p>
+<form method="post" action="/compliance/notify">
+  <input type="hidden" name="csrf" value="{{ nav.csrf }}">
+  <p><label>通知門檻 <select name="min_severity">{% for o in severities %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}以上</option>{% endfor %}</select></label>
+     <label>彙整間隔 <input name="interval_minutes" type="number" min="1" max="1440" value="{{ interval_minutes }}" required> 分鐘</label></p>
+  <fieldset><legend>Webhook（網址留空＝停用）</legend>
+    <p><label>網址 <input name="webhook_url" value="{{ webhook_url }}" size="60" placeholder="https://"></label></p>
+    <p class="muted">簽章密鑰：環境變數 <code>EM_WEBHOOK_SECRET</code>（{% if webhook_secret_set %}已設定{% else %}未設定{% endif %}）。設定後每個請求帶 <code>X-EM-Timestamp</code> 與 <code>X-EM-Signature: sha256=HMAC(密鑰, 時間戳記 + "." + 內文)</code>。</p>
+  </fieldset>
+  <p><button>儲存</button></p>
+</form>
+<form hx-post="/compliance/notify/test" hx-target="#test-result">
+  <input type="hidden" name="csrf" value="{{ nav.csrf }}">
+  <button>送出測試 Webhook</button>
+</form>
+<div id="test-result"></div>
+{% endblock %}

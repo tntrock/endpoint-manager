@@ -11,6 +11,7 @@ pub mod dashboard;
 pub mod devices;
 pub mod groups;
 pub mod login;
+pub mod notify;
 pub mod password;
 pub mod rules;
 pub mod software;
@@ -121,6 +122,8 @@ pub fn web_router(state: AppState) -> Router {
         .route("/compliance", get(compliance::overview))
         .route("/compliance/violations", get(compliance::violations))
         .route("/compliance/violations.csv", get(compliance::export_csv))
+        .route("/compliance/notify", get(notify::page).post(notify::save))
+        .route("/compliance/notify/test", post(notify::test))
         .route("/compliance/rules", get(rules::list).post(rules::create))
         .route("/compliance/rules/new", get(rules::new_form))
         .route("/compliance/rules/preview", post(rules::preview))

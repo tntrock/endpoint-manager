@@ -62,6 +62,13 @@ pub fn affects_compliance(section: Section) -> bool {
 }
 
 pub async fn refresh_after_upload(st: &AppState, device_id: Uuid) -> Result<(), sqlx::Error> {
+    let start = std::time::Instant::now();
     let rules = st.rules.get(&st.pool).await?;
-    store::refresh_device(&st.pool, &rules, device_id).await
+    store::refresh_device(&st.pool, &rules, device_id).await?;
+    // 負載測試以 RUST_LOG=endpoint_server::compliance=debug 統計評估耗時
+    tracing::debug!(
+        elapsed_us = start.elapsed().as_micros() as u64,
+        "compliance refresh"
+    );
+    Ok(())
 }

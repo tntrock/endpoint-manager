@@ -116,26 +116,33 @@ pub async fn load_facts(
     }))
 }
 
-async fn event(
+/// 一次寫入的歷程事件：(rule_id, rule_name, severity, from, to, detail)
+type EventRow = (i64, String, String, String, String, String);
+
+async fn insert_events(
     conn: &mut PgConnection,
     device: Uuid,
-    rule: (i64, &str, &str),
-    from: &str,
-    to: &str,
-    detail: &Value,
+    events: &[EventRow],
 ) -> Result<(), sqlx::Error> {
+    if events.is_empty() {
+        return Ok(());
+    }
+    let col = |f: fn(&EventRow) -> &str| events.iter().map(f).collect::<Vec<&str>>();
+    let ids: Vec<i64> = events.iter().map(|e| e.0).collect();
     sqlx::query(
         "INSERT INTO violation_events \
          (device_id, rule_id, rule_name, severity, from_status, to_status, detail) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)",
+         SELECT $1, r, n, s, f, t, d::jsonb \
+         FROM UNNEST($2::bigint[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[]) \
+              AS x(r, n, s, f, t, d)",
     )
     .bind(device)
-    .bind(rule.0)
-    .bind(rule.1)
-    .bind(rule.2)
-    .bind(from)
-    .bind(to)
-    .bind(detail.to_string())
+    .bind(&ids)
+    .bind(col(|e| &e.1))
+    .bind(col(|e| &e.2))
+    .bind(col(|e| &e.3))
+    .bind(col(|e| &e.4))
+    .bind(col(|e| &e.5))
     .execute(conn)
     .await?;
     Ok(())
@@ -145,6 +152,7 @@ type ExistingRow = (i64, String, String, String, String);
 
 /// 與目前的違規比對差異：新增、狀態改變寫歷程；只有細節改變時只更新違規列。
 /// 已停用規則的舊結果不在 outcomes 內，會被刪除並寫「→ none」事件。
+/// 每種寫入各一個批次語句（重算時每台可能有數十筆結果）。
 async fn apply(
     conn: &mut PgConnection,
     device: Uuid,
@@ -160,74 +168,87 @@ async fn apply(
     .fetch_all(&mut *conn)
     .await?;
     let mut old: HashMap<i64, ExistingRow> = existing.into_iter().map(|r| (r.0, r)).collect();
+    // (rule_id, status, detail)
+    let mut inserts: Vec<(i64, &'static str, String)> = vec![];
+    // (rule_id, status, detail, 狀態是否改變)
+    let mut updates: Vec<(i64, &'static str, String, bool)> = vec![];
+    let mut events: Vec<EventRow> = vec![];
     for o in outcomes {
         let rule = rules
             .rules
             .iter()
             .find(|r| r.id == o.rule_id)
             .expect("outcome from ruleset");
-        let meta = (rule.id, rule.name.as_str(), rule.severity.as_str());
         let detail = o.detail.to_string();
+        let status = o.status.as_str();
+        let mut event = |from: &str| {
+            events.push((
+                rule.id,
+                rule.name.clone(),
+                rule.severity.as_str().into(),
+                from.into(),
+                status.into(),
+                detail.clone(),
+            ))
+        };
         match old.remove(&o.rule_id) {
             None => {
-                sqlx::query(
-                    "INSERT INTO device_violations (device_id, rule_id, status, detail) \
-                     VALUES ($1, $2, $3, $4::jsonb)",
-                )
-                .bind(device)
-                .bind(o.rule_id)
-                .bind(o.status.as_str())
-                .bind(&detail)
-                .execute(&mut *conn)
-                .await?;
-                event(conn, device, meta, "none", o.status.as_str(), &o.detail).await?;
+                event("none");
+                inserts.push((o.rule_id, status, detail));
             }
-            Some((_, status, _, _, _)) if status != o.status.as_str() => {
-                sqlx::query(
-                    "UPDATE device_violations SET status = $3, detail = $4::jsonb, \
-                     since = now(), updated_at = now() WHERE device_id = $1 AND rule_id = $2",
-                )
-                .bind(device)
-                .bind(o.rule_id)
-                .bind(o.status.as_str())
-                .bind(&detail)
-                .execute(&mut *conn)
-                .await?;
-                event(conn, device, meta, &status, o.status.as_str(), &o.detail).await?;
+            Some((_, from, _, _, _)) if from != status => {
+                event(&from);
+                updates.push((o.rule_id, status, detail, true));
             }
             Some((_, _, old_detail, _, _)) => {
                 if serde_json::from_str::<Value>(&old_detail).ok().as_ref() != Some(&o.detail) {
-                    sqlx::query(
-                        "UPDATE device_violations SET detail = $3::jsonb, updated_at = now() \
-                         WHERE device_id = $1 AND rule_id = $2",
-                    )
-                    .bind(device)
-                    .bind(o.rule_id)
-                    .bind(&detail)
-                    .execute(&mut *conn)
-                    .await?;
+                    updates.push((o.rule_id, status, detail, false));
                 }
             }
         }
     }
+    let deletes: Vec<i64> = old.keys().copied().collect();
     for (rule_id, status, detail, name, severity) in old.into_values() {
-        sqlx::query("DELETE FROM device_violations WHERE device_id = $1 AND rule_id = $2")
-            .bind(device)
-            .bind(rule_id)
-            .execute(&mut *conn)
-            .await?;
-        let detail: Value = serde_json::from_str(&detail).unwrap_or(Value::Null);
-        event(
-            conn,
-            device,
-            (rule_id, &name, &severity),
-            &status,
-            "none",
-            &detail,
+        events.push((rule_id, name, severity, status, "none".into(), detail));
+    }
+
+    if !inserts.is_empty() {
+        sqlx::query(
+            "INSERT INTO device_violations (device_id, rule_id, status, detail) \
+             SELECT $1, r, s, d::jsonb FROM UNNEST($2::bigint[], $3::text[], $4::text[]) \
+                  AS x(r, s, d)",
         )
+        .bind(device)
+        .bind(inserts.iter().map(|i| i.0).collect::<Vec<i64>>())
+        .bind(inserts.iter().map(|i| i.1).collect::<Vec<&str>>())
+        .bind(inserts.iter().map(|i| i.2.as_str()).collect::<Vec<&str>>())
+        .execute(&mut *conn)
         .await?;
     }
-    Ok(())
+    if !updates.is_empty() {
+        // 狀態改變時 since 重新起算；只有細節改變時保留原本的 since
+        sqlx::query(
+            "UPDATE device_violations v SET status = x.s, detail = x.d::jsonb, \
+               since = CASE WHEN x.changed THEN now() ELSE v.since END, updated_at = now() \
+             FROM UNNEST($2::bigint[], $3::text[], $4::text[], $5::bool[]) AS x(r, s, d, changed) \
+             WHERE v.device_id = $1 AND v.rule_id = x.r",
+        )
+        .bind(device)
+        .bind(updates.iter().map(|u| u.0).collect::<Vec<i64>>())
+        .bind(updates.iter().map(|u| u.1).collect::<Vec<&str>>())
+        .bind(updates.iter().map(|u| u.2.as_str()).collect::<Vec<&str>>())
+        .bind(updates.iter().map(|u| u.3).collect::<Vec<bool>>())
+        .execute(&mut *conn)
+        .await?;
+    }
+    if !deletes.is_empty() {
+        sqlx::query("DELETE FROM device_violations WHERE device_id = $1 AND rule_id = ANY($2)")
+            .bind(device)
+            .bind(&deletes)
+            .execute(&mut *conn)
+            .await?;
+    }
+    insert_events(conn, device, &events).await
 }
 
 /// 在呼叫端的交易內評估一台裝置。取裝置鎖後才讀事實，所以並行時以最新盤點為準。

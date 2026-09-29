@@ -30,6 +30,7 @@ services:
       EM_DISPLAY_UTC_OFFSET: ${EM_DISPLAY_UTC_OFFSET:-8}
       EM_AGENT_MSI: /agent/endpoint-agent.msi
       EM_AGENT_PUBLIC_URL: ${EM_AGENT_PUBLIC_URL:-}
+      EM_WEBHOOK_SECRET: ${EM_WEBHOOK_SECRET:-}
     volumes:
       - ./pki:/pki:ro
       - ./agent:/agent:ro

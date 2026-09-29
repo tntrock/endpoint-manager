@@ -36,6 +36,8 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "rus
 tempfile = "3"
 askama = "0.16"
 argon2 = "0.6"
+rustls-native-certs = "0.8"
+hmac = "0.13"
 
 [profile.release]
 panic = "abort"
