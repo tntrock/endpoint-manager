@@ -25,6 +25,28 @@ pub async fn create_token(pool: &PgPool, t: &NewToken) -> Result<(i64, String), 
     create_token_in(&mut *pool.acquire().await?, t).await
 }
 
+/// 建立並寫稽核記錄（指令列用；網頁另外在自己的交易內記錄更多細節）。
+pub async fn create_token_audited(
+    pool: &PgPool,
+    t: &NewToken,
+) -> Result<(i64, String), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let (id, token) = create_token_in(&mut tx, t).await?;
+    crate::audit::record(
+        &mut tx,
+        &t.created_by,
+        "token_create",
+        Some(&id.to_string()),
+        serde_json::json!({
+            "name": t.name, "max_uses": t.max_uses, "group_id": t.group_id,
+            "expires_at": t.expires_at
+        }),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok((id, token))
+}
+
 /// 在呼叫端的交易內建立（與稽核記錄一起提交）。
 pub async fn create_token_in(
     conn: &mut PgConnection,
@@ -88,6 +110,23 @@ pub async fn revoke_token(pool: &PgPool, id: i64, actor: &str) -> anyhow::Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 指令列建立金鑰也要寫稽核記錄（與網頁建立相同的 action）
+    #[sqlx::test(migrations = false)]
+    async fn cli_token_create_is_audited(pool: PgPool) {
+        crate::db::migrate(&pool).await.unwrap();
+        let t = NewToken {
+            created_by: "cli".into(),
+            ..new_token(5, None)
+        };
+        let (id, _) = create_token_audited(&pool, &t).await.unwrap();
+        let (actor, target): (String, Option<String>) =
+            sqlx::query_as("SELECT actor, target FROM audit_log WHERE action = 'token_create'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!((actor.as_str(), target), ("cli", Some(id.to_string())));
+    }
 
     fn new_token(max_uses: i32, expires_at: Option<DateTime<Utc>>) -> NewToken {
         NewToken {
