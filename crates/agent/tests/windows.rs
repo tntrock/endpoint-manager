@@ -342,8 +342,20 @@ fn registry_values_are_read_and_guarded() {
             r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon",
             "DefaultPassword",
         ),
+        // Windows API 讀到 NUL 就停：守衛必須擋下，不能讀到 ProductName
+        q(
+            &format!(
+                r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion{}\x",
+                '\u{0}'
+            ),
+            "ProductName",
+        ),
+        q(
+            r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion",
+            "ProductName\u{0}junk",
+        ),
     ]);
-    assert_eq!(v.len(), 5);
+    assert_eq!(v.len(), 7);
     assert_eq!(v[0].state, RegState::Present, "{:?}", v[0]);
     assert!(v[0].data.parse::<u32>().is_ok(), "{:?}", v[0]);
     assert_eq!(v[1].state, RegState::Absent);

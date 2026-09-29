@@ -9,12 +9,20 @@ pub const DENIED_MESSAGE: &str =
     "不允許讀取這個位置（只能讀取 HKLM，且不能讀取 SAM、SECURITY 與自動登入密碼）";
 
 const DENIED_SUBTREES: [&str; 2] = [r"HKLM\SAM", r"HKLM\SECURITY"];
-const WINLOGON: &str = r"HKLM\SOFTWARE\MICROSOFT\WINDOWS NT\CURRENTVERSION\WINLOGON";
+/// 64 位元與 32 位元（WOW6432Node）檢視的 Winlogon：32 位元的自動登入工具會寫在後者
+const WINLOGON: [&str; 2] = [
+    r"HKLM\SOFTWARE\MICROSOFT\WINDOWS NT\CURRENTVERSION\WINLOGON",
+    r"HKLM\SOFTWARE\WOW6432NODE\MICROSOFT\WINDOWS NT\CURRENTVERSION\WINLOGON",
+];
 const DENIED_WINLOGON_NAMES: [&str; 2] = ["DEFAULTPASSWORD", "ALTDEFAULTPASSWORD"];
 
 /// 正規化成 `HKLM\子機碼\...`：接受 `HKEY_LOCAL_MACHINE` 別名、`/`、重複或結尾的 `\`、前後空白；
-/// 不接受其他根機碼、沒有子機碼、或含 `.`／`..` 段落的路徑。
+/// 不接受其他根機碼、沒有子機碼、含 `.`／`..` 段落，或含控制字元（包括 NUL）的路徑。
 pub fn normalize(path: &str) -> Result<String, &'static str> {
+    // Windows API 讀到 NUL 就停止：含 NUL 的路徑會開到和守衛看到的不同機碼
+    if path.chars().any(char::is_control) {
+        return Err("登錄檔路徑不能包含控制字元");
+    }
     let path = path.trim().replace('/', "\\");
     let mut parts = path.split('\\').filter(|p| !p.is_empty());
     let root = parts.next().ok_or("登錄檔路徑必填")?;
@@ -34,12 +42,16 @@ pub fn normalize(path: &str) -> Result<String, &'static str> {
 /// 正規化並套用拒絕清單，回傳正規化後的路徑。
 pub fn check(path: &str, name: &str) -> Result<String, &'static str> {
     let p = normalize(path).map_err(|_| DENIED_MESSAGE)?;
+    // 值名稱同樣不能含 NUL 等控制字元（API 會截斷，讀到守衛沒看到的值）
+    if name.chars().any(char::is_control) {
+        return Err(DENIED_MESSAGE);
+    }
     let upper = p.to_uppercase();
     let denied_subtree = DENIED_SUBTREES
         .iter()
         .any(|d| upper == *d || upper.starts_with(&format!("{d}\\")));
-    let denied_value =
-        upper == WINLOGON && DENIED_WINLOGON_NAMES.contains(&name.trim().to_uppercase().as_str());
+    let denied_value = WINLOGON.contains(&upper.as_str())
+        && DENIED_WINLOGON_NAMES.contains(&name.trim().to_uppercase().as_str());
     if denied_subtree || denied_value {
         return Err(DENIED_MESSAGE);
     }
@@ -104,6 +116,25 @@ mod tests {
             assert!(check(p, name).is_err(), "{p} {name}");
         }
         assert!(check(r"HKLM\SAMPLE\Key", "x").is_ok(), "SAM 前綴但不同機碼");
+        // 32 位元檢視的 Winlogon 也可能存自動登入密碼
+        assert!(
+            check(
+                r"HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows NT\CurrentVersion\Winlogon",
+                "DefaultPassword"
+            )
+            .is_err()
+        );
+        // Windows API 讀到 NUL 就停：含 NUL 或其他控制字元的路徑、名稱一律拒絕
+        let winlogon = r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon";
+        for (p, name) in [
+            (format!("{winlogon}\u{0}"), "DefaultPassword".to_string()),
+            (winlogon.to_string(), "DefaultPassword\u{0}x".to_string()),
+            (format!(r"HKLM\SAM{}\x", '\u{0}'), "y".to_string()),
+            (format!(r"HKLM\SOFTWARE{}", '\u{1}'), "y".to_string()),
+            (r"HKLM\SOFTWARE".to_string(), "a\nb".to_string()),
+        ] {
+            assert!(check(&p, &name).is_err(), "{p:?} {name:?}");
+        }
         assert!(
             check(
                 r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon",
