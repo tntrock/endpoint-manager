@@ -6,6 +6,7 @@
 pub mod accounts;
 pub mod audit;
 pub mod auth;
+pub mod compliance;
 pub mod dashboard;
 pub mod devices;
 pub mod groups;
@@ -117,6 +118,8 @@ pub fn web_router(state: AppState) -> Router {
         .route("/logout", post(login::logout))
         .route("/devices", get(devices::list))
         .route("/software", get(software::search))
+        .route("/compliance", get(compliance::overview))
+        .route("/compliance/violations", get(compliance::violations))
         .route("/compliance/rules", get(rules::list).post(rules::create))
         .route("/compliance/rules/new", get(rules::new_form))
         .route("/compliance/rules/preview", post(rules::preview))

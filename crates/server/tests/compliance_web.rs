@@ -162,3 +162,51 @@ async fn rule_pages_and_permissions(pool: PgPool) {
         .unwrap();
     assert_eq!(r.status(), 403);
 }
+
+async fn add_rule_via_admin(s: &TestServer, kind: &str, params: serde_json::Value) -> i64 {
+    endpoint_server::compliance::admin::create_rule(
+        &s.pool,
+        &endpoint_server::compliance::admin::RuleInput {
+            name: format!("{kind} rule"),
+            description: String::new(),
+            kind: kind.into(),
+            severity: "high".into(),
+            enabled: true,
+            params,
+            include: vec![],
+            exclude: vec![],
+        },
+        "admin",
+    )
+    .await
+    .unwrap()
+}
+
+#[sqlx::test(migrations = false)]
+async fn violations_are_scoped_by_group(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    add_rule_via_admin(
+        &s,
+        "forbidden_software",
+        serde_json::json!({"name": "*TeamViewer*"}),
+    )
+    .await;
+    let taipei = device_in(&s, "台北", &["TeamViewer 15"]).await;
+    let kaohsiung = device_in(&s, "高雄", &["TeamViewer 15"]).await;
+    let id = |a: &TestAgent| a.device_id.to_string();
+
+    let admin = s.admin_client().await;
+    let (_, html) = s.page(&admin, "/compliance/violations").await;
+    assert!(html.contains(&id(&taipei)) && html.contains(&id(&kaohsiung)));
+    let (st, html) = s.page(&admin, "/compliance").await;
+    assert_eq!(st, 200);
+    assert!(html.contains("forbidden_software rule"), "總覽列出規則");
+
+    let g = s.login_as("gary", Role::GroupAdmin, &["台北"]).await;
+    let (_, html) = s.page(&g, "/compliance/violations").await;
+    assert!(html.contains(&id(&taipei)) && !html.contains(&id(&kaohsiung)));
+    let (_, html) = s.page(&g, "/compliance").await;
+    assert!(!html.contains("近 30 天"), "趨勢只給平台管理員");
+    let (_, html) = s.page(&g, "/compliance/violations?q=nomatch").await;
+    assert!(!html.contains(&id(&taipei)));
+}
