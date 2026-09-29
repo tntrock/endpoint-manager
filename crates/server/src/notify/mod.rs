@@ -72,13 +72,7 @@ pub fn validate_webhook_url(u: &str) -> Result<(), String> {
 }
 
 fn valid_address(a: &str) -> bool {
-    let a = a.trim();
-    let Some((local, domain)) = a.split_once('@') else {
-        return false;
-    };
-    !local.is_empty()
-        && domain.contains('.')
-        && !a.chars().any(|c| c.is_whitespace() || c.is_control())
+    a.parse::<lettre::Address>().is_ok()
 }
 
 pub fn validate_email(e: &EmailSettings) -> Result<(), String> {
