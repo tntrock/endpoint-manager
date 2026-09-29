@@ -36,7 +36,6 @@ argon2.workspace = true
 form_urlencoded = "1"
 msi = "0.10"
 futures-util = "0.3"
-lettre.workspace = true
 reqwest.workspace = true
 rustls-native-certs.workspace = true
 hmac.workspace = true

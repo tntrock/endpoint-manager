@@ -220,7 +220,7 @@ async fn notify_settings_page(pool: PgPool) {
     let (st, html) = s.page(&admin, "/compliance/notify").await;
     assert_eq!(st, 200);
     assert!(
-        html.contains("EM_SMTP_PASSWORD") && html.contains("未設定"),
+        html.contains("EM_WEBHOOK_SECRET") && html.contains("未設定"),
         "只顯示機密是否已設定"
     );
     let csrf = common::csrf_from(&html);
@@ -243,11 +243,6 @@ async fn notify_settings_page(pool: PgPool) {
         ("min_severity", "high".into()),
         ("interval_minutes", "5".into()),
         ("webhook_url", "https://hooks.example.com/x".into()),
-        ("smtp_host", "smtp.example.com".into()),
-        ("smtp_port", "587".into()),
-        ("smtp_tls", "starttls".into()),
-        ("smtp_from", "em@example.com".into()),
-        ("smtp_to", "a@example.com, b@example.com".into()),
     ])
     .await;
     assert_eq!(r.status(), 303);
@@ -256,10 +251,13 @@ async fn notify_settings_page(pool: PgPool) {
         n.min_severity,
         endpoint_server::compliance::rules::Severity::High
     );
-    assert_eq!(n.email.unwrap().to, vec!["a@example.com", "b@example.com"]);
+    assert_eq!(
+        n.webhook_url.as_deref(),
+        Some("https://hooks.example.com/x")
+    );
     let (_, html) = s.page(&admin, "/compliance").await;
     assert!(
-        html.contains("Webhook") && html.contains("Email"),
+        html.contains("Webhook") && html.contains("通知"),
         "總覽顯示通知狀態"
     );
 

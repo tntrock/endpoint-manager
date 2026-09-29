@@ -152,9 +152,7 @@ pub async fn serve(cfg: config::Config) -> anyhow::Result<()> {
         .with_enroll_limit(cfg.enroll_per_ip_per_minute)
         .with_installer(cfg.agent_msi.clone(), public_url, server_names)
         .with_notify(notify::NotifySecrets {
-            smtp_password: cfg.smtp_password.clone(),
             webhook_secret: cfg.webhook_secret.clone(),
-            web_public_url: cfg.web_public_url.clone(),
         });
     let tls_cfg = tls::server_config(&cfg.ca_dir)?;
 

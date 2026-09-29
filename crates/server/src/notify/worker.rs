@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::digest::{Digest, EventInfo, MAX_WEBHOOK_ITEMS, email_text, webhook_body};
+use super::digest::{Digest, EventInfo, MAX_WEBHOOK_ITEMS, webhook_body};
 use super::{NotifySecrets, NotifySettings, load_settings, send};
 use crate::compliance::rules::Severity;
 
@@ -126,10 +126,7 @@ pub async fn run_channel(
     senders: &Senders,
     now: DateTime<Utc>,
 ) -> Result<(), sqlx::Error> {
-    let enabled = match channel {
-        "email" => settings.email.is_some(),
-        _ => settings.webhook_url.is_some(),
-    };
+    let enabled = channel == "webhook" && settings.webhook_url.is_some();
     if !enabled {
         return Ok(());
     }
@@ -197,25 +194,16 @@ pub async fn run_channel(
             .await?;
         return Ok(());
     }
-    let result = match (channel, &settings.email, &settings.webhook_url) {
-        ("email", Some(e), _) => {
-            let (subject, body) = email_text(&digest, &secrets.web_public_url);
-            match send::email_message(e, &subject, &body) {
-                Ok(msg) => send::send_email(e, secrets.smtp_password.as_deref(), msg).await,
-                Err(err) => Err(format!("信件內容錯誤：{err}")),
-            }
-        }
-        (_, _, Some(url)) => {
-            send::send_webhook(
-                &senders.webhook,
-                url,
-                secrets.webhook_secret.as_deref(),
-                &webhook_body(&digest, now),
-            )
-            .await
-        }
-        _ => return Ok(()),
+    let Some(url) = settings.webhook_url.as_deref() else {
+        return Ok(());
     };
+    let result = send::send_webhook(
+        &senders.webhook,
+        url,
+        secrets.webhook_secret.as_deref(),
+        &webhook_body(&digest, now),
+    )
+    .await;
     match result {
         Ok(()) => {
             sqlx::query(
@@ -267,7 +255,7 @@ pub fn spawn(pool: PgPool, secrets: Arc<NotifySecrets>) {
                     continue;
                 }
             };
-            for channel in ["email", "webhook"] {
+            for channel in ["webhook"] {
                 if let Err(e) =
                     run_channel(&pool, channel, &settings, &secrets, &senders, Utc::now()).await
                 {

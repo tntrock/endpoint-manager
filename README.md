@@ -88,15 +88,9 @@ echo '<密碼>' | cargo run -p endpoint-server -- admin-create admin
 - **違規歷程與 CSV**：
   - 違規新增、解除都會記錄在歷程，預設保留 365 天（設定 `violation_history_days`）。
   - 違規清單可匯出 CSV。欄位以 `= + - @` 開頭時會加 `'`，避免 Excel 當公式執行。
-- **通知**（`/compliance/notify`）：違規新增或解除時，依彙整間隔送出一封 Email 或一次 Webhook。第一次啟用管道時從當下開始送，不會補送舊事件。機密只放環境變數：
+- **通知**（`/compliance/notify`）：違規新增或解除時，依彙整間隔呼叫一次 Webhook，可串接 SIEM、Teams 等。第一次啟用時從當下開始送，不會補送舊事件。Email 通知尚未提供。
 
-| 環境變數 | 用途 |
-|---|---|
-| `EM_SMTP_PASSWORD` | SMTP 密碼 |
-| `EM_WEBHOOK_SECRET` | Webhook 簽章密鑰 |
-| `EM_WEB_PUBLIC_URL` | 通知內連結用的管理網頁網址，例如 `https://em.example.com` |
-
-Webhook 只接受 `https://`，不跟隨重新導向。設定密鑰後，每個請求會帶兩個標頭：
+Webhook 只接受 `https://`，不跟隨重新導向。簽章密鑰只放環境變數 `EM_WEBHOOK_SECRET`。設定密鑰後，每個請求會帶兩個標頭：
 
 - `X-EM-Timestamp`：送出時間（Unix 秒）。
 - `X-EM-Signature: sha256=<hex>`：以密鑰對「時間戳記 + `.` + 內文」算出的 HMAC-SHA256。

@@ -1,13 +1,8 @@
-//! 實際送出：Webhook（reqwest）與 Email（lettre）。
+//! 實際送出 Webhook（reqwest）。
 
 use std::time::Duration;
 
-use lettre::message::{Mailbox, header::ContentType};
-use lettre::transport::smtp::authentication::Credentials;
-use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
-
 use super::digest::signature;
-use super::{EmailSettings, TlsMode};
 
 pub const TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -54,83 +49,5 @@ pub async fn send_webhook(
         Ok(())
     } else {
         Err(format!("Webhook 回應 {}", res.status().as_u16()))
-    }
-}
-
-pub fn email_message(e: &EmailSettings, subject: &str, body: &str) -> anyhow::Result<Message> {
-    let mut b = Message::builder()
-        .from(e.from.parse::<Mailbox>()?)
-        .subject(subject);
-    for to in &e.to {
-        b = b.to(to.parse::<Mailbox>()?);
-    }
-    Ok(b.header(ContentType::TEXT_PLAIN).body(body.to_string())?)
-}
-
-pub async fn send_email_with<T: AsyncTransport + Sync>(t: &T, msg: Message) -> Result<(), String>
-where
-    T::Error: std::fmt::Display,
-{
-    t.send(msg)
-        .await
-        .map(|_| ())
-        .map_err(|e| format!("寄信失敗：{e}"))
-}
-
-pub async fn send_email(
-    e: &EmailSettings,
-    password: Option<&str>,
-    msg: Message,
-) -> Result<(), String> {
-    let builder = match e.tls {
-        TlsMode::StartTls => AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&e.host),
-        TlsMode::Tls => AsyncSmtpTransport::<Tokio1Executor>::relay(&e.host),
-    }
-    .map_err(|err| format!("SMTP 設定錯誤：{err}"))?
-    .port(e.port)
-    .timeout(Some(TIMEOUT));
-    let builder = if e.username.is_empty() {
-        builder
-    } else {
-        builder.credentials(Credentials::new(
-            e.username.clone(),
-            password.unwrap_or_default().to_string(),
-        ))
-    };
-    send_email_with(&builder.build(), msg).await
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::notify::{EmailSettings, TlsMode};
-
-    #[tokio::test]
-    async fn email_message_and_stub_send() {
-        let e = EmailSettings {
-            host: "smtp.example.com".into(),
-            port: 587,
-            tls: TlsMode::StartTls,
-            username: String::new(),
-            from: "em@example.com".into(),
-            to: vec!["a@example.com".into(), "b@example.com".into()],
-        };
-        let msg = email_message(&e, "主旨", "內文").unwrap();
-        let raw = String::from_utf8(msg.formatted()).unwrap();
-        assert!(raw.contains("To: a@example.com, b@example.com"), "{raw}");
-        assert!(raw.contains("Content-Type: text/plain; charset=utf-8"));
-        send_email_with(
-            &lettre::transport::stub::AsyncStubTransport::new_ok(),
-            msg.clone(),
-        )
-        .await
-        .unwrap();
-        let err = send_email_with(
-            &lettre::transport::stub::AsyncStubTransport::new_error(),
-            msg,
-        )
-        .await
-        .unwrap_err();
-        assert!(!err.is_empty());
     }
 }

@@ -269,18 +269,11 @@ async fn channels(st: &AppState) -> Result<Vec<ChannelStatus>, sqlx::Error> {
     .await?;
     Ok(rows
         .into_iter()
-        .map(|(c, ok, err)| {
-            let email = c == "email";
-            ChannelStatus {
-                name: if email { "Email" } else { "Webhook" },
-                enabled: if email {
-                    n.email.is_some()
-                } else {
-                    n.webhook_url.is_some()
-                },
-                last_ok: fmt_time(st, ok),
-                error: err.unwrap_or_default(),
-            }
+        .map(|(_, ok, err)| ChannelStatus {
+            name: "Webhook",
+            enabled: n.webhook_url.is_some(),
+            last_ok: fmt_time(st, ok),
+            error: err.unwrap_or_default(),
         })
         .collect())
 }

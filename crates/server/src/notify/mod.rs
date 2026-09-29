@@ -1,11 +1,10 @@
-//! 合規通知：設定、機密與背景送出。
+//! 合規通知（Webhook）：設定、機密與背景送出。
 
 pub mod digest;
 pub mod send;
 pub mod worker;
 
 use anyhow::ensure;
-use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
 use crate::compliance::rules::Severity;
@@ -15,48 +14,24 @@ pub const DEFAULT_INTERVAL_MINUTES: u32 = 10;
 /// 機密只從環境變數來。Debug 不印出內容。
 #[derive(Default, Clone)]
 pub struct NotifySecrets {
-    pub smtp_password: Option<String>,
     pub webhook_secret: Option<String>,
-    /// 管理網頁的對外網址（通知內的連結）；空字串表示不附連結
-    pub web_public_url: String,
 }
 
 impl std::fmt::Debug for NotifySecrets {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NotifySecrets")
-            .field("smtp_password", &self.smtp_password.as_ref().map(|_| "***"))
             .field(
                 "webhook_secret",
                 &self.webhook_secret.as_ref().map(|_| "***"),
             )
-            .field("web_public_url", &self.web_public_url)
             .finish()
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum TlsMode {
-    StartTls,
-    Tls,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EmailSettings {
-    pub host: String,
-    pub port: u16,
-    pub tls: TlsMode,
-    #[serde(default)]
-    pub username: String,
-    pub from: String,
-    pub to: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NotifySettings {
     pub min_severity: Severity,
     pub interval_minutes: u32,
-    pub email: Option<EmailSettings>,
     pub webhook_url: Option<String>,
 }
 
@@ -67,26 +42,6 @@ pub fn validate_webhook_url(u: &str) -> Result<(), String> {
     let host = rest.split(['/', '?', '#']).next().unwrap_or("");
     if host.is_empty() || u.chars().any(|c| c.is_whitespace() || c.is_control()) {
         return Err("Webhook 網址格式不正確".into());
-    }
-    Ok(())
-}
-
-fn valid_address(a: &str) -> bool {
-    a.parse::<lettre::Address>().is_ok()
-}
-
-pub fn validate_email(e: &EmailSettings) -> Result<(), String> {
-    if e.host.trim().is_empty() || e.host.chars().any(char::is_whitespace) {
-        return Err("SMTP 主機必填".into());
-    }
-    if e.port == 0 {
-        return Err("SMTP 埠號不正確".into());
-    }
-    if !valid_address(&e.from) {
-        return Err("寄件者地址不正確".into());
-    }
-    if e.to.is_empty() || e.to.len() > 50 || !e.to.iter().all(|a| valid_address(a)) {
-        return Err("收件人需為 1–50 個正確的 Email 地址".into());
     }
     Ok(())
 }
@@ -110,10 +65,6 @@ pub async fn load_settings(pool: &PgPool) -> Result<NotifySettings, sqlx::Error>
         .and_then(|v| v.as_u64())
         .map(|n| n.clamp(1, 1440) as u32)
         .unwrap_or(DEFAULT_INTERVAL_MINUTES);
-    let email = setting(pool, "notify_email")
-        .await?
-        .and_then(|v| serde_json::from_value::<EmailSettings>(v).ok())
-        .filter(|e| validate_email(e).is_ok());
     let webhook_url = setting(pool, "notify_webhook_url")
         .await?
         .and_then(|v| v.as_str().map(str::to_string))
@@ -121,7 +72,6 @@ pub async fn load_settings(pool: &PgPool) -> Result<NotifySettings, sqlx::Error>
     Ok(NotifySettings {
         min_severity,
         interval_minutes,
-        email,
         webhook_url,
     })
 }
@@ -131,9 +81,6 @@ pub async fn save_settings(pool: &PgPool, s: &NotifySettings, actor: &str) -> an
         (1..=1440).contains(&s.interval_minutes),
         "彙整間隔須為 1–1440 分鐘"
     );
-    if let Some(e) = &s.email {
-        validate_email(e).map_err(anyhow::Error::msg)?;
-    }
     if let Some(u) = &s.webhook_url {
         validate_webhook_url(u).map_err(anyhow::Error::msg)?;
     }
@@ -148,7 +95,6 @@ pub async fn save_settings(pool: &PgPool, s: &NotifySettings, actor: &str) -> an
             "notify_interval_minutes",
             serde_json::json!(s.interval_minutes),
         ),
-        ("notify_email", serde_json::to_value(&s.email)?),
         ("notify_webhook_url", serde_json::json!(s.webhook_url)),
     ] {
         sqlx::query(
@@ -161,25 +107,15 @@ pub async fn save_settings(pool: &PgPool, s: &NotifySettings, actor: &str) -> an
         .await?;
     }
     // 由停用變啟用：從現在開始送，不補送過去的事件
-    for (channel, was, now) in [
-        ("email", before.email.is_some(), s.email.is_some()),
-        (
-            "webhook",
-            before.webhook_url.is_some(),
-            s.webhook_url.is_some(),
-        ),
-    ] {
-        if !was && now {
-            sqlx::query(
-                "UPDATE notify_channels SET last_event_id = \
-                   (SELECT coalesce(max(id), 0) FROM violation_events), \
-                 failures = 0, next_attempt_at = NULL, last_error = NULL, dropped = 0 \
-                 WHERE channel = $1",
-            )
-            .bind(channel)
-            .execute(&mut *tx)
-            .await?;
-        }
+    if before.webhook_url.is_none() && s.webhook_url.is_some() {
+        sqlx::query(
+            "UPDATE notify_channels SET last_event_id = \
+               (SELECT coalesce(max(id), 0) FROM violation_events), \
+             failures = 0, next_attempt_at = NULL, last_error = NULL, dropped = 0 \
+             WHERE channel = 'webhook'",
+        )
+        .execute(&mut *tx)
+        .await?;
     }
     crate::audit::record(
         &mut tx,
@@ -188,7 +124,7 @@ pub async fn save_settings(pool: &PgPool, s: &NotifySettings, actor: &str) -> an
         None,
         serde_json::json!({
             "min_severity": s.min_severity.as_str(), "interval_minutes": s.interval_minutes,
-            "email": s.email, "webhook_url": s.webhook_url
+            "webhook_url": s.webhook_url
         }),
     )
     .await?;
@@ -199,17 +135,6 @@ pub async fn save_settings(pool: &PgPool, s: &NotifySettings, actor: &str) -> an
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn email() -> EmailSettings {
-        EmailSettings {
-            host: "smtp.example.com".into(),
-            port: 587,
-            tls: TlsMode::StartTls,
-            username: "em".into(),
-            from: "em@example.com".into(),
-            to: vec!["it@example.com".into()],
-        }
-    }
 
     #[test]
     fn webhook_url_must_be_https() {
@@ -225,46 +150,12 @@ mod tests {
         }
     }
 
-    #[test]
-    fn email_validation() {
-        assert!(validate_email(&email()).is_ok());
-        assert!(
-            validate_email(&EmailSettings {
-                to: vec![],
-                ..email()
-            })
-            .is_err()
-        );
-        assert!(
-            validate_email(&EmailSettings {
-                from: "nope".into(),
-                ..email()
-            })
-            .is_err()
-        );
-        assert!(
-            validate_email(&EmailSettings {
-                host: " ".into(),
-                ..email()
-            })
-            .is_err()
-        );
-        assert!(
-            validate_email(&EmailSettings {
-                to: vec!["a@b.c\r\nBcc: x@y.z".into()],
-                ..email()
-            })
-            .is_err(),
-            "不能夾帶標頭"
-        );
-    }
-
     #[sqlx::test(migrations = false)]
     async fn defaults_bad_values_and_enable_sets_cursor(pool: sqlx::PgPool) {
         crate::db::migrate(&pool).await.unwrap();
         let s = load_settings(&pool).await.unwrap();
         assert_eq!((s.min_severity, s.interval_minutes), (Severity::Medium, 10));
-        assert!(s.email.is_none() && s.webhook_url.is_none());
+        assert!(s.webhook_url.is_none());
 
         sqlx::query("UPDATE settings SET value = '\"x\"' WHERE key = 'notify_interval_minutes'")
             .execute(&pool)
