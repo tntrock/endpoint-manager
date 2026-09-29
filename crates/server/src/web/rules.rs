@@ -202,56 +202,85 @@ struct RulesPage {
     kinds: Vec<(&'static str, &'static str)>,
 }
 
-type RuleListRow = (
-    i64,
-    String,
-    String,
-    String,
-    bool,
-    Option<String>,
-    Option<String>,
-    i64,
-    i64,
-    i64,
-);
+type RuleListRow = (i64, String, String, String, bool, i64, i64, i64);
+
+/// 違規數依管理員的群組範圍計算；平台管理員不需要範圍條件（省掉每列的 EXISTS 檢查）。
+const RULE_COUNTS_ALL: &str = "SELECT r.id, r.name, r.kind, r.severity, r.enabled, \
+       count(v.rule_id) FILTER (WHERE v.status = 'violating'), \
+       count(v.rule_id) FILTER (WHERE v.status = 'unknown'), \
+       count(v.rule_id) FILTER (WHERE v.status = 'exempt') \
+     FROM compliance_rules r LEFT JOIN device_violations v ON v.rule_id = r.id \
+     GROUP BY r.id ORDER BY r.name, r.id";
+const RULE_COUNTS_SCOPED: &str = "SELECT r.id, r.name, r.kind, r.severity, r.enabled, \
+       count(v.rule_id) FILTER (WHERE v.status = 'violating'), \
+       count(v.rule_id) FILTER (WHERE v.status = 'unknown'), \
+       count(v.rule_id) FILTER (WHERE v.status = 'exempt') \
+     FROM compliance_rules r \
+     LEFT JOIN device_violations v ON v.rule_id = r.id AND EXISTS ( \
+          SELECT 1 FROM devices d WHERE d.id = v.device_id \
+          AND d.group_id = ANY($1::bigint[])) \
+     GROUP BY r.id ORDER BY r.name, r.id";
+
+/// 規則的範圍文字；範圍外的群組只顯示數量，不顯示名稱。
+fn scope_text(s: &Session, groups: &[(String, i64, String)]) -> String {
+    let part = |mode: &str| {
+        let all: Vec<&(String, i64, String)> = groups.iter().filter(|g| g.0 == mode).collect();
+        let names: Vec<&str> = all
+            .iter()
+            .filter(|g| s.in_scope(Some(g.1)))
+            .map(|g| g.2.as_str())
+            .collect();
+        let hidden = all.len() - names.len();
+        let mut text = names.join("、");
+        if hidden > 0 {
+            if !text.is_empty() {
+                text.push('、');
+            }
+            text.push_str(&format!("另 {hidden} 個群組"));
+        }
+        (all.is_empty(), text)
+    };
+    let (no_include, include) = part("include");
+    let (no_exclude, exclude) = part("exclude");
+    let mut scope = if no_include {
+        "全部裝置".to_string()
+    } else {
+        format!("只套用：{include}")
+    };
+    if !no_exclude {
+        scope.push_str(&format!("；排除：{exclude}"));
+    }
+    scope
+}
 
 pub async fn list(
     State(st): State<AppState>,
     AdminSession(s): AdminSession,
 ) -> Result<Response, AppError> {
-    // 數字依管理員的群組範圍計算
-    let rows: Vec<RuleListRow> = sqlx::query_as(
-        "SELECT r.id, r.name, r.kind, r.severity, r.enabled, \
-           (SELECT string_agg(g.name, '、' ORDER BY g.name) FROM compliance_rule_groups rg \
-              JOIN device_groups g ON g.id = rg.group_id \
-              WHERE rg.rule_id = r.id AND rg.mode = 'include'), \
-           (SELECT string_agg(g.name, '、' ORDER BY g.name) FROM compliance_rule_groups rg \
-              JOIN device_groups g ON g.id = rg.group_id \
-              WHERE rg.rule_id = r.id AND rg.mode = 'exclude'), \
-           count(v.rule_id) FILTER (WHERE v.status = 'violating'), \
-           count(v.rule_id) FILTER (WHERE v.status = 'unknown'), \
-           count(v.rule_id) FILTER (WHERE v.status = 'exempt') \
-         FROM compliance_rules r \
-         LEFT JOIN device_violations v ON v.rule_id = r.id AND EXISTS ( \
-              SELECT 1 FROM devices d WHERE d.id = v.device_id \
-              AND ($1::bool OR d.group_id = ANY($2::bigint[]))) \
-         GROUP BY r.id ORDER BY r.name, r.id",
+    let rows: Vec<RuleListRow> = if s.all_devices() {
+        sqlx::query_as(RULE_COUNTS_ALL).fetch_all(&st.pool).await?
+    } else {
+        sqlx::query_as(RULE_COUNTS_SCOPED)
+            .bind(&s.groups)
+            .fetch_all(&st.pool)
+            .await?
+    };
+    let groups: Vec<(i64, String, i64, String)> = sqlx::query_as(
+        "SELECT rg.rule_id, rg.mode, g.id, g.name FROM compliance_rule_groups rg \
+         JOIN device_groups g ON g.id = rg.group_id ORDER BY g.name",
     )
-    .bind(s.all_devices())
-    .bind(&s.groups)
     .fetch_all(&st.pool)
     .await?;
     let rows = rows
         .into_iter()
         .map(
-            |(id, name, kind, severity, enabled, include, exclude, violating, unknown, exempt)| {
+            |(id, name, kind, severity, enabled, violating, unknown, exempt)| {
                 let sev = Severity::parse(&severity).unwrap_or(Severity::Medium);
-                let mut scope = include
-                    .map(|g| format!("只套用：{g}"))
-                    .unwrap_or_else(|| "全部裝置".into());
-                if let Some(ex) = exclude {
-                    scope.push_str(&format!("；排除：{ex}"));
-                }
+                let mine: Vec<(String, i64, String)> = groups
+                    .iter()
+                    .filter(|g| g.0 == id)
+                    .map(|g| (g.1.clone(), g.2, g.3.clone()))
+                    .collect();
                 RuleRow {
                     id,
                     name,
@@ -259,7 +288,7 @@ pub async fn list(
                     severity: sev.label(),
                     severity_class: sev.as_str(),
                     enabled,
-                    scope,
+                    scope: scope_text(&s, &mine),
                     violating,
                     unknown,
                     exempt,

@@ -333,5 +333,65 @@ async fn device_tab_without_rules_or_data(pool: PgPool) {
         .page(&admin, &format!("/devices/{}/tab/compliance", a.device_id))
         .await;
     assert_eq!(st, 200);
-    assert!(html.contains("沒有違規"), "{html}");
+    assert!(html.contains("尚未建立任何合規規則"), "{html}");
+}
+
+/// 群組管理員在規則清單只看得到自己範圍內的群組名稱
+#[sqlx::test(migrations = false)]
+async fn rule_list_hides_out_of_scope_group_names(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let taipei = s.group_id("台北").await;
+    let secret = s.group_id("機密研發部").await;
+    endpoint_server::compliance::admin::create_rule(
+        &s.pool,
+        &endpoint_server::compliance::admin::RuleInput {
+            name: "限定群組規則".into(),
+            description: String::new(),
+            kind: "required_kb".into(),
+            severity: "high".into(),
+            enabled: true,
+            params: serde_json::json!({"kb": "KB5031455"}),
+            include: vec![taipei, secret],
+            exclude: vec![],
+        },
+        "admin",
+    )
+    .await
+    .unwrap();
+    let g = s.login_as("gary", Role::GroupAdmin, &["台北"]).await;
+    let (_, html) = s.page(&g, "/compliance/rules").await;
+    assert!(
+        html.contains("台北") && !html.contains("機密研發部"),
+        "{html}"
+    );
+    let admin = s.admin_client().await;
+    let (_, html) = s.page(&admin, "/compliance/rules").await;
+    assert!(html.contains("機密研發部"));
+}
+
+/// 格式錯誤的輸入回中文訊息，不是 axum 的英文錯誤
+#[sqlx::test(migrations = false)]
+async fn bad_input_gets_chinese_errors(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let rule = add_rule_via_admin(&s, "required_kb", serde_json::json!({"kb": "KB5031455"})).await;
+    let a = device_in(&s, "台北", &[]).await;
+    let admin = s.admin_client().await;
+    let (_, page) = s.page(&admin, &format!("/devices/{}", a.device_id)).await;
+    let csrf = csrf_from(&page);
+    let rule_id = rule.to_string();
+    let r = admin
+        .post(s.web_url(&format!("/devices/{}/exemptions", a.device_id)))
+        .form(&[
+            ("csrf", csrf.as_str()),
+            ("rule_id", rule_id.as_str()),
+            ("reason", "x"),
+            ("days", "abc"),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 409);
+    assert!(r.text().await.unwrap().contains("天數"));
+    let (st, _) = s.page(&admin, "/compliance/violations?page=abc").await;
+    assert_eq!(st, 200);
 }

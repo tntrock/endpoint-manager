@@ -21,7 +21,7 @@
   {% else if kind == "software_allowlist" %}
     <p><label>允許的軟體（每行一筆：<code>名稱樣式 | 發行者樣式</code>，任一邊可留空）<br>
        <textarea name="p_entries" rows="10" cols="70">{{ p.entries }}</textarea></label></p>
-    <p class="muted">不符合任何一筆的軟體都算違規。例：<code>| Microsoft*</code> 允許所有微軟軟體。</p>
+    <p class="muted">不符合任何一筆的軟體都算違規。例：<code>| Microsoft*</code> 允許所有微軟軟體。名稱樣式不能包含 <code>|</code>。</p>
   {% else if kind == "os_build" %}
     <p><label>最低組建主號 <input name="p_min_build" value="{{ p.min_build }}" inputmode="numeric" placeholder="19045"></label>
        <span class="muted">低於此組建視為作業系統已停止支援</span></p>
