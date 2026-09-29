@@ -496,6 +496,27 @@ async fn deleting_rule_records_resolution(pool: PgPool) {
     );
 }
 
+/// 平行重算：裝置數多於同時處理數時，每台都要重算到，且結果正確
+#[sqlx::test(migrations = false)]
+async fn parallel_recompute_covers_every_device(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(10).await;
+    let mut agents = vec![];
+    for _ in 0..10 {
+        let a = s.enroll_ok(&tok, None, None).await;
+        put(&s, &a, InventoryPayload::Patches(vec![])).await;
+        agents.push(a);
+    }
+    let id = admin::create_rule(&s.pool, &kb_rule("KB5031455"), "admin")
+        .await
+        .unwrap();
+    while worker::recompute_step_with(&s.pool, 4).await.unwrap() {}
+    for a in &agents {
+        assert_eq!(violations(&s, a).await, vec![(id, "violating".into())]);
+    }
+    assert!(!worker::progress(&s.pool).await.unwrap().running);
+}
+
 /// 單台裝置評估失敗不能卡住整個重算
 #[sqlx::test(migrations = false)]
 async fn recompute_skips_failing_device(pool: PgPool) {

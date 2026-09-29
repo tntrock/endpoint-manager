@@ -3,6 +3,7 @@
 use std::time::{Duration, Instant};
 
 use chrono::NaiveDate;
+use futures_util::StreamExt;
 use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -10,6 +11,19 @@ use uuid::Uuid;
 use super::store::{load_ruleset, refresh_device, refresh_device_fresh};
 
 pub const BATCH: i64 = 1000;
+/// 全量重算時同時處理的裝置數（`EM_RECOMPUTE_CONCURRENCY`，1–32，預設 8）
+pub const DEFAULT_CONCURRENCY: usize = 8;
+
+fn concurrency() -> usize {
+    static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *N.get_or_init(|| {
+        std::env::var("EM_RECOMPUTE_CONCURRENCY")
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .unwrap_or(DEFAULT_CONCURRENCY)
+            .clamp(1, 32)
+    })
+}
 pub const DEFAULT_HISTORY_DAYS: i64 = 365;
 
 type StateRow = (i64, i64, i64, Option<Uuid>);
@@ -18,6 +32,11 @@ type StateRow = (i64, i64, i64, Option<Uuid>);
 /// 代表規則在重算途中又變了，從頭再來。
 // ponytail: 假設只有一個伺服器實例；多實例時改用 pg_try_advisory_lock 選一個執行者
 pub async fn recompute_step(pool: &PgPool) -> Result<bool, sqlx::Error> {
+    recompute_step_with(pool, concurrency()).await
+}
+
+/// 同 recompute_step，一批內同時處理 `concurrency` 台（每台有自己的 advisory lock 與交易）。
+pub async fn recompute_step_with(pool: &PgPool, concurrency: usize) -> Result<bool, sqlx::Error> {
     let (generation, done, run, cursor): StateRow = sqlx::query_as(
         "SELECT generation, done_generation, run_generation, cursor FROM compliance_state",
     )
@@ -48,12 +67,18 @@ pub async fn recompute_step(pool: &PgPool) -> Result<bool, sqlx::Error> {
     .bind(BATCH)
     .fetch_all(pool)
     .await?;
-    for id in &ids {
-        // 單台失敗只記錄、不中斷：否則游標永遠卡在這台，之後的裝置都不會重算
-        if let Err(e) = refresh_device(pool, &rules, *id).await {
-            tracing::error!(device_id = %id, error = %e, "compliance recompute failed for device");
-        }
-    }
+    // 整批處理完才推進游標，所以平行處理的順序不影響續跑
+    futures_util::stream::iter(&ids)
+        .for_each_concurrent(concurrency.max(1), |id| {
+            let rules = &rules;
+            async move {
+                // 單台失敗只記錄、不中斷：否則游標永遠卡在這台，之後的裝置都不會重算
+                if let Err(e) = refresh_device(pool, rules, *id).await {
+                    tracing::error!(device_id = %id, error = %e, "compliance recompute failed for device");
+                }
+            }
+        })
+        .await;
     if (ids.len() as i64) < BATCH {
         // 用 run_generation（不是現在的 generation）：途中又有變更時 done 仍落後，下一輪從頭來
         let elapsed: Option<f64> = sqlx::query_scalar(
