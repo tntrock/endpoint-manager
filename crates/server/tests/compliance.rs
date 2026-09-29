@@ -195,6 +195,7 @@ fn input(kind: &str, params: serde_json::Value) -> RuleInput {
         params,
         include: vec![],
         exclude: vec![],
+        template_key: None,
     }
 }
 

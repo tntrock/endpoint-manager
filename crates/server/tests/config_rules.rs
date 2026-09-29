@@ -47,6 +47,7 @@ fn reg_rule(path: &str, name: &str) -> RuleInput {
         params: serde_json::json!({"path": path, "name": name, "op": "equals", "expected": "1"}),
         include: vec![],
         exclude: vec![],
+        template_key: None,
     }
 }
 

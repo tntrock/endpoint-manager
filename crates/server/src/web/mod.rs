@@ -126,6 +126,10 @@ pub fn web_router(state: AppState) -> Router {
         .route("/compliance/notify/test", post(notify::test))
         .route("/compliance/rules", get(rules::list).post(rules::create))
         .route("/compliance/rules/new", get(rules::new_form))
+        .route(
+            "/compliance/rules/templates",
+            get(rules::templates_page).post(rules::create_from_templates),
+        )
         .route("/compliance/rules/preview", post(rules::preview))
         .route(
             "/compliance/rules/{id}",

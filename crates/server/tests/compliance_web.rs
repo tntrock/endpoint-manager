@@ -180,6 +180,7 @@ async fn add_rule_via_admin(s: &TestServer, kind: &str, params: serde_json::Valu
             params,
             include: vec![],
             exclude: vec![],
+            template_key: None,
         },
         "admin",
     )
@@ -353,6 +354,7 @@ async fn rule_list_hides_out_of_scope_group_names(pool: PgPool) {
             params: serde_json::json!({"kb": "KB5031455"}),
             include: vec![taipei, secret],
             exclude: vec![],
+            template_key: None,
         },
         "admin",
     )

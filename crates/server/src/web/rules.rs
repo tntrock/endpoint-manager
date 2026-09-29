@@ -209,6 +209,7 @@ pub fn form_to_input(f: &RuleForm) -> Result<RuleInput, String> {
         params,
         include: f.include.clone(),
         exclude: f.exclude.clone(),
+        template_key: None,
     })
 }
 
@@ -287,6 +288,98 @@ pub fn params_to_form(kind: &str, v: &Value) -> ParamFields {
         min_ubr: s("min_ubr"),
         kb: s("kb"),
     }
+}
+
+pub struct TemplateRow {
+    pub key: &'static str,
+    pub name: &'static str,
+    pub description: &'static str,
+    pub severity: &'static str,
+    pub severity_class: &'static str,
+    pub source: &'static str,
+    pub used: bool,
+}
+
+#[derive(Template)]
+#[template(path = "rule_templates.html")]
+struct TemplatesPage {
+    nav: Nav,
+    /// (分類, 範本)
+    groups: Vec<(&'static str, Vec<TemplateRow>)>,
+    message: Option<String>,
+    failed: Vec<(String, String)>,
+}
+
+async fn render_templates(
+    st: &AppState,
+    s: &Session,
+    message: Option<String>,
+    failed: Vec<(String, String)>,
+) -> Result<Response, Response> {
+    let used = crate::compliance::templates::used_keys(&st.pool)
+        .await
+        .map_err(db_error)?;
+    let mut groups: Vec<(&'static str, Vec<TemplateRow>)> = vec![];
+    for t in crate::compliance::templates::all() {
+        let sev = Severity::parse(&t.severity).unwrap_or(Severity::Medium);
+        let row = TemplateRow {
+            key: &t.key,
+            name: &t.name,
+            description: &t.description,
+            severity: sev.label(),
+            severity_class: sev.as_str(),
+            source: &t.source,
+            used: used.contains(&t.key),
+        };
+        match groups.iter_mut().find(|g| g.0 == t.category) {
+            Some(g) => g.1.push(row),
+            None => groups.push((&t.category, vec![row])),
+        }
+    }
+    Ok(render(&TemplatesPage {
+        nav: Nav::from(s),
+        groups,
+        message,
+        failed,
+    }))
+}
+
+pub async fn templates_page(
+    State(st): State<AppState>,
+    AdminSession(s): AdminSession,
+) -> Result<Response, Response> {
+    platform(&s)?;
+    render_templates(&st, &s, None, vec![]).await
+}
+
+pub async fn create_from_templates(
+    State(st): State<AppState>,
+    AdminSession(s): AdminSession,
+    RawForm(raw): RawForm,
+) -> Result<Response, Response> {
+    let mut csrf = String::new();
+    let mut keys = vec![];
+    for (k, v) in form_urlencoded::parse(&raw) {
+        match k.as_ref() {
+            "csrf" => csrf = v.into_owned(),
+            "key" => keys.push(v.into_owned()),
+            _ => {}
+        }
+    }
+    check_csrf(&s, &csrf)?;
+    platform(&s)?;
+    let r = crate::compliance::templates::create(&st.pool, &keys, &s.username)
+        .await
+        .map_err(db_error)?;
+    let mut msg = format!(
+        "已建立 {} 條、略過 {} 條（已存在）",
+        r.created.len(),
+        r.skipped.len()
+    );
+    if !r.failed.is_empty() {
+        msg.push_str(&format!("、失敗 {} 條", r.failed.len()));
+    }
+    render_templates(&st, &s, Some(msg), r.failed).await
 }
 
 fn platform(s: &Session) -> Result<(), Response> {

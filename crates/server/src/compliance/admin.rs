@@ -25,6 +25,8 @@ pub struct RuleInput {
     pub params: serde_json::Value,
     pub include: Vec<i64>,
     pub exclude: Vec<i64>,
+    /// 從內建範本建立時的範本 key（唯一：同一範本只能建立一次）
+    pub template_key: Option<String>,
 }
 
 struct Valid {
@@ -89,11 +91,15 @@ async fn write_groups(conn: &mut PgConnection, id: i64, i: &RuleInput) -> anyhow
 }
 
 fn detail(id: i64, v: &Valid, i: &RuleInput) -> serde_json::Value {
-    json!({
+    let mut d = json!({
         "id": id, "kind": v.params.kind(), "severity": v.severity.as_str(),
         "params": v.params.to_json(), "include": i.include, "exclude": i.exclude,
         "enabled": i.enabled
-    })
+    });
+    if let Some(k) = &i.template_key {
+        d["template_key"] = json!(k);
+    }
+    d
 }
 
 /// 登錄檔上限設定：壞值用預設，夾在 1–MAX_REGISTRY_VALUES。
@@ -150,14 +156,16 @@ async fn check_registry_cap(
     Ok(())
 }
 
+pub const TEMPLATE_EXISTS: &str = "這個範本已經建立過";
+
 pub async fn create_rule(pool: &PgPool, i: &RuleInput, actor: &str) -> anyhow::Result<i64> {
     let v = validate(i)?;
     let mut tx = pool.begin().await?;
     check_registry_cap(&mut tx, None, &v, i.enabled).await?;
     let id: i64 = sqlx::query_scalar(
         "INSERT INTO compliance_rules \
-         (name, description, kind, severity, enabled, params, created_by) \
-         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7) RETURNING id",
+         (name, description, kind, severity, enabled, params, created_by, template_key) \
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8) RETURNING id",
     )
     .bind(&v.name)
     .bind(&v.description)
@@ -166,8 +174,15 @@ pub async fn create_rule(pool: &PgPool, i: &RuleInput, actor: &str) -> anyhow::R
     .bind(i.enabled)
     .bind(v.params.to_json().to_string())
     .bind(actor)
+    .bind(&i.template_key)
     .fetch_one(&mut *tx)
-    .await?;
+    .await
+    .map_err(|e| match &e {
+        sqlx::Error::Database(d) if d.constraint() == Some("compliance_rules_template_key_idx") => {
+            anyhow::anyhow!(TEMPLATE_EXISTS)
+        }
+        _ => e.into(),
+    })?;
     write_groups(&mut tx, id, i).await?;
     bump(&mut tx).await?;
     audit::record(
