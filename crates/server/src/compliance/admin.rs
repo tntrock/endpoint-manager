@@ -233,9 +233,10 @@ pub async fn update_rule(pool: &PgPool, id: i64, i: &RuleInput, actor: &str) -> 
 pub async fn delete_rule(pool: &PgPool, id: i64, actor: &str) -> anyhow::Result<()> {
     let mut tx = pool.begin().await?;
     // 違規會隨規則 cascade 刪除；先寫「→ none」事件，歷程與通知才知道違規已結束
+    // （未知不寫，與 store::apply 一致）
     // （規則刪除後這些事件的 rule_id 會被設為 NULL，名稱保留在快照）
     sqlx::query(
-        "INSERT INTO violation_events          (device_id, rule_id, rule_name, severity, from_status, to_status, detail)          SELECT v.device_id, v.rule_id, r.name, r.severity, v.status, 'none', v.detail          FROM device_violations v JOIN compliance_rules r ON r.id = v.rule_id          WHERE v.rule_id = $1",
+        "INSERT INTO violation_events          (device_id, rule_id, rule_name, severity, from_status, to_status, detail)          SELECT v.device_id, v.rule_id, r.name, r.severity, v.status, 'none', v.detail          FROM device_violations v JOIN compliance_rules r ON r.id = v.rule_id          WHERE v.rule_id = $1 AND v.status <> 'unknown'",
     )
     .bind(id)
     .execute(&mut *tx)

@@ -3,6 +3,7 @@
 use std::time::{Duration, Instant};
 
 use chrono::NaiveDate;
+use futures_util::StreamExt;
 use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -10,6 +11,22 @@ use uuid::Uuid;
 use super::store::{load_ruleset, refresh_device, refresh_device_fresh};
 
 pub const BATCH: i64 = 1000;
+/// 全量重算時同時處理的裝置數（`EM_RECOMPUTE_CONCURRENCY`，1–16，預設 4）。
+/// 上限為連線池（32）的一半，留連線給報到與上傳。
+/// 負載測試：8 路時重算較快，但會把資料庫佔滿，重算期間報到 p99 升到約 600ms
+pub const DEFAULT_CONCURRENCY: usize = 4;
+pub const MAX_CONCURRENCY: usize = 16;
+
+fn concurrency() -> usize {
+    static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *N.get_or_init(|| {
+        std::env::var("EM_RECOMPUTE_CONCURRENCY")
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .unwrap_or(DEFAULT_CONCURRENCY)
+            .clamp(1, MAX_CONCURRENCY)
+    })
+}
 pub const DEFAULT_HISTORY_DAYS: i64 = 365;
 
 type StateRow = (i64, i64, i64, Option<Uuid>);
@@ -18,6 +35,11 @@ type StateRow = (i64, i64, i64, Option<Uuid>);
 /// 代表規則在重算途中又變了，從頭再來。
 // ponytail: 假設只有一個伺服器實例；多實例時改用 pg_try_advisory_lock 選一個執行者
 pub async fn recompute_step(pool: &PgPool) -> Result<bool, sqlx::Error> {
+    recompute_step_with(pool, concurrency()).await
+}
+
+/// 同 recompute_step，一批內同時處理 `concurrency` 台（每台有自己的 advisory lock 與交易）。
+pub async fn recompute_step_with(pool: &PgPool, concurrency: usize) -> Result<bool, sqlx::Error> {
     let (generation, done, run, cursor): StateRow = sqlx::query_as(
         "SELECT generation, done_generation, run_generation, cursor FROM compliance_state",
     )
@@ -48,11 +70,34 @@ pub async fn recompute_step(pool: &PgPool) -> Result<bool, sqlx::Error> {
     .bind(BATCH)
     .fetch_all(pool)
     .await?;
-    for id in &ids {
-        // 單台失敗只記錄、不中斷：否則游標永遠卡在這台，之後的裝置都不會重算
+    // 整批處理完才推進游標，所以平行處理的順序不影響續跑
+    let failed = std::sync::Mutex::new(Vec::new());
+    futures_util::stream::iter(&ids)
+        .for_each_concurrent(concurrency.max(1), |id| {
+            let (rules, failed) = (&rules, &failed);
+            async move {
+                if refresh_device(pool, rules, *id).await.is_err() {
+                    failed.lock().expect("failed list").push(*id);
+                }
+            }
+        })
+        .await;
+    // 失敗的裝置（例如忙碌時取不到連線）依序重試一次；仍失敗只記錄、不中斷，
+    // 否則游標永遠卡在這台，之後的裝置都不會重算
+    let failed = failed.into_inner().expect("failed list");
+    let mut still = 0;
+    for id in &failed {
         if let Err(e) = refresh_device(pool, &rules, *id).await {
+            still += 1;
             tracing::error!(device_id = %id, error = %e, "compliance recompute failed for device");
         }
+    }
+    if still > 0 {
+        tracing::warn!(
+            generation,
+            failed = still,
+            "compliance recompute skipped devices; they are re-evaluated on their next upload"
+        );
     }
     if (ids.len() as i64) < BATCH {
         // 用 run_generation（不是現在的 generation）：途中又有變更時 done 仍落後，下一輪從頭來

@@ -386,20 +386,34 @@ async fn write_payload(
             .await?;
         }
         InventoryPayload::Registry(v) => {
-            sqlx::query("DELETE FROM device_registry WHERE device_id = $1")
-                .bind(device_id)
-                .execute(&mut *conn)
-                .await?;
+            // 只寫入有變動的值（每台可能有上千個值，大多數上傳都沒變）：
+            // 刪掉不在新清單的值，新增或更新有差異的值，相同的值不產生寫入
             let paths: Vec<&str> = v.iter().map(|r| r.path.as_str()).collect();
             let names: Vec<&str> = v.iter().map(|r| r.name.as_str()).collect();
             let states: Vec<String> = v.iter().map(|r| label(&r.state)).collect();
             let kinds: Vec<String> = v.iter().map(|r| label(&r.kind)).collect();
             let data: Vec<&str> = v.iter().map(|r| r.data.as_str()).collect();
-            // 同一個值重複時只留一筆（主鍵），避免整批寫入失敗
+            sqlx::query(
+                "DELETE FROM device_registry r WHERE r.device_id = $1 AND NOT EXISTS ( \
+                   SELECT 1 FROM UNNEST($2::text[], $3::text[]) AS x(p, n) \
+                   WHERE x.p = r.path AND x.n = r.name)",
+            )
+            .bind(device_id)
+            .bind(&paths)
+            .bind(&names)
+            .execute(&mut *conn)
+            .await?;
+            // 同一個值重複時只取第一筆（ON CONFLICT DO UPDATE 不能在同一句更新同一列兩次）
             sqlx::query(
                 "INSERT INTO device_registry (device_id, path, name, state, kind, data) \
-                 SELECT $1, * FROM UNNEST($2::text[], $3::text[], $4::text[], $5::text[], $6::text[]) \
-                 ON CONFLICT DO NOTHING",
+                 SELECT DISTINCT ON (p, n) $1, p, n, s, k, d \
+                 FROM UNNEST($2::text[], $3::text[], $4::text[], $5::text[], $6::text[]) \
+                      WITH ORDINALITY AS x(p, n, s, k, d, i) \
+                 ORDER BY p, n, i \
+                 ON CONFLICT (device_id, path, name) DO UPDATE \
+                 SET state = EXCLUDED.state, kind = EXCLUDED.kind, data = EXCLUDED.data \
+                 WHERE (device_registry.state, device_registry.kind, device_registry.data) \
+                       IS DISTINCT FROM (EXCLUDED.state, EXCLUDED.kind, EXCLUDED.data)",
             )
             .bind(device_id)
             .bind(&paths)
