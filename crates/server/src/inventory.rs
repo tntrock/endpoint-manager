@@ -58,10 +58,34 @@ pub async fn upload(
         .acquire()
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
-    let (payload, hash) =
+    let (payload, mut hash) =
         tokio::task::spawn_blocking(move || parse_upload(section, &headers, &body))
             .await
             .map_err(|e| AppError::Internal(e.into()))??;
+    // 只保存規則需要的登錄檔值（比對不分大小寫）。有值被濾掉時改存過濾後的雜湊：
+    // 和 Agent 的雜湊不同，下次報到會被要求重傳，查詢清單剛變時也能收斂
+    let payload = match payload {
+        InventoryPayload::Registry(v) => {
+            let rules = st.rules.get(&st.pool).await?;
+            let total = v.len();
+            let kept: Vec<_> = v
+                .into_iter()
+                .filter(|r| {
+                    rules
+                        .registry_keys
+                        .contains(&crate::compliance::rules::registry_key(&r.path, &r.name))
+                })
+                .collect();
+            let filtered = InventoryPayload::Registry(kept);
+            if let InventoryPayload::Registry(k) = &filtered
+                && k.len() != total
+            {
+                hash = filtered.canonical_hash();
+            }
+            filtered
+        }
+        other => other,
+    };
     store_section(&st.pool, device.device_id, &payload, &hash).await?;
     // 評估失敗不影響上傳：盤點已寫入，結果在這台下次上傳（或規則變更觸發的全量重算）時補上
     if crate::compliance::affects_compliance(section)
@@ -162,7 +186,7 @@ type SoftwareRow = (
     String,
 );
 type ServiceRow = (String, Option<String>, String, String, Option<String>);
-type SecurityRow = (String, String, String, String, String);
+pub(crate) type SecurityRow = (String, String, String, String, String);
 
 fn json<T: serde::Serialize>(v: &T) -> String {
     serde_json::to_string(v).expect("serializable")
@@ -176,12 +200,12 @@ fn label<T: serde::Serialize>(v: &T) -> String {
         .unwrap_or_default()
 }
 
-fn from_label<T: serde::de::DeserializeOwned>(s: &str) -> Option<T> {
+pub(crate) fn from_label<T: serde::de::DeserializeOwned>(s: &str) -> Option<T> {
     serde_json::from_value(serde_json::Value::String(s.into())).ok()
 }
 
 /// 讀回的 jsonb 解析失敗時（手動改壞）當成收集失敗，不讓整個讀取失敗
-fn security_from_row(r: SecurityRow) -> SecurityInfo {
+pub(crate) fn security_from_row(r: SecurityRow) -> SecurityInfo {
     fn parse<T: serde::de::DeserializeOwned>(s: &str) -> Probe<T> {
         serde_json::from_str(s)
             .unwrap_or_else(|e| Probe::Error(format!("stored data unreadable: {e}")))

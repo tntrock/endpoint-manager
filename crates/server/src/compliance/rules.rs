@@ -7,12 +7,19 @@ use super::matcher::Glob;
 
 pub const MAX_PATTERN_LEN: usize = 256;
 
-pub const KINDS: [&str; 5] = [
+pub const KINDS: [&str; 12] = [
     "forbidden_software",
     "required_software",
     "software_allowlist",
     "os_build",
     "required_kb",
+    "registry_value",
+    "service_state",
+    "firewall",
+    "bitlocker",
+    "defender",
+    "password_policy",
+    "local_admins",
 ];
 
 pub fn kind_label(kind: &str) -> &'static str {
@@ -22,6 +29,13 @@ pub fn kind_label(kind: &str) -> &'static str {
         "software_allowlist" => "軟體白名單",
         "os_build" => "最低組建號",
         "required_kb" => "必要 KB",
+        "registry_value" => "登錄檔值",
+        "service_state" => "服務",
+        "firewall" => "防火牆",
+        "bitlocker" => "BitLocker",
+        "defender" => "Defender",
+        "password_policy" => "密碼原則",
+        "local_admins" => "本機管理員",
         _ => "未知類型",
     }
 }
@@ -89,6 +103,110 @@ pub enum Params {
     RequiredKb {
         kb: String,
     },
+    RegistryValue {
+        /// 已正規化（`HKLM\...`）
+        path: String,
+        name: String,
+        op: RegOp,
+        expected: Option<String>,
+        absent_ok: bool,
+    },
+    ServiceState {
+        name: String,
+        require_running: bool,
+    },
+    Firewall {
+        domain: bool,
+        private: bool,
+        public: bool,
+    },
+    Bitlocker {
+        all_fixed: bool,
+    },
+    Defender {
+        realtime: bool,
+        max_signature_age_days: Option<u32>,
+        tamper: bool,
+    },
+    PasswordPolicy {
+        min_length: Option<u32>,
+        max_age_days: Option<u32>,
+        max_lockout_threshold: Option<u32>,
+    },
+    LocalAdmins {
+        allowed: Vec<String>,
+    },
+}
+
+/// 登錄檔值的比對方式
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegOp {
+    Equals,
+    NotEquals,
+    Gte,
+    Lte,
+    Contains,
+    Exists,
+    NotExists,
+}
+
+impl RegOp {
+    pub const ALL: [RegOp; 7] = [
+        RegOp::Equals,
+        RegOp::NotEquals,
+        RegOp::Gte,
+        RegOp::Lte,
+        RegOp::Contains,
+        RegOp::Exists,
+        RegOp::NotExists,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RegOp::Equals => "equals",
+            RegOp::NotEquals => "not_equals",
+            RegOp::Gte => "gte",
+            RegOp::Lte => "lte",
+            RegOp::Contains => "contains",
+            RegOp::Exists => "exists",
+            RegOp::NotExists => "not_exists",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<RegOp> {
+        RegOp::ALL.into_iter().find(|o| o.as_str() == s)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            RegOp::Equals => "等於",
+            RegOp::NotEquals => "不等於",
+            RegOp::Gte => "大於等於",
+            RegOp::Lte => "小於等於",
+            RegOp::Contains => "包含",
+            RegOp::Exists => "存在",
+            RegOp::NotExists => "不存在",
+        }
+    }
+
+    /// 需要期望值的比對方式
+    pub fn needs_expected(self) -> bool {
+        !matches!(self, RegOp::Exists | RegOp::NotExists)
+    }
+}
+
+/// 十進位或 `0x` 十六進位的非負整數
+pub fn parse_number(s: &str) -> Option<u64> {
+    let s = s.trim();
+    match s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        Some(h) => u64::from_str_radix(h, 16).ok(),
+        None => s.parse().ok(),
+    }
+}
+
+/// 登錄檔值的比對鍵：路徑與名稱都不分大小寫。查詢清單、上傳過濾、評估三處共用。
+pub fn registry_key(path: &str, name: &str) -> (String, String) {
+    (path.to_uppercase(), name.to_uppercase())
 }
 
 /// 編譯後的比對條件（萬用字元已預先處理）。
@@ -117,6 +235,100 @@ pub enum Check {
     RequiredKb {
         kb: String,
     },
+    RegistryValue {
+        path: String,
+        name: String,
+        /// `registry_key(path, name)`
+        key: (String, String),
+        op: RegOp,
+        expected: Option<String>,
+        absent_ok: bool,
+    },
+    ServiceState {
+        name: String,
+        require_running: bool,
+    },
+    Firewall {
+        domain: bool,
+        private: bool,
+        public: bool,
+    },
+    Bitlocker {
+        all_fixed: bool,
+    },
+    Defender {
+        realtime: bool,
+        max_signature_age_days: Option<u32>,
+        tamper: bool,
+    },
+    PasswordPolicy {
+        min_length: Option<u32>,
+        max_age_days: Option<u32>,
+        max_lockout_threshold: Option<u32>,
+    },
+    LocalAdmins {
+        allowed: Vec<Glob>,
+    },
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawRegistry {
+    path: String,
+    #[serde(default)]
+    name: String,
+    op: String,
+    #[serde(default)]
+    expected: Option<String>,
+    #[serde(default)]
+    absent_ok: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawService {
+    name: String,
+    require: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawFirewall {
+    profiles: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawBitlocker {
+    scope: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawDefender {
+    #[serde(default)]
+    realtime: bool,
+    #[serde(default)]
+    max_signature_age_days: Option<u32>,
+    #[serde(default)]
+    tamper: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawPassword {
+    #[serde(default)]
+    min_length: Option<u32>,
+    #[serde(default)]
+    max_age_days: Option<u32>,
+    #[serde(default)]
+    max_lockout_threshold: Option<u32>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawAdmins {
+    allowed: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -253,7 +465,124 @@ impl Params {
                 }
                 Ok(Params::RequiredKb { kb })
             }
+            "registry_value" => {
+                let r: RawRegistry = from(v)?;
+                let path = protocol::regpath::normalize(&r.path)?;
+                let path = protocol::regpath::check(&path, &r.name)?;
+                let name = r.name.trim().to_string();
+                if name.chars().count() > MAX_PATTERN_LEN {
+                    return Err(format!("值名稱最多 {MAX_PATTERN_LEN} 字"));
+                }
+                let op = RegOp::parse(&r.op).ok_or("比對方式無效")?;
+                let expected = if op.needs_expected() {
+                    let e = opt("期望值", r.expected)?.ok_or("期望值必填")?;
+                    if matches!(op, RegOp::Gte | RegOp::Lte) && parse_number(&e).is_none() {
+                        return Err(
+                            "大於等於／小於等於的期望值必須是數字（可用 0x 十六進位）".into()
+                        );
+                    }
+                    Some(e)
+                } else {
+                    None
+                };
+                Ok(Params::RegistryValue {
+                    path,
+                    name,
+                    op,
+                    expected,
+                    absent_ok: r.absent_ok,
+                })
+            }
+            "service_state" => {
+                let r: RawService = from(v)?;
+                let name = required("服務名稱", Some(r.name))?;
+                let require_running = match r.require.as_str() {
+                    "disabled" => false,
+                    "running" => true,
+                    _ => return Err("服務要求必須是 disabled 或 running".into()),
+                };
+                Ok(Params::ServiceState {
+                    name,
+                    require_running,
+                })
+            }
+            "firewall" => {
+                let r: RawFirewall = from(v)?;
+                let has = |p: &str| r.profiles.iter().any(|x| x == p);
+                if r.profiles.is_empty()
+                    || r.profiles
+                        .iter()
+                        .any(|p| !matches!(p.as_str(), "domain" | "private" | "public"))
+                {
+                    return Err("防火牆設定檔須為 domain、private、public 其中至少一個".into());
+                }
+                Ok(Params::Firewall {
+                    domain: has("domain"),
+                    private: has("private"),
+                    public: has("public"),
+                })
+            }
+            "bitlocker" => {
+                let r: RawBitlocker = from(v)?;
+                let all_fixed = match r.scope.as_str() {
+                    "system" => false,
+                    "all_fixed" => true,
+                    _ => return Err("BitLocker 範圍必須是 system 或 all_fixed".into()),
+                };
+                Ok(Params::Bitlocker { all_fixed })
+            }
+            "defender" => {
+                let r: RawDefender = from(v)?;
+                if !r.realtime && !r.tamper && r.max_signature_age_days.is_none() {
+                    return Err("Defender 規則至少要勾選一項".into());
+                }
+                Ok(Params::Defender {
+                    realtime: r.realtime,
+                    max_signature_age_days: r.max_signature_age_days,
+                    tamper: r.tamper,
+                })
+            }
+            "password_policy" => {
+                let r: RawPassword = from(v)?;
+                if r.min_length.is_none()
+                    && r.max_age_days.is_none()
+                    && r.max_lockout_threshold.is_none()
+                {
+                    return Err("密碼原則至少要填一項".into());
+                }
+                Ok(Params::PasswordPolicy {
+                    min_length: r.min_length,
+                    max_age_days: r.max_age_days,
+                    max_lockout_threshold: r.max_lockout_threshold,
+                })
+            }
+            "local_admins" => {
+                let r: RawAdmins = from(v)?;
+                let allowed = r
+                    .allowed
+                    .into_iter()
+                    .map(|a| opt("允許的成員", Some(a)))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>();
+                if allowed.is_empty() {
+                    return Err("至少要有一個允許的成員".into());
+                }
+                Ok(Params::LocalAdmins { allowed })
+            }
             _ => Err(format!("未知的規則類型：{kind}")),
+        }
+    }
+
+    /// 登錄檔規則需要 Agent 讀取的值
+    pub fn registry_query(&self) -> Option<protocol::RegistryQuery> {
+        match self {
+            Params::RegistryValue { path, name, .. } => Some(protocol::RegistryQuery {
+                path: path.clone(),
+                name: name.clone(),
+            }),
+            _ => None,
         }
     }
 
@@ -264,6 +593,13 @@ impl Params {
             Params::Allowlist { .. } => "software_allowlist",
             Params::MinBuild { .. } | Params::PatchLevel { .. } => "os_build",
             Params::RequiredKb { .. } => "required_kb",
+            Params::RegistryValue { .. } => "registry_value",
+            Params::ServiceState { .. } => "service_state",
+            Params::Firewall { .. } => "firewall",
+            Params::Bitlocker { .. } => "bitlocker",
+            Params::Defender { .. } => "defender",
+            Params::PasswordPolicy { .. } => "password_policy",
+            Params::LocalAdmins { .. } => "local_admins",
         }
     }
 
@@ -316,6 +652,83 @@ impl Params {
             Params::RequiredKb { kb } => {
                 m.insert("kb".into(), json!(kb));
             }
+            Params::RegistryValue {
+                path,
+                name,
+                op,
+                expected,
+                absent_ok,
+            } => {
+                m.insert("path".into(), json!(path));
+                m.insert("name".into(), json!(name));
+                m.insert("op".into(), json!(op.as_str()));
+                put(&mut m, "expected", expected);
+                if *absent_ok {
+                    m.insert("absent_ok".into(), json!(true));
+                }
+            }
+            Params::ServiceState {
+                name,
+                require_running,
+            } => {
+                m.insert("name".into(), json!(name));
+                let r = if *require_running {
+                    "running"
+                } else {
+                    "disabled"
+                };
+                m.insert("require".into(), json!(r));
+            }
+            Params::Firewall {
+                domain,
+                private,
+                public,
+            } => {
+                let profiles: Vec<&str> =
+                    [("domain", domain), ("private", private), ("public", public)]
+                        .into_iter()
+                        .filter(|(_, on)| **on)
+                        .map(|(n, _)| n)
+                        .collect();
+                m.insert("profiles".into(), json!(profiles));
+            }
+            Params::Bitlocker { all_fixed } => {
+                let scope = if *all_fixed { "all_fixed" } else { "system" };
+                m.insert("scope".into(), json!(scope));
+            }
+            Params::Defender {
+                realtime,
+                max_signature_age_days,
+                tamper,
+            } => {
+                if *realtime {
+                    m.insert("realtime".into(), json!(true));
+                }
+                if let Some(d) = max_signature_age_days {
+                    m.insert("max_signature_age_days".into(), json!(d));
+                }
+                if *tamper {
+                    m.insert("tamper".into(), json!(true));
+                }
+            }
+            Params::PasswordPolicy {
+                min_length,
+                max_age_days,
+                max_lockout_threshold,
+            } => {
+                for (k, v) in [
+                    ("min_length", min_length),
+                    ("max_age_days", max_age_days),
+                    ("max_lockout_threshold", max_lockout_threshold),
+                ] {
+                    if let Some(v) = v {
+                        m.insert(k.into(), json!(v));
+                    }
+                }
+            }
+            Params::LocalAdmins { allowed } => {
+                m.insert("allowed".into(), json!(allowed));
+            }
         }
         Value::Object(m)
     }
@@ -355,6 +768,60 @@ impl Params {
                 min_ubr: *min_ubr,
             },
             Params::RequiredKb { kb } => Check::RequiredKb { kb: kb.clone() },
+            Params::RegistryValue {
+                path,
+                name,
+                op,
+                expected,
+                absent_ok,
+            } => Check::RegistryValue {
+                path: path.clone(),
+                name: name.clone(),
+                key: registry_key(path, name),
+                op: *op,
+                expected: expected.clone(),
+                absent_ok: *absent_ok,
+            },
+            Params::ServiceState {
+                name,
+                require_running,
+            } => Check::ServiceState {
+                name: name.clone(),
+                require_running: *require_running,
+            },
+            Params::Firewall {
+                domain,
+                private,
+                public,
+            } => Check::Firewall {
+                domain: *domain,
+                private: *private,
+                public: *public,
+            },
+            Params::Bitlocker { all_fixed } => Check::Bitlocker {
+                all_fixed: *all_fixed,
+            },
+            Params::Defender {
+                realtime,
+                max_signature_age_days,
+                tamper,
+            } => Check::Defender {
+                realtime: *realtime,
+                max_signature_age_days: *max_signature_age_days,
+                tamper: *tamper,
+            },
+            Params::PasswordPolicy {
+                min_length,
+                max_age_days,
+                max_lockout_threshold,
+            } => Check::PasswordPolicy {
+                min_length: *min_length,
+                max_age_days: *max_age_days,
+                max_lockout_threshold: *max_lockout_threshold,
+            },
+            Params::LocalAdmins { allowed } => Check::LocalAdmins {
+                allowed: allowed.iter().map(|a| Glob::new(a)).collect(),
+            },
         }
     }
 }
@@ -384,14 +851,41 @@ impl Rule {
 pub struct RuleSet {
     pub generation: i64,
     pub rules: Vec<Rule>,
+    /// 啟用中登錄檔規則需要 Agent 讀取的值（不分大小寫去重、排序）
+    pub registry_queries: Vec<protocol::RegistryQuery>,
+    pub registry_hash: String,
+    /// registry_key(path, name) 的集合：上傳時只保存這些值
+    pub registry_keys: std::collections::HashSet<(String, String)>,
 }
 
 impl RuleSet {
-    pub fn empty() -> RuleSet {
-        RuleSet {
-            generation: -1,
-            rules: vec![],
+    pub fn new(generation: i64, rules: Vec<Rule>) -> RuleSet {
+        let mut keys = std::collections::HashSet::new();
+        let mut queries = vec![];
+        for r in &rules {
+            if let Ok(Check::RegistryValue {
+                path, name, key, ..
+            }) = &r.check
+                && keys.insert(key.clone())
+            {
+                queries.push(protocol::RegistryQuery {
+                    path: path.clone(),
+                    name: name.clone(),
+                });
+            }
         }
+        queries.sort_by_key(|q| registry_key(&q.path, &q.name));
+        RuleSet {
+            generation,
+            rules,
+            registry_hash: protocol::regpath::queries_hash(&queries),
+            registry_queries: queries,
+            registry_keys: keys,
+        }
+    }
+
+    pub fn empty() -> RuleSet {
+        RuleSet::new(-1, vec![])
     }
 }
 
@@ -399,6 +893,143 @@ impl RuleSet {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn config_params_parse_and_normalize() {
+        let p = Params::parse(
+            "registry_value",
+            &json!({"path": "hklm/Software/Policies/X", "name": "Y", "op": "equals", "expected": "1"}),
+        )
+        .unwrap();
+        assert_eq!(
+            p.to_json(),
+            json!({"path": "HKLM\\Software\\Policies\\X", "name": "Y", "op": "equals", "expected": "1"})
+        );
+        assert_eq!(
+            p.registry_query().unwrap().path,
+            r"HKLM\Software\Policies\X"
+        );
+        let p = Params::parse(
+            "registry_value",
+            &json!({"path": r"HKLM\A", "name": "B", "op": "exists", "expected": "ignored"}),
+        )
+        .unwrap();
+        assert_eq!(
+            p.to_json(),
+            json!({"path": r"HKLM\A", "name": "B", "op": "exists"}),
+            "exists 不需要 expected"
+        );
+        let p = Params::parse(
+            "registry_value",
+            &json!({"path": r"HKLM\A", "name": "", "op": "equals", "expected": "x", "absent_ok": true}),
+        )
+        .unwrap();
+        assert_eq!(p.to_json()["absent_ok"], true);
+        assert_eq!(
+            Params::parse(
+                "firewall",
+                &json!({"profiles": ["public", "domain", "public"]})
+            )
+            .unwrap()
+            .to_json(),
+            json!({"profiles": ["domain", "public"]})
+        );
+        assert_eq!(
+            Params::parse(
+                "service_state",
+                &json!({"name": " RemoteRegistry ", "require": "disabled"})
+            )
+            .unwrap()
+            .to_json(),
+            json!({"name": "RemoteRegistry", "require": "disabled"})
+        );
+        assert_eq!(
+            Params::parse("defender", &json!({"realtime": true}))
+                .unwrap()
+                .to_json(),
+            json!({"realtime": true})
+        );
+        assert_eq!(
+            Params::parse("password_policy", &json!({"min_length": 12}))
+                .unwrap()
+                .to_json(),
+            json!({"min_length": 12})
+        );
+        assert_eq!(
+            Params::parse(
+                "local_admins",
+                &json!({"allowed": [" *\\Administrator ", ""]})
+            )
+            .unwrap()
+            .to_json(),
+            json!({"allowed": ["*\\Administrator"]})
+        );
+        assert_eq!(
+            Params::parse("bitlocker", &json!({"scope": "all_fixed"}))
+                .unwrap()
+                .to_json(),
+            json!({"scope": "all_fixed"})
+        );
+        for k in [
+            "registry_value",
+            "service_state",
+            "firewall",
+            "bitlocker",
+            "defender",
+            "password_policy",
+            "local_admins",
+        ] {
+            assert!(KINDS.contains(&k), "{k}");
+            assert_ne!(kind_label(k), "未知類型", "{k}");
+        }
+    }
+
+    #[test]
+    fn config_params_reject_bad_input() {
+        for (kind, v) in [
+            (
+                "registry_value",
+                json!({"path": r"HKLM\SAM\SAM", "name": "x", "op": "exists"}),
+            ),
+            (
+                "registry_value",
+                json!({"path": r"HKCU\Software", "name": "x", "op": "exists"}),
+            ),
+            (
+                "registry_value",
+                json!({"path": r"HKLM\A", "name": "x", "op": "equals"}),
+            ),
+            (
+                "registry_value",
+                json!({"path": r"HKLM\A", "name": "x", "op": "gte", "expected": "abc"}),
+            ),
+            (
+                "registry_value",
+                json!({"path": r"HKLM\A", "name": "x", "op": "nope", "expected": "1"}),
+            ),
+            ("service_state", json!({"name": "", "require": "disabled"})),
+            ("service_state", json!({"name": "x", "require": "maybe"})),
+            ("firewall", json!({"profiles": []})),
+            ("firewall", json!({"profiles": ["lan"]})),
+            ("bitlocker", json!({"scope": "usb"})),
+            ("defender", json!({})),
+            ("defender", json!({"realtime": false, "tamper": false})),
+            ("password_policy", json!({})),
+            ("local_admins", json!({"allowed": []})),
+            ("local_admins", json!({"allowed": ["  "]})),
+        ] {
+            assert!(Params::parse(kind, &v).is_err(), "{kind} {v}");
+        }
+    }
+
+    #[test]
+    fn numbers_accept_hex() {
+        assert_eq!(parse_number("255"), Some(255));
+        assert_eq!(parse_number("0xFF"), Some(255));
+        assert_eq!(parse_number(" 0x0 "), Some(0));
+        assert_eq!(parse_number("-1"), None);
+        assert_eq!(parse_number("abc"), None);
+    }
 
     #[test]
     fn parse_and_normalize() {

@@ -1,11 +1,18 @@
 //! 評估：純函式，不碰資料庫。
 
 use std::cmp::Ordering;
+use std::collections::HashMap;
 
+use chrono::{DateTime, Utc};
+use protocol::{Probe, RegKind, RegState, RegistryValue, SecurityInfo};
 use serde_json::{Value, json};
 
 use super::matcher::{Glob, cmp_version};
-use super::rules::{Check, RuleSet};
+pub use super::rules::registry_key;
+use super::rules::{Check, RegOp, RuleSet, parse_number};
+
+/// 支援 security／registry 區段的最低 Agent 版本：更舊的版本沒有這些資料時，未知原因寫「版本過舊」
+pub const CONFIG_AGENT_VERSION: &str = "0.3.0";
 
 /// 細節中最多列出的軟體數
 pub const MAX_LISTED: usize = 50;
@@ -28,6 +35,20 @@ pub struct DeviceFacts {
     pub kbs: Option<Vec<String>>,
     /// 有效（未到期）豁免的規則 id
     pub exempt: Vec<i64>,
+    pub security: Option<SecurityInfo>,
+    /// 鍵為 registry_key(path, name)
+    pub registry: Option<HashMap<(String, String), RegistryValue>>,
+    pub services: Option<Vec<ServiceFact>>,
+    pub agent_version: Option<String>,
+    /// 評估時的「現在」（病毒碼天數用）：由呼叫端提供，評估本身維持純函式
+    pub now: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ServiceFact {
+    pub name: String,
+    pub start_mode: String,
+    pub state: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,8 +116,285 @@ fn older(s: &SoftwareFact, than: &str) -> bool {
         .is_some_and(|v| cmp_version(v, than) == Ordering::Less)
 }
 
+/// security／registry 區段沒有資料：Agent 太舊就註明版本過舊，否則是尚未收到
+fn missing_config(f: &DeviceFacts) -> Option<(Status, Value)> {
+    let outdated = f
+        .agent_version
+        .as_deref()
+        .is_none_or(|v| cmp_version(v, CONFIG_AGENT_VERSION) == Ordering::Less);
+    if outdated {
+        Some((Status::Unknown, json!({"reason": "agent_outdated"})))
+    } else {
+        no_data()
+    }
+}
+
+/// 取出 security 區段的某一項；沒資料或收集失敗時回對應的「未知」結果
+fn probe<'a, T>(
+    f: &'a DeviceFacts,
+    pick: impl FnOnce(&'a SecurityInfo) -> &'a Probe<T>,
+) -> Result<&'a T, Option<(Status, Value)>> {
+    let Some(sec) = &f.security else {
+        return Err(missing_config(f));
+    };
+    match pick(sec) {
+        Probe::Ok(v) => Ok(v),
+        Probe::Error(e) => Err(Some((
+            Status::Unknown,
+            json!({"reason": "probe_error", "error": e}),
+        ))),
+    }
+}
+
+fn service_detail(s: &ServiceFact) -> (Status, Value) {
+    (
+        Status::Violating,
+        json!({"service": s.name, "start_mode": s.start_mode, "state": s.state}),
+    )
+}
+
+fn registry_check(
+    v: &RegistryValue,
+    label: &str,
+    op: RegOp,
+    expected: Option<&str>,
+    absent_ok: bool,
+) -> Option<(Status, Value)> {
+    match v.state {
+        RegState::Denied => {
+            return Some((
+                Status::Unknown,
+                json!({"reason": "denied", "registry": label}),
+            ));
+        }
+        RegState::Absent => {
+            return match op {
+                RegOp::NotExists => None,
+                RegOp::Exists => Some((
+                    Status::Violating,
+                    json!({"registry": label, "reason": "absent"}),
+                )),
+                _ if absent_ok => None,
+                _ => Some((
+                    Status::Violating,
+                    json!({"registry": label, "reason": "absent"}),
+                )),
+            };
+        }
+        RegState::Present => {}
+    }
+    let expected = expected.unwrap_or("");
+    let numeric = matches!(v.kind, RegKind::Dword | RegKind::Qword);
+    let nums = (parse_number(&v.data), parse_number(expected));
+    let ok = match op {
+        RegOp::Exists => true,
+        RegOp::NotExists => false,
+        RegOp::Contains => v.data.to_lowercase().contains(&expected.to_lowercase()),
+        RegOp::Gte | RegOp::Lte => {
+            let (Some(a), Some(b)) = nums else {
+                return Some((
+                    Status::Unknown,
+                    json!({"reason": "not_numeric", "registry": label, "actual": v.data}),
+                ));
+            };
+            if op == RegOp::Gte { a >= b } else { a <= b }
+        }
+        RegOp::Equals | RegOp::NotEquals => {
+            let same = match nums {
+                (Some(a), Some(b)) if numeric => a == b,
+                _ => {
+                    v.data.eq_ignore_ascii_case(expected)
+                        || v.data.to_lowercase() == expected.to_lowercase()
+                }
+            };
+            if op == RegOp::Equals { same } else { !same }
+        }
+    };
+    if ok {
+        return None;
+    }
+    let mut d = json!({"registry": label, "op": op.as_str(), "actual": v.data});
+    if op.needs_expected() {
+        d["expected"] = json!(expected);
+    }
+    Some((Status::Violating, d))
+}
+
 fn check_one(c: &Check, f: &DeviceFacts) -> Option<(Status, Value)> {
     match c {
+        Check::RegistryValue {
+            path,
+            name,
+            key,
+            op,
+            expected,
+            absent_ok,
+        } => {
+            let Some(reg) = &f.registry else {
+                return missing_config(f);
+            };
+            let label = format!("{path}\\{name}");
+            let Some(v) = reg.get(key) else {
+                return Some((
+                    Status::Unknown,
+                    json!({"reason": "not_collected", "registry": label}),
+                ));
+            };
+            registry_check(v, &label, *op, expected.as_deref(), *absent_ok)
+        }
+        Check::ServiceState {
+            name,
+            require_running,
+        } => {
+            let Some(services) = &f.services else {
+                return no_data();
+            };
+            let svc = services.iter().find(|s| s.name.eq_ignore_ascii_case(name));
+            let disabled = |s: &ServiceFact| s.start_mode.eq_ignore_ascii_case("Disabled");
+            match (svc, require_running) {
+                (None, false) => None,
+                (None, true) => Some((
+                    Status::Violating,
+                    json!({"reason": "not_installed", "service": name}),
+                )),
+                (Some(s), false) => (!disabled(s)).then(|| service_detail(s)),
+                (Some(s), true) => (disabled(s) || !s.state.eq_ignore_ascii_case("Running"))
+                    .then(|| service_detail(s)),
+            }
+        }
+        Check::Firewall {
+            domain,
+            private,
+            public,
+        } => {
+            let fw = match probe(f, |s| &s.firewall) {
+                Ok(v) => v,
+                Err(u) => return u,
+            };
+            let off: Vec<&str> = [
+                ("domain", *domain, fw.domain),
+                ("private", *private, fw.private),
+                ("public", *public, fw.public),
+            ]
+            .into_iter()
+            .filter(|(_, required, on)| *required && !on)
+            .map(|(n, _, _)| n)
+            .collect();
+            (!off.is_empty()).then(|| (Status::Violating, json!({"profiles_off": off})))
+        }
+        Check::Bitlocker { all_fixed } => {
+            let vols = match probe(f, |s| &s.bitlocker) {
+                Ok(v) => v,
+                Err(u) => return u,
+            };
+            let in_scope: Vec<_> = vols.iter().filter(|v| *all_fixed || v.is_system).collect();
+            if in_scope.is_empty() {
+                return Some((Status::Violating, json!({"reason": "no_system_volume"})));
+            }
+            let bad: Vec<&str> = in_scope
+                .iter()
+                .filter(|v| !v.protected)
+                .map(|v| v.drive.as_str())
+                .collect();
+            (!bad.is_empty()).then(|| (Status::Violating, json!({"drives": bad})))
+        }
+        Check::Defender {
+            realtime,
+            max_signature_age_days,
+            tamper,
+        } => {
+            let d = match probe(f, |s| &s.defender) {
+                Ok(v) => v,
+                Err(u) => return u,
+            };
+            if !d.active {
+                return Some((Status::Unknown, json!({"reason": "defender_inactive"})));
+            }
+            let mut failed = vec![];
+            let mut detail = serde_json::Map::new();
+            if *realtime && !d.realtime {
+                failed.push("realtime");
+            }
+            if *tamper && !d.tamper {
+                failed.push("tamper");
+            }
+            // 病毒碼日期未知不能蓋掉其他已確定的違規：先看其他項，全部通過才回報未知
+            let mut signature_unknown = false;
+            if let Some(max) = max_signature_age_days {
+                match d.signature_updated {
+                    None => signature_unknown = true,
+                    Some(updated) => {
+                        let age = (f.now - updated).num_days().max(0);
+                        if age > i64::from(*max) {
+                            failed.push("signature");
+                            detail.insert("signature_age_days".into(), json!(age));
+                        }
+                    }
+                }
+            }
+            if failed.is_empty() {
+                return signature_unknown
+                    .then(|| (Status::Unknown, json!({"reason": "signature_unknown"})));
+            }
+            detail.insert("failed".into(), json!(failed));
+            Some((Status::Violating, Value::Object(detail)))
+        }
+        Check::PasswordPolicy {
+            min_length,
+            max_age_days,
+            max_lockout_threshold,
+        } => {
+            let p = match probe(f, |s| &s.password) {
+                Ok(v) => v,
+                Err(u) => return u,
+            };
+            let mut failed = vec![];
+            let mut detail = serde_json::Map::new();
+            if let Some(req) = min_length
+                && p.min_length < *req
+            {
+                failed.push("min_length");
+                detail.insert("min_length".into(), json!(p.min_length));
+                detail.insert("required_min_length".into(), json!(req));
+            }
+            // 0 = 永不過期、不鎖定：一律算不符合
+            if let Some(req) = max_age_days
+                && (p.max_age_days == 0 || p.max_age_days > *req)
+            {
+                failed.push("max_age_days");
+                detail.insert("max_age_days".into(), json!(p.max_age_days));
+                detail.insert("required_max_age_days".into(), json!(req));
+            }
+            if let Some(req) = max_lockout_threshold
+                && (p.lockout_threshold == 0 || p.lockout_threshold > *req)
+            {
+                failed.push("lockout_threshold");
+                detail.insert("lockout_threshold".into(), json!(p.lockout_threshold));
+                detail.insert("required_lockout_threshold".into(), json!(req));
+            }
+            if failed.is_empty() {
+                return None;
+            }
+            detail.insert("failed".into(), json!(failed));
+            Some((Status::Violating, Value::Object(detail)))
+        }
+        Check::LocalAdmins { allowed } => {
+            let admins = match probe(f, |s| &s.admins) {
+                Ok(v) => v,
+                Err(u) => return u,
+            };
+            let bad: Vec<&str> = admins
+                .iter()
+                .filter(|a| !allowed.iter().any(|g| g.is_match(&a.name)))
+                .map(|a| a.name.as_str())
+                .collect();
+            (!bad.is_empty()).then(|| {
+                (
+                    Status::Violating,
+                    json!({"accounts": bad.iter().take(MAX_LISTED).collect::<Vec<_>>(), "total": bad.len()}),
+                )
+            })
+        }
         Check::Forbidden {
             name,
             publisher,
@@ -262,7 +560,110 @@ pub fn summarize(d: &Value) -> String {
         Some("version_missing") => return format!("版本不明：{}", software_list(d)),
         Some("ubr_missing") => return format!("Agent 未回報 UBR（組建 {}）", s("build")),
         Some("build_unparsable") => return format!("無法解析組建號：{}", s("build")),
+        Some("agent_outdated") => return "Agent 版本過舊，未回報這項資料".into(),
+        Some("not_collected") => return "Agent 尚未回報這個登錄檔值".into(),
+        Some("denied") => return "不允許讀取這個登錄檔值".into(),
+        Some("defender_inactive") => return "Defender 不是作用中的防毒".into(),
+        Some("probe_error") => return format!("收集失敗：{}", s("error")),
+        Some("not_numeric") => return format!("{} = {}，不是數字", s("registry"), s("actual")),
+        Some("signature_unknown") => return "無法取得病毒碼更新時間".into(),
+        Some("no_system_volume") => return "找不到系統磁碟".into(),
+        Some("not_installed") => return format!("服務 {} 未安裝", s("service")),
+        Some("absent") => return format!("{} 未設定", s("registry")),
         _ => {}
+    }
+    let list = |k: &str| {
+        d[k].as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str())
+                    .collect::<Vec<_>>()
+                    .join("、")
+            })
+            .unwrap_or_default()
+    };
+    if d.get("registry").is_some() {
+        let op = super::rules::RegOp::parse(&s("op"))
+            .map(|o| o.label())
+            .unwrap_or("");
+        return if d.get("expected").is_some() {
+            format!(
+                "{} = {}，要求 {op} {}",
+                s("registry"),
+                s("actual"),
+                s("expected")
+            )
+        } else {
+            format!("{} 存在，要求 {op}", s("registry"))
+        };
+    }
+    if d.get("profiles_off").is_some() {
+        let names: Vec<&str> = d["profiles_off"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
+            .unwrap_or_default();
+        let zh: Vec<&str> = names
+            .iter()
+            .map(|n| match *n {
+                "domain" => "網域",
+                "private" => "私人",
+                "public" => "公用",
+                other => other,
+            })
+            .collect();
+        return format!("防火牆未啟用：{}", zh.join("、"));
+    }
+    if d.get("drives").is_some() {
+        return format!("未加密保護：{}", list("drives"));
+    }
+    if d.get("accounts").is_some() {
+        return format!("不允許的管理員：{}", list("accounts"));
+    }
+    if d.get("service").is_some() {
+        return format!("服務 {}：{}／{}", s("service"), s("start_mode"), s("state"));
+    }
+    if let Some(failed) = d["failed"].as_array() {
+        let n = |k: &str| d[k].as_u64().map(|v| v.to_string()).unwrap_or_default();
+        let parts: Vec<String> = failed
+            .iter()
+            .filter_map(|x| x.as_str())
+            .map(|f| match f {
+                "realtime" => "即時保護未開啟".to_string(),
+                "tamper" => "防竄改未開啟".to_string(),
+                "signature" => format!("病毒碼 {} 天未更新", n("signature_age_days")),
+                "min_length" => format!(
+                    "最短長度 {}，需要 {}",
+                    n("min_length"),
+                    n("required_min_length")
+                ),
+                "max_age_days" => {
+                    let a = n("max_age_days");
+                    let a = if a == "0" {
+                        "永不過期".to_string()
+                    } else {
+                        format!("{a} 天")
+                    };
+                    format!(
+                        "密碼最長使用 {a}，需要 {} 天以內",
+                        n("required_max_age_days")
+                    )
+                }
+                "lockout_threshold" => {
+                    let a = n("lockout_threshold");
+                    let a = if a == "0" {
+                        "不鎖定".to_string()
+                    } else {
+                        format!("{a} 次")
+                    };
+                    format!(
+                        "鎖定門檻 {a}，需要 {} 次以內",
+                        n("required_lockout_threshold")
+                    )
+                }
+                other => other.to_string(),
+            })
+            .collect();
+        return parts.join("、");
     }
     if d.get("kb").is_some() {
         format!("缺少 {}", s("kb"))
@@ -310,7 +711,13 @@ pub fn evaluate(facts: &DeviceFacts, rules: &RuleSet) -> Vec<Outcome> {
 mod tests {
     use super::*;
     use crate::compliance::rules::{Params, Rule, RuleSet, Severity};
+    use chrono::Utc;
+    use protocol::{
+        AccountInfo, DefenderInfo, FirewallInfo, PasswordPolicy, Probe, RegKind, RegState,
+        RegistryValue, SecurityInfo, VolumeInfo,
+    };
     use serde_json::json;
+    use std::collections::HashMap;
 
     fn sw(name: &str, version: Option<&str>, publisher: Option<&str>) -> SoftwareFact {
         SoftwareFact {
@@ -329,13 +736,372 @@ mod tests {
             software: Some(software),
             kbs: Some(vec!["KB5034439".into()]),
             exempt: vec![],
+            security: None,
+            registry: None,
+            services: None,
+            agent_version: Some("0.3.0".into()),
+            now: Utc::now(),
+        }
+    }
+
+    fn cfg_facts() -> DeviceFacts {
+        let mut reg = HashMap::new();
+        let mut put = |p: &str, n: &str, state: RegState, kind: RegKind, data: &str| {
+            reg.insert(
+                registry_key(p, n),
+                RegistryValue {
+                    path: p.into(),
+                    name: n.into(),
+                    state,
+                    kind,
+                    data: data.into(),
+                },
+            );
+        };
+        put(r"HKLM\A", "Dw", RegState::Present, RegKind::Dword, "5");
+        put(
+            r"HKLM\A",
+            "Sz",
+            RegState::Present,
+            RegKind::String,
+            "Hello World",
+        );
+        put(r"HKLM\A", "Gone", RegState::Absent, RegKind::None, "");
+        put(r"HKLM\A", "Secret", RegState::Denied, RegKind::None, "");
+        DeviceFacts {
+            security: Some(SecurityInfo {
+                firewall: Probe::Ok(FirewallInfo {
+                    domain: true,
+                    private: true,
+                    public: false,
+                }),
+                bitlocker: Probe::Ok(vec![
+                    VolumeInfo {
+                        drive: "C:".into(),
+                        is_system: true,
+                        protected: true,
+                    },
+                    VolumeInfo {
+                        drive: "D:".into(),
+                        is_system: false,
+                        protected: false,
+                    },
+                ]),
+                defender: Probe::Ok(DefenderInfo {
+                    active: true,
+                    realtime: true,
+                    tamper: false,
+                    signature_updated: Some(Utc::now() - chrono::Duration::days(10)),
+                }),
+                password: Probe::Ok(PasswordPolicy {
+                    min_length: 8,
+                    max_age_days: 0,
+                    lockout_threshold: 5,
+                }),
+                admins: Probe::Ok(vec![
+                    AccountInfo {
+                        name: r"PC\Administrator".into(),
+                        sid: "S-1-5-21-1-500".into(),
+                    },
+                    AccountInfo {
+                        name: r"CORP\bob".into(),
+                        sid: "S-1-5-21-2-1100".into(),
+                    },
+                ]),
+            }),
+            registry: Some(reg),
+            services: Some(vec![
+                ServiceFact {
+                    name: "RemoteRegistry".into(),
+                    start_mode: "Manual".into(),
+                    state: "Stopped".into(),
+                },
+                ServiceFact {
+                    name: "WinDefend".into(),
+                    start_mode: "Auto".into(),
+                    state: "Running".into(),
+                },
+            ]),
+            ..facts(vec![])
+        }
+    }
+
+    fn status(kind: &str, p: serde_json::Value) -> Option<Status> {
+        one(&cfg_facts(), kind, p).map(|x| x.0)
+    }
+
+    #[test]
+    fn registry_value_rules() {
+        let r = |op: &str, name: &str, exp: Option<&str>| {
+            let mut v = json!({"path": r"hklm\a", "name": name, "op": op});
+            if let Some(e) = exp {
+                v["expected"] = json!(e);
+            }
+            status("registry_value", v)
+        };
+        assert_eq!(r("equals", "Dw", Some("5")), None, "路徑、名稱不分大小寫");
+        assert_eq!(r("equals", "dw", Some("0x5")), None, "十六進位");
+        assert_eq!(r("gte", "Dw", Some("6")), Some(Status::Violating));
+        assert_eq!(r("lte", "Dw", Some("5")), None);
+        assert_eq!(
+            r("equals", "Sz", Some("hello world")),
+            None,
+            "字串不分大小寫"
+        );
+        assert_eq!(r("contains", "Sz", Some("WORLD")), None);
+        assert_eq!(
+            r("not_equals", "Sz", Some("Hello World")),
+            Some(Status::Violating)
+        );
+        assert_eq!(r("gte", "Sz", Some("1")), Some(Status::Unknown), "非數字");
+        assert_eq!(r("equals", "Gone", Some("1")), Some(Status::Violating));
+        assert_eq!(r("exists", "Gone", None), Some(Status::Violating));
+        assert_eq!(r("not_exists", "Gone", None), None);
+        assert_eq!(r("not_exists", "Dw", None), Some(Status::Violating));
+        assert_eq!(
+            r("equals", "Secret", Some("1")),
+            Some(Status::Unknown),
+            "拒絕讀取"
+        );
+        assert_eq!(
+            r("equals", "NotCollectedYet", Some("1")),
+            Some(Status::Unknown)
+        );
+        let ok = status(
+            "registry_value",
+            json!({"path": r"HKLM\A", "name": "Gone", "op": "equals", "expected": "1", "absent_ok": true}),
+        );
+        assert_eq!(ok, None, "未設定時視為符合");
+    }
+
+    #[test]
+    fn service_rules() {
+        let s =
+            |name: &str, req: &str| status("service_state", json!({"name": name, "require": req}));
+        assert_eq!(s("remoteregistry", "disabled"), Some(Status::Violating));
+        assert_eq!(s("NotInstalled", "disabled"), None, "沒安裝算符合");
+        assert_eq!(s("WinDefend", "running"), None);
+        assert_eq!(s("NotInstalled", "running"), Some(Status::Violating));
+        assert_eq!(s("RemoteRegistry", "running"), Some(Status::Violating));
+    }
+
+    #[test]
+    fn security_rules() {
+        assert_eq!(
+            status("firewall", json!({"profiles": ["domain", "private"]})),
+            None
+        );
+        let (st, d) = one(&cfg_facts(), "firewall", json!({"profiles": ["public"]})).unwrap();
+        assert_eq!(
+            (st, d["profiles_off"].clone()),
+            (Status::Violating, json!(["public"]))
+        );
+        assert_eq!(status("bitlocker", json!({"scope": "system"})), None);
+        assert_eq!(
+            status("bitlocker", json!({"scope": "all_fixed"})),
+            Some(Status::Violating)
+        );
+        assert_eq!(status("defender", json!({"realtime": true})), None);
+        assert_eq!(
+            status("defender", json!({"tamper": true})),
+            Some(Status::Violating)
+        );
+        assert_eq!(
+            status("defender", json!({"max_signature_age_days": 7})),
+            Some(Status::Violating)
+        );
+        assert_eq!(
+            status("defender", json!({"max_signature_age_days": 14})),
+            None
+        );
+        assert_eq!(
+            status("password_policy", json!({"min_length": 12})),
+            Some(Status::Violating)
+        );
+        assert_eq!(
+            status("password_policy", json!({"max_age_days": 365})),
+            Some(Status::Violating),
+            "0＝永不過期"
+        );
+        assert_eq!(
+            status("password_policy", json!({"max_lockout_threshold": 10})),
+            None
+        );
+        let (st, d) = one(
+            &cfg_facts(),
+            "local_admins",
+            json!({"allowed": ["*\\administrator"]}),
+        )
+        .unwrap();
+        assert_eq!(
+            (st, d["accounts"].clone()),
+            (Status::Violating, json!(["CORP\\bob"]))
+        );
+        assert_eq!(
+            status(
+                "local_admins",
+                json!({"allowed": ["*\\Administrator", "CORP\\*"]})
+            ),
+            None
+        );
+    }
+
+    /// 病毒碼日期未知時，已確定的其他違規仍要回報違規，不能被蓋成未知
+    #[test]
+    fn defender_known_failure_beats_unknown_signature() {
+        let mut f = cfg_facts();
+        if let Some(s) = f.security.as_mut() {
+            s.defender = Probe::Ok(DefenderInfo {
+                active: true,
+                realtime: false,
+                tamper: true,
+                signature_updated: None,
+            });
+        }
+        let r = one(
+            &f,
+            "defender",
+            json!({"realtime": true, "max_signature_age_days": 7}),
+        );
+        assert_eq!(r.map(|x| x.0), Some(Status::Violating));
+        let r = one(
+            &f,
+            "defender",
+            json!({"tamper": true, "max_signature_age_days": 7}),
+        );
+        assert_eq!(
+            r.map(|x| x.0),
+            Some(Status::Unknown),
+            "其他項都通過時才是未知"
+        );
+    }
+
+    /// 範圍「所有固定磁碟」卻一個磁碟都沒有：和「系統磁碟」範圍一樣算違規
+    #[test]
+    fn bitlocker_without_volumes_is_violating_for_both_scopes() {
+        let mut f = cfg_facts();
+        if let Some(s) = f.security.as_mut() {
+            s.bitlocker = Probe::Ok(vec![]);
+        }
+        for scope in ["system", "all_fixed"] {
+            let r = one(&f, "bitlocker", json!({ "scope": scope }));
+            assert_eq!(r.map(|x| x.0), Some(Status::Violating), "{scope}");
+        }
+    }
+
+    #[test]
+    fn missing_config_data_is_unknown_with_reason() {
+        let mut f = cfg_facts();
+        f.security = None;
+        f.registry = None;
+        f.agent_version = Some("0.2.1".into());
+        let (st, d) = one(&f, "firewall", json!({"profiles": ["public"]})).unwrap();
+        assert_eq!(
+            (st, d["reason"].as_str()),
+            (Status::Unknown, Some("agent_outdated"))
+        );
+        f.agent_version = Some("0.3.0".into());
+        let (_, d) = one(
+            &f,
+            "registry_value",
+            json!({"path": r"HKLM\A", "name": "x", "op": "exists"}),
+        )
+        .unwrap();
+        assert_eq!(d["reason"], "no_data");
+        let mut f = cfg_facts();
+        if let Some(s) = f.security.as_mut() {
+            s.defender = Probe::Ok(DefenderInfo {
+                active: false,
+                realtime: false,
+                tamper: false,
+                signature_updated: None,
+            });
+            s.bitlocker = Probe::Error("no BitLocker".into());
+        }
+        let (st, d) = one(&f, "defender", json!({"realtime": true})).unwrap();
+        assert_eq!(
+            (st, d["reason"].as_str()),
+            (Status::Unknown, Some("defender_inactive"))
+        );
+        let (st, d) = one(&f, "bitlocker", json!({"scope": "system"})).unwrap();
+        assert_eq!(
+            (st, d["reason"].as_str()),
+            (Status::Unknown, Some("probe_error"))
+        );
+    }
+
+    #[test]
+    fn config_summaries() {
+        for (d, want) in [
+            (
+                json!({"reason": "agent_outdated"}),
+                "Agent 版本過舊，未回報這項資料",
+            ),
+            (
+                json!({"reason": "not_collected"}),
+                "Agent 尚未回報這個登錄檔值",
+            ),
+            (json!({"reason": "denied"}), "不允許讀取這個登錄檔值"),
+            (
+                json!({"reason": "defender_inactive"}),
+                "Defender 不是作用中的防毒",
+            ),
+            (
+                json!({"reason": "probe_error", "error": "x"}),
+                "收集失敗：x",
+            ),
+            (
+                json!({"reason": "not_numeric", "registry": "HKLM\\A\\B", "actual": "abc"}),
+                "HKLM\\A\\B = abc，不是數字",
+            ),
+            (
+                json!({"reason": "signature_unknown"}),
+                "無法取得病毒碼更新時間",
+            ),
+            (json!({"profiles_off": ["public"]}), "防火牆未啟用：公用"),
+            (json!({"drives": ["D:"]}), "未加密保護：D:"),
+            (json!({"reason": "no_system_volume"}), "找不到系統磁碟"),
+            (
+                json!({"accounts": ["CORP\\bob"]}),
+                "不允許的管理員：CORP\\bob",
+            ),
+            (
+                json!({"service": "Spooler", "start_mode": "Auto", "state": "Running"}),
+                "服務 Spooler：Auto／Running",
+            ),
+            (
+                json!({"reason": "not_installed", "service": "X"}),
+                "服務 X 未安裝",
+            ),
+            (
+                json!({"registry": "HKLM\\A\\B", "actual": "0", "op": "equals", "expected": "1"}),
+                "HKLM\\A\\B = 0，要求 等於 1",
+            ),
+            (
+                json!({"registry": "HKLM\\A\\B", "op": "not_exists"}),
+                "HKLM\\A\\B 存在，要求 不存在",
+            ),
+            (
+                json!({"registry": "HKLM\\A\\B", "reason": "absent"}),
+                "HKLM\\A\\B 未設定",
+            ),
+            (
+                json!({"failed": ["min_length"], "min_length": 8, "required_min_length": 12}),
+                "最短長度 8，需要 12",
+            ),
+            (
+                json!({"failed": ["realtime", "signature"], "signature_age_days": 10}),
+                "即時保護未開啟、病毒碼 10 天未更新",
+            ),
+        ] {
+            assert_eq!(summarize(&d), want, "{d}");
         }
     }
 
     fn set(kind: &str, params: serde_json::Value) -> RuleSet {
-        RuleSet {
-            generation: 1,
-            rules: vec![Rule {
+        RuleSet::new(
+            1,
+            vec![Rule {
                 id: 7,
                 name: "r".into(),
                 severity: Severity::High,
@@ -343,7 +1109,7 @@ mod tests {
                 exclude: vec![],
                 check: Params::parse(kind, &params).map(|p| p.compile()),
             }],
-        }
+        )
     }
 
     #[test]

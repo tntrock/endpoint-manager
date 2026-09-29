@@ -317,6 +317,23 @@ fn sec(public: bool) -> InventoryPayload {
 #[sqlx::test(migrations = false)]
 async fn security_and_registry_roundtrip_with_history(pool: PgPool) {
     let (s, a) = setup(pool).await;
+    // 伺服器只保存規則需要的值：先建立會收集這個值的規則
+    endpoint_server::compliance::admin::create_rule(
+        &s.pool,
+        &endpoint_server::compliance::admin::RuleInput {
+            name: "x".into(),
+            description: String::new(),
+            kind: "registry_value".into(),
+            severity: "low".into(),
+            enabled: true,
+            params: serde_json::json!({"path": r"HKLM\SOFTWARE\X", "name": "Y", "op": "exists"}),
+            include: vec![],
+            exclude: vec![],
+        },
+        "admin",
+    )
+    .await
+    .unwrap();
     assert_eq!(put(&s, &a, "security", &upload(sec(true))).await, 204);
     assert_eq!(put(&s, &a, "security", &upload(sec(false))).await, 204);
     let mut c = s.pool.acquire().await.unwrap();

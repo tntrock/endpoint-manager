@@ -17,10 +17,7 @@ pub struct PreviewCount {
 }
 
 pub async fn preview(pool: &PgPool, rule: Rule) -> Result<PreviewCount, sqlx::Error> {
-    let set = RuleSet {
-        generation: 0,
-        rules: vec![rule],
-    };
+    let set = RuleSet::new(0, vec![rule]);
     let mut count = PreviewCount::default();
     let mut cursor: Option<Uuid> = None;
     let mut conn = pool.acquire().await?;
