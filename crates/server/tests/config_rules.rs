@@ -387,3 +387,58 @@ async fn unknown_transitions_are_not_recorded(pool: PgPool) {
         ]
     );
 }
+
+/// 登錄檔只寫入有變動的值：資料不變時不重寫（xmin 不變），少掉的值刪除，重複鍵不失敗
+#[sqlx::test(migrations = false)]
+async fn registry_writes_only_changes(pool: PgPool) {
+    let (s, a) = setup(pool).await;
+    for n in ["V1", "V2", "V3"] {
+        admin::create_rule(&s.pool, &reg_rule(r"HKLM\X", n), "admin")
+            .await
+            .unwrap();
+    }
+    let v = |name: &str, data: &str| protocol::RegistryValue {
+        path: r"HKLM\X".into(),
+        name: name.into(),
+        state: protocol::RegState::Present,
+        kind: protocol::RegKind::Dword,
+        data: data.into(),
+    };
+    let rows = || async {
+        let r: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT name, data, xmin::text FROM device_registry WHERE device_id = $1 ORDER BY name",
+        )
+        .bind(a.device_id)
+        .fetch_all(&s.pool)
+        .await
+        .unwrap();
+        r
+    };
+    put(
+        &s,
+        &a,
+        InventoryPayload::Registry(vec![v("V1", "1"), v("V2", "1"), v("V3", "1")]),
+    )
+    .await;
+    let first = rows().await;
+    assert_eq!(first.len(), 3);
+    put(
+        &s,
+        &a,
+        InventoryPayload::Registry(vec![v("V1", "1"), v("V2", "1"), v("V3", "1")]),
+    )
+    .await;
+    assert_eq!(rows().await, first, "資料不變時不重寫");
+    // V2 改值、V3 消失；V1 重複兩次
+    put(
+        &s,
+        &a,
+        InventoryPayload::Registry(vec![v("V1", "1"), v("V2", "2"), v("V1", "1")]),
+    )
+    .await;
+    let now = rows().await;
+    assert_eq!(now.len(), 2, "{now:?}");
+    assert_eq!(now[0], first[0], "V1 未變");
+    assert_eq!((now[1].0.as_str(), now[1].1.as_str()), ("V2", "2"));
+    assert_ne!(now[1].2, first[1].2, "V2 已更新");
+}
