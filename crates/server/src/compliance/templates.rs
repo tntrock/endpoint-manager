@@ -100,7 +100,13 @@ mod tests {
                 "{}",
                 t.key
             );
-            assert!(!t.source.is_empty(), "{} 缺少出處", t.key);
+            // 出處直接放進 href：必須是單一 https 網址
+            assert!(
+                t.source.starts_with("https://") && !t.source.contains(char::is_whitespace),
+                "{} 出處不是單一網址：{}",
+                t.key,
+                t.source
+            );
         }
     }
 }

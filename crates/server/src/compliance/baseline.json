@@ -13,7 +13,7 @@
     "key": "smb1_server_disabled",
     "category": "網路與防火牆",
     "name": "停用 SMBv1 伺服器",
-    "description": "LanmanServer\\Parameters\\SMB1 = 0。Windows 10 1709 以後預設未安裝 SMBv1，未設定時視為符合。",
+    "description": "LanmanServer\\Parameters\\SMB1 = 0。未設定時視為符合，適用於未安裝 SMBv1 的電腦（Windows 10 1709 以後的預設）；已安裝 SMBv1 功能的舊電腦沒有這個值時實際是啟用的，請搭配「停用 SMBv1 用戶端驅動程式」一起使用。",
     "severity": "medium",
     "kind": "registry_value",
     "params": {"path": "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters", "name": "SMB1", "op": "equals", "expected": "0", "absent_ok": true},
@@ -63,7 +63,7 @@
     "key": "rdp_nla_required",
     "category": "網路與防火牆",
     "name": "遠端桌面要求網路層級驗證（NLA）",
-    "description": "RDP-Tcp\\UserAuthentication = 1。",
+    "description": "RDP-Tcp\\UserAuthentication = 1。只檢查本機設定；以群組原則（Policies\\...\\Terminal Services）設定的值不在檢查範圍內。",
     "severity": "medium",
     "kind": "registry_value",
     "params": {"path": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server\\WinStations\\RDP-Tcp", "name": "UserAuthentication", "op": "equals", "expected": "1"},
@@ -118,16 +118,6 @@
     "kind": "password_policy",
     "params": {"min_length": 12},
     "source": "https://learn.microsoft.com/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/minimum-password-length"
-  },
-  {
-    "key": "password_max_age_365",
-    "category": "帳號與密碼",
-    "name": "本機密碼最長 365 天",
-    "description": "永不過期也算不符合。只約束本機帳號。",
-    "severity": "low",
-    "kind": "password_policy",
-    "params": {"max_age_days": 365},
-    "source": "https://learn.microsoft.com/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/maximum-password-age"
   },
   {
     "key": "lockout_threshold_10",
@@ -217,7 +207,7 @@
     "severity": "medium",
     "kind": "registry_value",
     "params": {"path": "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer", "name": "NoDriveTypeAutoRun", "op": "equals", "expected": "255"},
-    "source": "https://learn.microsoft.com/windows/client-management/mdm/policy-csp-autoplay#turnoffautoplay ; https://learn.microsoft.com/windows/win32/shell/autoplay-reg"
+    "source": "https://learn.microsoft.com/windows/win32/shell/autoplay-reg"
   },
   {
     "key": "powershell_scriptblock_logging",
