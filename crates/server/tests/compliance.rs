@@ -146,3 +146,39 @@ async fn broken_rule_does_not_fail_upload(pool: PgPool) {
         vec![(broken, "unknown".into()), (good, "violating".into())]
     );
 }
+
+#[sqlx::test(migrations = false)]
+async fn retire_clears_and_group_move_reevaluates(pool: PgPool) {
+    let (s, a) = setup(pool).await;
+    let g = s.group_id("資訊亭").await;
+    let rule = add_rule(&s, "required_kb", serde_json::json!({"kb": "KB5031455"})).await;
+    sqlx::query(
+        "INSERT INTO compliance_rule_groups (rule_id, group_id, mode) VALUES ($1, $2, 'exclude')",
+    )
+    .bind(rule)
+    .bind(g)
+    .execute(&s.pool)
+    .await
+    .unwrap();
+    bump(&s).await;
+    put(&s, &a, InventoryPayload::Patches(vec![])).await;
+    assert_eq!(violations(&s, &a).await.len(), 1);
+
+    endpoint_server::groups::move_device(&s.pool, a.device_id, Some(g), "t")
+        .await
+        .unwrap();
+    assert!(
+        violations(&s, &a).await.is_empty(),
+        "移到排除群組後違規消失"
+    );
+    endpoint_server::groups::move_device(&s.pool, a.device_id, None, "t")
+        .await
+        .unwrap();
+    assert_eq!(violations(&s, &a).await.len(), 1);
+
+    endpoint_server::devices::retire(&s.pool, a.device_id, "t")
+        .await
+        .unwrap();
+    assert!(violations(&s, &a).await.is_empty(), "除役後清除");
+    assert_eq!(events(&s, &a).await.last().unwrap().1, "none");
+}

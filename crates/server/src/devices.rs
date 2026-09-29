@@ -60,6 +60,7 @@ pub async fn approve_in(
                 }),
             )
             .await?;
+            crate::compliance::store::refresh_device_fresh(conn, pending).await?;
             return Ok(pending);
         }
     };
@@ -98,6 +99,7 @@ pub async fn approve_in(
         serde_json::json!({ "pending_id": pending, "hostname": hostname }),
     )
     .await?;
+    crate::compliance::store::refresh_device_fresh(conn, old).await?;
     Ok(old)
 }
 
@@ -119,6 +121,7 @@ pub async fn reject(pool: &PgPool, pending: Uuid, actor: &str) -> anyhow::Result
     .rows_affected();
     anyhow::ensure!(n == 1, "device is not pending approval");
     revoke_certs(&mut tx, pending).await?;
+    crate::compliance::store::refresh_device_fresh(&mut tx, pending).await?;
     audit::record(
         &mut tx,
         actor,
@@ -141,6 +144,8 @@ pub async fn retire(pool: &PgPool, id: Uuid, actor: &str) -> anyhow::Result<()> 
             .rows_affected();
     anyhow::ensure!(n == 1, "device not found or already retired");
     revoke_certs(&mut tx, id).await?;
+    // 除役後不再評估：清除目前違規並寫解除事件
+    crate::compliance::store::refresh_device_fresh(&mut tx, id).await?;
     audit::record(
         &mut tx,
         actor,

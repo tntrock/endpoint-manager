@@ -34,6 +34,8 @@ pub async fn move_device(
         serde_json::json!({ "group_id": group_id }),
     )
     .await?;
+    // 群組影響規則的套用範圍
+    crate::compliance::store::refresh_device_fresh(&mut tx, device_id).await?;
     tx.commit().await?;
     Ok(())
 }
