@@ -177,7 +177,7 @@ pub async fn serve(cfg: config::Config) -> anyhow::Result<()> {
             }
         }
     });
-    compliance::worker::spawn(pool.clone());
+    compliance::worker::spawn(pool.clone(), state.display_offset);
     notify::worker::spawn(pool.clone(), state.notify.clone());
 
     let listener = tokio::net::TcpListener::bind(cfg.agent_listen).await?;

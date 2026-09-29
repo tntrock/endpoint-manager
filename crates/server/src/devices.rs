@@ -25,9 +25,11 @@ pub async fn approve_in(
     pending: Uuid,
     actor: &str,
 ) -> anyhow::Result<Uuid> {
+    // 列鎖用 FOR NO KEY UPDATE：與寫入違規／歷程時外鍵取得的 KEY SHARE 相容，
+    // 否則舊裝置的 Agent 同時上傳評估時會與這裡互等成死結
     let (old, hostname): (Option<Uuid>, String) = sqlx::query_as(
         "SELECT reenroll_of, hostname FROM devices \
-         WHERE id = $1 AND status = 'pending_approval' FOR UPDATE",
+         WHERE id = $1 AND status = 'pending_approval' FOR NO KEY UPDATE",
     )
     .bind(pending)
     .fetch_optional(&mut *conn)
@@ -35,7 +37,7 @@ pub async fn approve_in(
     .context("device is not pending approval")?;
     let old_status: Option<String> = match old {
         Some(old) => {
-            sqlx::query_scalar("SELECT status FROM devices WHERE id = $1 FOR UPDATE")
+            sqlx::query_scalar("SELECT status FROM devices WHERE id = $1 FOR NO KEY UPDATE")
                 .bind(old)
                 .fetch_optional(&mut *conn)
                 .await?

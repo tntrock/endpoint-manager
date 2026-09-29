@@ -25,7 +25,8 @@ pub fn backoff(failures: i32) -> chrono::Duration {
     chrono::Duration::minutes((1i64 << exp).min(60))
 }
 
-/// 門檻以上、且變成或離開「違規」的事件
+/// 門檻以上、且變成或離開「違規」的事件。違規變成「未知」也列在解除（帶 to=unknown），
+/// 與「未知→違規」列為新增對稱：狀態來回跳動時新增與解除成對出現，接收端可依 to 區分。
 const RELEVANT: &str = "e.id > $1 AND e.id <= $2 AND e.severity = ANY($3) \
      AND (e.to_status = 'violating') <> (e.from_status = 'violating')";
 
@@ -137,6 +138,8 @@ pub async fn run_channel(
     .bind(channel)
     .fetch_one(pool)
     .await?;
+    // 寫回時比對：送出途中管理員重設了游標（停用再啟用）就不覆寫
+    let read_cursor = cursor;
     if next_attempt.is_some_and(|t| now < t) {
         return Ok(());
     }
@@ -187,11 +190,15 @@ pub async fn run_channel(
     let mut digest = load_digest(pool, cursor, upto, settings.min_severity).await?;
     digest.dropped = dropped;
     if digest.is_empty() {
-        sqlx::query("UPDATE notify_channels SET last_event_id = $2 WHERE channel = $1")
-            .bind(channel)
-            .bind(upto)
-            .execute(pool)
-            .await?;
+        sqlx::query(
+            "UPDATE notify_channels SET last_event_id = $2 \
+             WHERE channel = $1 AND last_event_id = $3",
+        )
+        .bind(channel)
+        .bind(upto)
+        .bind(read_cursor)
+        .execute(pool)
+        .await?;
         return Ok(());
     }
     let Some(url) = settings.webhook_url.as_deref() else {
@@ -209,26 +216,31 @@ pub async fn run_channel(
             sqlx::query(
                 "UPDATE notify_channels SET last_event_id = $2, last_sent_at = $3, \
                  last_ok_at = $3, failures = 0, next_attempt_at = NULL, last_error = NULL, \
-                 dropped = 0 WHERE channel = $1",
+                 dropped = 0 WHERE channel = $1 AND last_event_id = $4",
             )
             .bind(channel)
             .bind(upto)
             .bind(now)
+            .bind(read_cursor)
             .execute(pool)
             .await?;
         }
         Err(err) => {
             tracing::warn!(channel, error = %err, "notification failed");
-            // 積壓上限跳過的部分即使送失敗也不回頭
+            // 積壓上限跳過的部分即使送失敗也不回頭。
+            // 也比對 failures：送出途中管理員換了網址（清掉重試狀態）時，不用舊網址的失敗覆寫
             sqlx::query(
                 "UPDATE notify_channels SET last_event_id = $2, failures = failures + 1, \
-                 next_attempt_at = $3, last_error = $4, dropped = $5 WHERE channel = $1",
+                 next_attempt_at = $3, last_error = $4, dropped = $5 \
+                 WHERE channel = $1 AND last_event_id = $6 AND failures = $7",
             )
             .bind(channel)
             .bind(cursor)
             .bind(now + backoff(failures + 1))
             .bind(&err)
             .bind(dropped)
+            .bind(read_cursor)
+            .bind(failures)
             .execute(pool)
             .await?;
         }

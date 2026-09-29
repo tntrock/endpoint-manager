@@ -44,10 +44,25 @@ pub async fn send_webhook(
         .body(bytes)
         .send()
         .await
-        .map_err(|e| format!("Webhook 連線失敗：{}", e.without_url()))?;
+        .map_err(|e| format!("Webhook 連線失敗：{}", describe(e.without_url())))?;
     if res.status().is_success() {
         Ok(())
     } else {
         Err(format!("Webhook 回應 {}", res.status().as_u16()))
+    }
+}
+
+/// 錯誤本身加上底層原因（拒絕連線、DNS、TLS、逾時）；網址已先移除，原因裡沒有網址或密鑰。
+fn describe(e: reqwest::Error) -> String {
+    let mut causes = vec![];
+    let mut src = std::error::Error::source(&e);
+    while let Some(s) = src {
+        causes.push(s.to_string());
+        src = s.source();
+    }
+    if causes.is_empty() {
+        e.to_string()
+    } else {
+        format!("{e}（{}）", causes.join("："))
     }
 }

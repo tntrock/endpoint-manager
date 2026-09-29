@@ -32,8 +32,9 @@ pub struct ViolationFilter {
     pub group: String,
     #[serde(default)]
     pub q: String,
+    /// 文字：格式不對時當第 1 頁，不回 axum 的英文錯誤
     #[serde(default)]
-    pub page: i64,
+    pub page: String,
 }
 
 impl ViolationFilter {
@@ -154,7 +155,7 @@ pub async fn violations(
     AdminSession(s): AdminSession,
     Query(f): Query<ViolationFilter>,
 ) -> Result<Response, AppError> {
-    let page = f.page.clamp(0, MAX_PAGE);
+    let page = f.page.trim().parse::<i64>().unwrap_or(0).clamp(0, MAX_PAGE);
     let sql = format!(
         "{} ORDER BY v.since DESC, v.device_id, v.rule_id LIMIT $9 OFFSET $10",
         violation_select()
@@ -293,23 +294,31 @@ pub async fn overview(
     .bind(&s.groups)
     .fetch_one(&st.pool)
     .await?;
-    let rows: Vec<SummaryRow> = sqlx::query_as(
+    // 平台管理員不需要範圍條件（省掉每列違規的 EXISTS 檢查）
+    let scope = if s.all_devices() {
+        ""
+    } else {
+        "AND EXISTS (SELECT 1 FROM devices d WHERE d.id = v.device_id \
+              AND d.group_id = ANY($1::bigint[]))"
+    };
+    let sql = format!(
         "SELECT r.id, r.name, r.severity, \
            count(v.rule_id) FILTER (WHERE v.status = 'violating'), \
            count(v.rule_id) FILTER (WHERE v.status = 'unknown'), \
            count(v.rule_id) FILTER (WHERE v.status = 'exempt') \
          FROM compliance_rules r \
-         LEFT JOIN device_violations v ON v.rule_id = r.id AND EXISTS ( \
-              SELECT 1 FROM devices d WHERE d.id = v.device_id \
-              AND ($1::bool OR d.group_id = ANY($2::bigint[]))) \
+         LEFT JOIN device_violations v ON v.rule_id = r.id {scope} \
          WHERE r.enabled GROUP BY r.id \
          ORDER BY CASE r.severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, \
-                  4 DESC, r.name",
-    )
-    .bind(s.all_devices())
-    .bind(&s.groups)
-    .fetch_all(&st.pool)
-    .await?;
+                  4 DESC, r.name"
+    );
+    let q = sqlx::query_as(sqlx::AssertSqlSafe(sql));
+    let q = if s.all_devices() {
+        q
+    } else {
+        q.bind(&s.groups)
+    };
+    let rows: Vec<SummaryRow> = q.fetch_all(&st.pool).await?;
     let p = crate::compliance::worker::progress(&st.pool).await?;
     let trend: Vec<(NaiveDate, i64)> = if s.all_devices() {
         sqlx::query_as(
@@ -502,6 +511,8 @@ struct TabFragment {
     device_id: Uuid,
     csrf: String,
     platform: bool,
+    /// 有沒有任何啟用中的規則（沒有結果時區分「沒有違規」與「還沒建規則」）
+    has_rules: bool,
     results: Vec<ResultRow>,
     exemptions: Vec<ExemptionRow>,
     events: Vec<EventRow>,
@@ -552,9 +563,14 @@ pub async fn device_tab(st: &AppState, s: &Session, id: Uuid) -> Result<Response
     } else {
         vec![]
     };
+    let has_rules: bool =
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM compliance_rules WHERE enabled)")
+            .fetch_one(&st.pool)
+            .await?;
     let summary = |d: &str| summarize(&serde_json::from_str(d).unwrap_or_default());
     Ok(render(&TabFragment {
         device_id: id,
+        has_rules,
         csrf: s.csrf.clone(),
         platform: s.all_devices(),
         results: results
@@ -605,9 +621,13 @@ pub async fn device_tab(st: &AppState, s: &Session, id: Uuid) -> Result<Response
 #[derive(Deserialize)]
 pub struct ExemptionForm {
     csrf: String,
-    rule_id: i64,
+    #[serde(default)]
+    rule_id: String,
+    #[serde(default)]
     reason: String,
-    days: i64,
+    /// 文字：格式不對時回中文訊息，不回 axum 的英文錯誤
+    #[serde(default)]
+    days: String,
 }
 
 pub async fn create_exemption(
@@ -620,13 +640,23 @@ pub async fn create_exemption(
     if !s.all_devices() {
         return Err(forbidden());
     }
+    let max = crate::compliance::admin::MAX_EXEMPTION_DAYS;
     let days = f
         .days
-        .clamp(1, crate::compliance::admin::MAX_EXEMPTION_DAYS);
+        .trim()
+        .parse::<i64>()
+        .ok()
+        .filter(|d| (1..=max).contains(d))
+        .ok_or_else(|| action_error(anyhow::anyhow!("有效天數須為 1–{max} 的整數")))?;
+    let rule_id = f
+        .rule_id
+        .trim()
+        .parse::<i64>()
+        .map_err(|_| action_error(anyhow::anyhow!("請選擇規則")))?;
     crate::compliance::admin::create_exemption(
         &st.pool,
         id,
-        f.rule_id,
+        rule_id,
         &f.reason,
         Utc::now() + chrono::Duration::days(days),
         &s.username,

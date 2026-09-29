@@ -1,5 +1,5 @@
 <h3>目前結果</h3>
-{% if results.is_empty() %}<p class="muted">沒有違規。</p>{% else %}
+{% if results.is_empty() %}<p class="muted">{% if has_rules %}目前沒有違規。{% else %}尚未建立任何合規規則。{% endif %}</p>{% else %}
 <table>
   <tr><th>規則</th><th>嚴重度</th><th>狀態</th><th>細節</th><th>開始時間</th></tr>
   {% for r in results %}<tr><td>{{ r.rule }}</td><td><span class="sev {{ r.severity_class }}">{{ r.severity }}</span></td><td>{{ r.status }}</td><td>{{ r.summary }}</td><td>{{ r.since }}</td></tr>{% endfor %}

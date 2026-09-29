@@ -528,3 +528,49 @@ async fn recompute_skips_failing_device(pool: PgPool) {
     assert_eq!(violations(&s, &good).await, vec![(id, "violating".into())]);
     assert!(!worker::progress(&s.pool).await.unwrap().running);
 }
+
+/// 核准重新註冊時不能與「寫入違規時外鍵取得的 KEY SHARE 鎖」互等：
+/// 舊裝置的 Agent 正在上傳評估（持有 KEY SHARE）時，核准不能被卡住
+#[sqlx::test(migrations = false)]
+async fn approve_is_not_blocked_by_key_share(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let t = s.create_token(2).await;
+    let old = s.enroll_ok(&t, Some("UUID-K"), Some("SN-K")).await;
+    let new = s.enroll_ok(&t, Some("UUID-K"), Some("SN-K")).await;
+    let mut holder = s.pool.begin().await.unwrap();
+    sqlx::query("SELECT 1 FROM devices WHERE id = $1 FOR KEY SHARE")
+        .bind(old.device_id)
+        .execute(&mut *holder)
+        .await
+        .unwrap();
+    // 用 lock_timeout 判斷「在等鎖」，不受機器快慢影響
+    let mut tx = s.pool.begin().await.unwrap();
+    sqlx::query("SET LOCAL lock_timeout = '2s'")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let r = endpoint_server::devices::approve_in(&mut tx, new.device_id, "admin").await;
+    holder.rollback().await.unwrap();
+    assert!(r.is_ok(), "核准被 KEY SHARE 鎖卡住：{:#}", r.unwrap_err());
+    tx.commit().await.unwrap();
+}
+
+/// 每日快照要包含沒有違規的啟用規則（趨勢圖顯示 0 而不是缺一天）
+#[sqlx::test(migrations = false)]
+async fn daily_snapshot_includes_rules_without_violations(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let rule = admin::create_rule(&s.pool, &kb_rule("KB5031455"), "admin")
+        .await
+        .unwrap();
+    let today = chrono::Utc::now().date_naive();
+    worker::snapshot_daily(&s.pool, today).await.unwrap();
+    let row: Option<(i32, i32, i32)> = sqlx::query_as(
+        "SELECT violating, unknown, exempt FROM compliance_daily WHERE day = $1 AND rule_id = $2",
+    )
+    .bind(today)
+    .bind(rule)
+    .fetch_optional(&s.pool)
+    .await
+    .unwrap();
+    assert_eq!(row, Some((0, 0, 0)));
+}

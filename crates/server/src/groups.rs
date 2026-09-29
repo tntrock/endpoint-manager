@@ -89,7 +89,8 @@ pub async fn delete(pool: &PgPool, id: i64, actor: &str) -> anyhow::Result<()> {
     let (devices, tokens, admins, rules) = usage(&mut tx, id).await?;
     anyhow::ensure!(
         devices == 0 && tokens == 0 && admins == 0 && rules == 0,
-        "群組內還有 {devices} 台裝置、{tokens} 把有效金鑰、{admins} 位管理員，         並被 {rules} 條規則引用，無法刪除"
+        "群組內還有 {devices} 台裝置、{tokens} 把有效金鑰、{admins} 位管理員，\
+         並被 {rules} 條規則引用，無法刪除"
     );
     let mut ungrouped = vec![];
     for sql in [
@@ -161,6 +162,9 @@ mod tests {
         assert_eq!(usage(&mut c, g).await.unwrap().3, 1);
         drop(c);
         let err = delete(&pool, g, "t").await.unwrap_err();
-        assert!(format!("{err:#}").contains("1 條規則"), "{err:#}");
+        assert!(
+            format!("{err:#}").contains("位管理員，並被 1 條規則"),
+            "{err:#}"
+        );
     }
 }
