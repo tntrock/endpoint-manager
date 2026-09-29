@@ -242,6 +242,18 @@ pub async fn refresh_device_in(
         .bind(id)
         .execute(&mut *conn)
         .await?;
+    // 呼叫端的規則集可能在等鎖期間過期（例如背景重算已用新規則處理過這台）：
+    // 取得鎖後再確認一次，過期就重新載入，避免把已停用規則的結果寫回去
+    let current: i64 = sqlx::query_scalar("SELECT generation FROM compliance_state")
+        .fetch_one(&mut *conn)
+        .await?;
+    let fresh;
+    let rules = if current == rules.generation {
+        rules
+    } else {
+        fresh = load_ruleset(conn).await?;
+        &fresh
+    };
     let Some(facts) = load_facts(conn, id).await? else {
         return Ok(());
     };
@@ -257,6 +269,6 @@ pub async fn refresh_device(pool: &PgPool, rules: &RuleSet, id: Uuid) -> Result<
 
 /// 重新載入規則再評估（裝置生命週期與豁免變更用，頻率低，不走快取）。
 pub async fn refresh_device_fresh(conn: &mut PgConnection, id: Uuid) -> Result<(), sqlx::Error> {
-    let rules = load_ruleset(conn).await?;
-    refresh_device_in(conn, &rules, id).await
+    // generation 不符會在 refresh_device_in 取鎖後載入最新規則
+    refresh_device_in(conn, &RuleSet::empty(), id).await
 }

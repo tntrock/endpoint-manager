@@ -49,7 +49,10 @@ pub async fn recompute_step(pool: &PgPool) -> Result<bool, sqlx::Error> {
     .fetch_all(pool)
     .await?;
     for id in &ids {
-        refresh_device(pool, &rules, *id).await?;
+        // 單台失敗只記錄、不中斷：否則游標永遠卡在這台，之後的裝置都不會重算
+        if let Err(e) = refresh_device(pool, &rules, *id).await {
+            tracing::error!(device_id = %id, error = %e, "compliance recompute failed for device");
+        }
     }
     if (ids.len() as i64) < BATCH {
         // 用 run_generation（不是現在的 generation）：途中又有變更時 done 仍落後，下一輪從頭來

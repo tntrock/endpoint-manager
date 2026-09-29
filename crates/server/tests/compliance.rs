@@ -452,3 +452,79 @@ async fn daily_snapshot_and_history_cleanup(pool: PgPool) {
         .unwrap();
     assert_eq!(worker::cleanup_history(&s.pool).await.unwrap(), 1);
 }
+
+/// 上傳評估拿到舊規則集（背景重算已先處理過這台）時，不能把已停用規則的違規寫回去
+#[sqlx::test(migrations = false)]
+async fn stale_ruleset_is_reloaded_under_lock(pool: PgPool) {
+    let (s, a) = setup(pool).await;
+    let id = admin::create_rule(&s.pool, &kb_rule("KB5031455"), "admin")
+        .await
+        .unwrap();
+    put(&s, &a, InventoryPayload::Patches(vec![])).await;
+    let stale = {
+        let mut c = s.pool.acquire().await.unwrap();
+        endpoint_server::compliance::store::load_ruleset(&mut c)
+            .await
+            .unwrap()
+    };
+    let mut off = kb_rule("KB5031455");
+    off.enabled = false;
+    admin::update_rule(&s.pool, id, &off, "admin")
+        .await
+        .unwrap();
+    worker::recompute_all(&s.pool).await.unwrap();
+    assert!(violations(&s, &a).await.is_empty());
+    endpoint_server::compliance::store::refresh_device(&s.pool, &stale, a.device_id)
+        .await
+        .unwrap();
+    assert!(violations(&s, &a).await.is_empty(), "不能用舊規則寫回違規");
+}
+
+/// 刪除規則也要寫「→ none」事件，歷程與通知才知道違規已結束
+#[sqlx::test(migrations = false)]
+async fn deleting_rule_records_resolution(pool: PgPool) {
+    let (s, a) = setup(pool).await;
+    let id = admin::create_rule(&s.pool, &kb_rule("KB5031455"), "admin")
+        .await
+        .unwrap();
+    put(&s, &a, InventoryPayload::Patches(vec![])).await;
+    admin::delete_rule(&s.pool, id, "admin").await.unwrap();
+    assert_eq!(
+        events(&s, &a).await.last().unwrap(),
+        &("violating".to_string(), "none".to_string())
+    );
+}
+
+/// 單台裝置評估失敗不能卡住整個重算
+#[sqlx::test(migrations = false)]
+async fn recompute_skips_failing_device(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(2).await;
+    let bad = s.enroll_ok(&tok, None, None).await;
+    let good = s.enroll_ok(&tok, None, None).await;
+    for a in [&bad, &good] {
+        put(&s, a, InventoryPayload::Patches(vec![])).await;
+    }
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "CREATE FUNCTION fail_one() RETURNS trigger AS $$ BEGIN \
+           IF NEW.device_id = '{}' THEN RAISE EXCEPTION 'boom'; END IF; RETURN NEW; \
+         END $$ LANGUAGE plpgsql",
+        bad.device_id
+    )))
+    .execute(&s.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "CREATE TRIGGER fail_one BEFORE INSERT ON device_violations \
+         FOR EACH ROW EXECUTE FUNCTION fail_one()",
+    )
+    .execute(&s.pool)
+    .await
+    .unwrap();
+    let id = admin::create_rule(&s.pool, &kb_rule("KB5031455"), "admin")
+        .await
+        .unwrap();
+    worker::recompute_all(&s.pool).await.unwrap();
+    assert_eq!(violations(&s, &good).await, vec![(id, "violating".into())]);
+    assert!(!worker::progress(&s.pool).await.unwrap().running);
+}
