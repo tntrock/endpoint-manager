@@ -10,7 +10,7 @@ use anyhow::Context;
 use chrono::Utc;
 use protocol::{
     CheckinRequest, CollectionIntervals, EnrollRequest, InventoryPayload, InventoryUpload,
-    RenewRequest, SCHEMA_VERSION, Section,
+    RegistryQuery, RenewRequest, SCHEMA_VERSION, Section,
 };
 use tokio::sync::{mpsc, watch};
 
@@ -30,6 +30,15 @@ pub const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub enum Cycle {
     Next(Duration),
     Stop,
+}
+
+/// 伺服器確認支援前只收集第三期以前的區段：舊版伺服器看到不認識的區段會讓整個報到失敗。
+pub fn sections_to_collect(supported: bool) -> Vec<Section> {
+    if supported {
+        Section::ALL.to_vec()
+    } else {
+        Section::LEGACY.to_vec()
+    }
 }
 
 /// 伺服器要求、手上有資料、且不是「同一份內容已被拒絕」的區段。
@@ -62,6 +71,13 @@ pub struct Agent<C: Collector> {
     backing_off: bool,
     /// 上一次取得心跳資訊失敗的訊息：相同錯誤不重複寫入事件檢視器
     heartbeat_error: Option<String>,
+    /// 伺服器在報到回應中表明支援 security／registry 區段（有 registry_queries_hash）
+    server_supports_config: bool,
+    /// 伺服器下發的登錄檔查詢清單與它的雜湊
+    registry_queries: Vec<RegistryQuery>,
+    registry_hash: Option<String>,
+    /// 上一次「伺服器不認識新區段」的訊息：只記錄一次
+    unsupported_error: Option<String>,
 }
 
 /// 錯誤訊息和上次不同才需要記錄（避免每分鐘重複寫入事件檢視器）。
@@ -115,6 +131,10 @@ impl<C: Collector> Agent<C> {
             inflight: HashMap::new(),
             backing_off: false,
             heartbeat_error: None,
+            server_supports_config: false,
+            registry_queries: vec![],
+            registry_hash: None,
+            unsupported_error: None,
         })
     }
 
@@ -201,8 +221,22 @@ impl<C: Collector> Agent<C> {
 
     async fn collect_due(&mut self) {
         let now = Instant::now();
-        for s in self.schedule.due(now, &self.intervals) {
-            match self.blocking(s.as_str(), move |c| c.collect(s)).await {
+        let allowed = sections_to_collect(self.server_supports_config);
+        let due: Vec<Section> = self
+            .schedule
+            .due(now, &self.intervals)
+            .into_iter()
+            .filter(|s| allowed.contains(s))
+            .collect();
+        for s in due {
+            let queries = self.registry_queries.clone();
+            let result = if s == Section::Registry {
+                self.blocking(s.as_str(), move |c| c.collect_registry(&queries))
+                    .await
+            } else {
+                self.blocking(s.as_str(), move |c| c.collect(s)).await
+            };
+            match result {
                 Ok(mut p) => {
                     sanitize(&mut p);
                     let still_rejected = self.state.rejected.get(&s) == Some(&p.canonical_hash());
@@ -277,9 +311,12 @@ impl<C: Collector> Agent<C> {
             }
         };
 
+        // 伺服器不支援時，快取裡的新區段（例如伺服器降版前收集的）不回報
+        let allowed = sections_to_collect(self.server_supports_config);
         let hashes: BTreeMap<Section, String> = self
             .cache
             .iter()
+            .filter(|(s, _)| allowed.contains(s))
             .map(|(s, p)| (*s, p.canonical_hash()))
             .collect();
         let req = CheckinRequest {
@@ -289,7 +326,12 @@ impl<C: Collector> Agent<C> {
             logged_on_user: hb.logged_on_user.as_deref().map(clean),
             ip_addresses: hb.ip_addresses.iter().map(|i| clean(i)).collect(),
             section_hashes: hashes.clone(),
-            section_errors: self.errors.iter().map(|(s, e)| (*s, clean(e))).collect(),
+            section_errors: self
+                .errors
+                .iter()
+                .filter(|(s, _)| allowed.contains(s))
+                .map(|(s, e)| (*s, clean(e)))
+                .collect(),
         };
         let resp = match client.checkin(&req).await {
             Ok(r) => r,
@@ -309,6 +351,15 @@ impl<C: Collector> Agent<C> {
         self.backoff.reset();
         self.backing_off = false;
         self.intervals = resp.collection_intervals.clone();
+        if let Some(h) = &resp.registry_queries_hash {
+            self.server_supports_config = true;
+            if self.registry_hash.as_ref() != Some(h) {
+                // 清單變了：下一輪收集（收集在報到之前，這一輪已經收過了）
+                self.registry_queries = resp.registry_queries.clone();
+                self.registry_hash = Some(h.clone());
+                self.schedule.trigger(Section::Registry);
+            }
+        }
 
         let rejected_before = self.state.rejected.clone();
         for s in plan_uploads(&resp.request_sections, &hashes, &self.state.rejected) {
@@ -319,6 +370,20 @@ impl<C: Collector> Agent<C> {
             match client.upload(&up).await {
                 Ok(()) => {
                     self.state.rejected.remove(&s);
+                }
+                Err(ClientError::Rejected(400, msg))
+                    if matches!(s, Section::Security | Section::Registry)
+                        && msg.contains("unknown section") =>
+                {
+                    // 伺服器其實不認得新區段（降版或設定錯誤）：停止回報，直到伺服器再次表明支援
+                    if error_changed(self.unsupported_error.as_ref(), &msg) {
+                        tracing::warn!(section = s.as_str(), %msg, "server does not support config sections");
+                    }
+                    self.unsupported_error = Some(msg);
+                    self.server_supports_config = false;
+                    self.cache.remove(&Section::Security);
+                    self.cache.remove(&Section::Registry);
+                    self.registry_hash = None;
                 }
                 Err(ClientError::Rejected(code, msg)) => {
                     tracing::warn!(section = s.as_str(), code, %msg, "section rejected by server");
@@ -450,6 +515,12 @@ mod tests {
             );
             assert_eq!(seen, vec![Section::Software], "變更都要記下");
         }
+    }
+
+    #[test]
+    fn legacy_sections_only_until_supported() {
+        assert_eq!(sections_to_collect(false), Section::LEGACY.to_vec());
+        assert_eq!(sections_to_collect(true), Section::ALL.to_vec());
     }
 
     #[test]

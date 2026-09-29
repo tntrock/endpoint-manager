@@ -189,6 +189,15 @@ impl Collector for WindowsCollector {
         })
     }
 
+    fn collect_registry(
+        &self,
+        queries: &[protocol::RegistryQuery],
+    ) -> anyhow::Result<InventoryPayload> {
+        Ok(InventoryPayload::Registry(super::registry::read_values(
+            queries,
+        )))
+    }
+
     fn collect(&self, section: Section) -> anyhow::Result<InventoryPayload> {
         if section == Section::Software {
             return Ok(InventoryPayload::Software(
