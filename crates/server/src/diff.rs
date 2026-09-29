@@ -7,6 +7,8 @@
 //! | software | `name\|arch\|publisher`    | 同 key 所有版本排序後以 `, ` 串接 | install_date |
 //! | patches  | kb                         | installed_on                  | —            |
 //! | services | name                       | `start_mode\|binary_path`     | state        |
+//! | security | `firewall.*`、`bitlocker:<磁碟>`、`defender.*`、`password.*`、`admin:<名稱>`；收集失敗時為項目名 | 值；失敗時 `error: <訊息>` | 病毒碼時間只到日 |
+//! | registry | `<路徑>\<名稱>`             | `state\|kind\|data`            | —            |
 
 use std::collections::BTreeMap;
 
@@ -81,6 +83,69 @@ pub fn items_of(p: &InventoryPayload) -> BTreeMap<String, String> {
                 ));
             }
         }
+        InventoryPayload::Security(s) => {
+            use protocol::Probe;
+            fn probe<T>(
+                pairs: &mut Vec<(String, String)>,
+                name: &str,
+                p: &Probe<T>,
+                f: impl FnOnce(&T, &mut Vec<(String, String)>),
+            ) {
+                match p {
+                    Probe::Ok(v) => f(v, pairs),
+                    Probe::Error(e) => pairs.push((name.into(), format!("error: {e}"))),
+                }
+            }
+            probe(&mut pairs, "firewall", &s.firewall, |f, out| {
+                out.push(("firewall.domain".into(), f.domain.to_string()));
+                out.push(("firewall.private".into(), f.private.to_string()));
+                out.push(("firewall.public".into(), f.public.to_string()));
+            });
+            probe(&mut pairs, "bitlocker", &s.bitlocker, |v, out| {
+                for d in v {
+                    out.push((format!("bitlocker:{}", d.drive), d.protected.to_string()));
+                }
+            });
+            probe(&mut pairs, "defender", &s.defender, |d, out| {
+                out.push(("defender.active".into(), d.active.to_string()));
+                out.push(("defender.realtime".into(), d.realtime.to_string()));
+                out.push(("defender.tamper".into(), d.tamper.to_string()));
+                // 只記到日：病毒碼每天更新多次，不要每次都寫一筆變更
+                let day = d
+                    .signature_updated
+                    .map(|t| t.format("%Y-%m-%d").to_string())
+                    .unwrap_or_default();
+                out.push(("defender.signature_updated".into(), day));
+            });
+            probe(&mut pairs, "password", &s.password, |p, out| {
+                out.push(("password.min_length".into(), p.min_length.to_string()));
+                out.push(("password.max_age_days".into(), p.max_age_days.to_string()));
+                out.push((
+                    "password.lockout_threshold".into(),
+                    p.lockout_threshold.to_string(),
+                ));
+            });
+            probe(&mut pairs, "admins", &s.admins, |v, out| {
+                for a in v {
+                    out.push((format!("admin:{}", a.name), a.sid.clone()));
+                }
+            });
+        }
+        InventoryPayload::Registry(v) => {
+            for r in v {
+                let state = serde_json::to_value(r.state).expect("serializable");
+                let kind = serde_json::to_value(r.kind).expect("serializable");
+                pairs.push((
+                    format!("{}\\{}", r.path, r.name),
+                    format!(
+                        "{}|{}|{}",
+                        state.as_str().unwrap_or(""),
+                        kind.as_str().unwrap_or(""),
+                        r.data
+                    ),
+                ));
+            }
+        }
     }
     let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (k, v) in pairs {
@@ -131,6 +196,47 @@ pub fn diff(old: &BTreeMap<String, String>, new: &BTreeMap<String, String>) -> V
 mod tests {
     use super::*;
     use protocol::{Arch, InventoryPayload, SoftwareItem};
+
+    #[test]
+    fn security_items_flatten_probes() {
+        let p = InventoryPayload::Security(protocol::SecurityInfo {
+            firewall: protocol::Probe::Ok(protocol::FirewallInfo {
+                domain: true,
+                private: false,
+                public: true,
+            }),
+            bitlocker: protocol::Probe::Error("x".into()),
+            defender: protocol::Probe::Ok(protocol::DefenderInfo {
+                active: true,
+                realtime: false,
+                tamper: true,
+                signature_updated: None,
+            }),
+            password: protocol::Probe::Ok(protocol::PasswordPolicy {
+                min_length: 8,
+                max_age_days: 0,
+                lockout_threshold: 0,
+            }),
+            admins: protocol::Probe::Ok(vec![protocol::AccountInfo {
+                name: "PC\\A".into(),
+                sid: "S-1".into(),
+            }]),
+        });
+        let m = items_of(&p);
+        assert_eq!(m["firewall.private"], "false");
+        assert_eq!(m["bitlocker"], "error: x");
+        assert_eq!(m["defender.realtime"], "false");
+        assert_eq!(m["password.min_length"], "8");
+        assert_eq!(m["admin:PC\\A"], "S-1");
+        let r = InventoryPayload::Registry(vec![protocol::RegistryValue {
+            path: "HKLM\\X".into(),
+            name: "Y".into(),
+            state: protocol::RegState::Present,
+            kind: protocol::RegKind::Dword,
+            data: "1".into(),
+        }]);
+        assert_eq!(items_of(&r)["HKLM\\X\\Y"], "present|dword|1");
+    }
 
     fn sw(name: &str, ver: &str) -> SoftwareItem {
         SoftwareItem {

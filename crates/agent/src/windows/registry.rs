@@ -1,6 +1,6 @@
 //! 讀取 Uninstall 機碼：HKLM 64／32 位元與已載入的使用者設定檔（HKU）。
 
-use protocol::{Arch, SoftwareItem};
+use protocol::{Arch, RegKind, RegState, RegistryQuery, RegistryValue, SoftwareItem};
 use winreg::RegKey;
 use winreg::enums::{HKEY_LOCAL_MACHINE, HKEY_USERS, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY};
 
@@ -44,4 +44,48 @@ pub fn read_all_software() -> Vec<SoftwareItem> {
         items.extend(to_items(&read_entries(&hku, &path, 0), Arch::User));
     }
     items
+}
+
+/// 依伺服器下發的清單讀取 HKLM 值。守衛（`regpath::check`）在 Agent 端執行：
+/// 伺服器被入侵也讀不到 SAM、SECURITY 與自動登入密碼。超過硬上限的查詢忽略。
+pub fn read_values(queries: &[RegistryQuery]) -> Vec<RegistryValue> {
+    if queries.len() > protocol::MAX_REGISTRY_VALUES
+        && super::collect::first_report("registry-cap", &queries.len().to_string())
+    {
+        tracing::warn!(
+            count = queries.len(),
+            max = protocol::MAX_REGISTRY_VALUES,
+            "too many registry queries; extra ones ignored"
+        );
+    }
+    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+    queries
+        .iter()
+        .take(protocol::MAX_REGISTRY_VALUES)
+        .map(|q| {
+            let mut v = RegistryValue {
+                path: q.path.clone(),
+                name: q.name.clone(),
+                state: RegState::Denied,
+                kind: RegKind::None,
+                data: String::new(),
+            };
+            let Ok(path) = protocol::regpath::check(&q.path, &q.name) else {
+                return v;
+            };
+            let sub = path
+                .strip_prefix("HKLM\\")
+                .expect("normalized path starts with HKLM");
+            v.state = RegState::Absent;
+            if let Ok(key) = hklm.open_subkey_with_flags(sub, KEY_READ | KEY_WOW64_64KEY)
+                && let Ok(raw) = key.get_raw_value(&q.name)
+            {
+                let (kind, data) = crate::regvalue::render(raw.vtype as u32, &raw.bytes);
+                v.state = RegState::Present;
+                v.kind = kind;
+                v.data = data;
+            }
+            v
+        })
+        .collect()
 }

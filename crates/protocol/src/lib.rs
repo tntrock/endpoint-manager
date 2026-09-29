@@ -1,5 +1,7 @@
 //! Agent 與伺服器之間的共用訊息格式。
 
+pub mod regpath;
+
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
@@ -19,10 +21,24 @@ pub enum Section {
     Software,
     Patches,
     Services,
+    Security,
+    Registry,
 }
 
 impl Section {
-    pub const ALL: [Section; 5] = [
+    pub const ALL: [Section; 7] = [
+        Section::Basic,
+        Section::Hardware,
+        Section::Software,
+        Section::Patches,
+        Section::Services,
+        Section::Security,
+        Section::Registry,
+    ];
+
+    /// 第三期以前就有的區段：新版 Agent 在確認伺服器支援前只回報這些
+    /// （舊版伺服器看到不認識的區段會讓整個報到失敗）
+    pub const LEGACY: [Section; 5] = [
         Section::Basic,
         Section::Hardware,
         Section::Software,
@@ -37,6 +53,8 @@ impl Section {
             Section::Software => "software",
             Section::Patches => "patches",
             Section::Services => "services",
+            Section::Security => "security",
+            Section::Registry => "registry",
         }
     }
 
@@ -80,6 +98,15 @@ pub struct CollectionIntervals {
     pub patches_secs: u32,
     pub services_secs: u32,
     pub hardware_secs: u32,
+    /// 舊版伺服器沒有這兩個欄位：預設每小時
+    #[serde(default = "default_hourly")]
+    pub security_secs: u32,
+    #[serde(default = "default_hourly")]
+    pub registry_secs: u32,
+}
+
+fn default_hourly() -> u32 {
+    3600
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -88,6 +115,12 @@ pub struct CheckinResponse {
     pub request_sections: Vec<Section>,
     pub collection_intervals: CollectionIntervals,
     pub renew_certificate: bool,
+    /// 伺服器要 Agent 讀取的登錄檔值（由啟用中的登錄檔規則彙總）
+    #[serde(default)]
+    pub registry_queries: Vec<RegistryQuery>,
+    /// 查詢清單的雜湊；有這個欄位表示伺服器支援 security／registry 區段
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry_queries_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -167,6 +200,101 @@ pub struct ServiceItem {
     pub binary_path: Option<String>,
 }
 
+/// Agent 端一次最多讀取的登錄檔值（硬上限；伺服器的設定上限不會超過這個數字）
+pub const MAX_REGISTRY_VALUES: usize = 5000;
+
+/// 單一項安全資訊的收集結果：失敗時帶錯誤訊息，不影響其他項
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Probe<T> {
+    Ok(T),
+    Error(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct FirewallInfo {
+    pub domain: bool,
+    pub private: bool,
+    pub public: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct VolumeInfo {
+    pub drive: String,
+    pub is_system: bool,
+    pub protected: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct DefenderInfo {
+    /// Defender 是作用中的防毒（被第三方防毒取代時為 false）
+    pub active: bool,
+    pub realtime: bool,
+    pub tamper: bool,
+    pub signature_updated: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct PasswordPolicy {
+    pub min_length: u32,
+    /// 0 表示永不過期
+    pub max_age_days: u32,
+    /// 0 表示不鎖定
+    pub lockout_threshold: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct AccountInfo {
+    pub name: String,
+    pub sid: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct SecurityInfo {
+    pub firewall: Probe<FirewallInfo>,
+    pub bitlocker: Probe<Vec<VolumeInfo>>,
+    pub defender: Probe<DefenderInfo>,
+    pub password: Probe<PasswordPolicy>,
+    pub admins: Probe<Vec<AccountInfo>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct RegistryQuery {
+    pub path: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RegState {
+    Present,
+    Absent,
+    /// 被 Agent 的拒絕清單擋下，沒有讀取
+    Denied,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RegKind {
+    Dword,
+    Qword,
+    String,
+    ExpandString,
+    MultiString,
+    Binary,
+    Other,
+    None,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct RegistryValue {
+    pub path: String,
+    pub name: String,
+    pub state: RegState,
+    pub kind: RegKind,
+    pub data: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "section", content = "data", rename_all = "lowercase")]
 pub enum InventoryPayload {
@@ -175,6 +303,8 @@ pub enum InventoryPayload {
     Software(Vec<SoftwareItem>),
     Patches(Vec<PatchItem>),
     Services(Vec<ServiceItem>),
+    Security(SecurityInfo),
+    Registry(Vec<RegistryValue>),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -213,6 +343,8 @@ impl InventoryPayload {
             InventoryPayload::Software(_) => Section::Software,
             InventoryPayload::Patches(_) => Section::Patches,
             InventoryPayload::Services(_) => Section::Services,
+            InventoryPayload::Security(_) => Section::Security,
+            InventoryPayload::Registry(_) => Section::Registry,
         }
     }
 
@@ -224,6 +356,15 @@ impl InventoryPayload {
             InventoryPayload::Software(v) => v.sort(),
             InventoryPayload::Patches(v) => v.sort(),
             InventoryPayload::Services(v) => v.sort(),
+            InventoryPayload::Security(s) => {
+                if let Probe::Ok(v) = &mut s.bitlocker {
+                    v.sort();
+                }
+                if let Probe::Ok(v) = &mut s.admins {
+                    v.sort();
+                }
+            }
+            InventoryPayload::Registry(v) => v.sort(),
         }
     }
 
@@ -242,6 +383,13 @@ impl InventoryPayload {
             InventoryPayload::Software(v) => v.len(),
             InventoryPayload::Patches(v) => v.len(),
             InventoryPayload::Services(v) => v.len(),
+            InventoryPayload::Security(_) => 1,
+            InventoryPayload::Registry(v) => {
+                if v.len() > MAX_REGISTRY_VALUES {
+                    return Err(ValidationError::TooManyItems { count: v.len() });
+                }
+                v.len()
+            }
         };
         if count > MAX_ITEMS {
             return Err(ValidationError::TooManyItems { count });
@@ -318,6 +466,58 @@ mod tests {
             basic(Some(4317)).canonical_hash(),
             basic(None).canonical_hash()
         );
+    }
+
+    #[test]
+    fn old_checkin_response_still_parses_and_new_fields_default() {
+        let v = serde_json::json!({
+            "next_checkin_seconds": 60, "request_sections": ["basic"],
+            "collection_intervals": {"software_secs": 1, "patches_secs": 1,
+                                     "services_secs": 1, "hardware_secs": 1},
+            "renew_certificate": false
+        });
+        let r: CheckinResponse = serde_json::from_value(v).unwrap();
+        assert!(r.registry_queries.is_empty() && r.registry_queries_hash.is_none());
+        assert_eq!(
+            (
+                r.collection_intervals.security_secs,
+                r.collection_intervals.registry_secs
+            ),
+            (3600, 3600)
+        );
+    }
+
+    #[test]
+    fn security_probe_serializes_as_ok_or_error() {
+        let p: Probe<FirewallInfo> = Probe::Error("boom".into());
+        assert_eq!(
+            serde_json::to_value(&p).unwrap(),
+            serde_json::json!({"error": "boom"})
+        );
+        let p = Probe::Ok(FirewallInfo {
+            domain: true,
+            private: false,
+            public: true,
+        });
+        assert_eq!(serde_json::to_value(&p).unwrap()["ok"]["private"], false);
+        assert_eq!(
+            serde_json::to_value(RegKind::ExpandString).unwrap(),
+            "expand_string"
+        );
+    }
+
+    #[test]
+    fn registry_upload_is_capped() {
+        let v = (0..=MAX_REGISTRY_VALUES)
+            .map(|i| RegistryValue {
+                path: r"HKLM\X".into(),
+                name: i.to_string(),
+                state: RegState::Absent,
+                kind: RegKind::None,
+                data: String::new(),
+            })
+            .collect();
+        assert!(InventoryPayload::Registry(v).validate().is_err());
     }
 
     #[test]

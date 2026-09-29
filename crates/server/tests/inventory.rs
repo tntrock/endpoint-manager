@@ -288,3 +288,73 @@ async fn basic_ubr_roundtrip(pool: PgPool) {
         "讀回的內容與上傳一致"
     );
 }
+
+fn sec(public: bool) -> InventoryPayload {
+    InventoryPayload::Security(protocol::SecurityInfo {
+        firewall: protocol::Probe::Ok(protocol::FirewallInfo {
+            domain: true,
+            private: true,
+            public,
+        }),
+        bitlocker: protocol::Probe::Ok(vec![protocol::VolumeInfo {
+            drive: "C:".into(),
+            is_system: true,
+            protected: true,
+        }]),
+        defender: protocol::Probe::Error("inactive".into()),
+        password: protocol::Probe::Ok(protocol::PasswordPolicy {
+            min_length: 12,
+            max_age_days: 0,
+            lockout_threshold: 5,
+        }),
+        admins: protocol::Probe::Ok(vec![protocol::AccountInfo {
+            name: r"PC\Administrator".into(),
+            sid: "S-1-5-21-1-500".into(),
+        }]),
+    })
+}
+
+#[sqlx::test(migrations = false)]
+async fn security_and_registry_roundtrip_with_history(pool: PgPool) {
+    let (s, a) = setup(pool).await;
+    assert_eq!(put(&s, &a, "security", &upload(sec(true))).await, 204);
+    assert_eq!(put(&s, &a, "security", &upload(sec(false))).await, 204);
+    let mut c = s.pool.acquire().await.unwrap();
+    let back =
+        endpoint_server::inventory::load_payload(&mut c, a.device_id, protocol::Section::Security)
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(back.canonical_hash(), sec(false).canonical_hash());
+    let change: (String, Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT item_key, old_value, new_value FROM inventory_changes \
+         WHERE device_id = $1 AND section = 'security'",
+    )
+    .bind(a.device_id)
+    .fetch_one(&s.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        change,
+        (
+            "firewall.public".into(),
+            Some("true".into()),
+            Some("false".into())
+        )
+    );
+
+    let reg = InventoryPayload::Registry(vec![protocol::RegistryValue {
+        path: r"HKLM\SOFTWARE\X".into(),
+        name: "Y".into(),
+        state: protocol::RegState::Present,
+        kind: protocol::RegKind::Dword,
+        data: "1".into(),
+    }]);
+    assert_eq!(put(&s, &a, "registry", &upload(reg.clone())).await, 204);
+    let back =
+        endpoint_server::inventory::load_payload(&mut c, a.device_id, protocol::Section::Registry)
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(back.canonical_hash(), reg.canonical_hash());
+}

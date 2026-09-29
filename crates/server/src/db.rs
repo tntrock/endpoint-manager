@@ -55,6 +55,8 @@ pub async fn load_settings(pool: &PgPool) -> Result<Settings, sqlx::Error> {
             patches_secs: get("patches_interval_secs", 3600, MIN_COLLECT_SECS),
             services_secs: get("services_interval_secs", 3600, MIN_COLLECT_SECS),
             hardware_secs: get("hardware_interval_secs", 86400, MIN_COLLECT_SECS),
+            security_secs: get("security_interval_secs", 3600, MIN_COLLECT_SECS),
+            registry_secs: get("registry_interval_secs", 3600, MIN_COLLECT_SECS),
         },
     })
 }

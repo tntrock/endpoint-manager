@@ -537,7 +537,13 @@ async fn approve_is_not_blocked_by_key_share(pool: PgPool) {
     let t = s.create_token(2).await;
     let old = s.enroll_ok(&t, Some("UUID-K"), Some("SN-K")).await;
     let new = s.enroll_ok(&t, Some("UUID-K"), Some("SN-K")).await;
-    let mut holder = s.pool.begin().await.unwrap();
+    // 持鎖的一方用獨立連線，不經過測試連線池：平行執行的測試共用連線上限，
+    // 同時要兩條池連線可能被餓死而逾時
+    use sqlx::Connection;
+    let mut direct = sqlx::PgConnection::connect_with(&s.pool.connect_options())
+        .await
+        .unwrap();
+    let mut holder = direct.begin().await.unwrap();
     sqlx::query("SELECT 1 FROM devices WHERE id = $1 FOR KEY SHARE")
         .bind(old.device_id)
         .execute(&mut *holder)

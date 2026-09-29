@@ -68,6 +68,8 @@ pub async fn checkin(
         request_sections: sections_to_request(&stored, &req.section_hashes),
         collection_intervals: settings.intervals,
         renew_certificate: device.cert_not_after - Utc::now() < Duration::days(RENEW_BEFORE_DAYS),
+        registry_queries: vec![],
+        registry_queries_hash: Some(protocol::regpath::queries_hash(&[])),
     }))
 }
 

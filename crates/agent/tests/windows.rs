@@ -189,7 +189,8 @@ fn collector_reports_this_machine() {
     let hb = c.heartbeat().unwrap();
     assert!(hb.boot_time < chrono::Utc::now());
 
-    for s in Section::ALL {
+    // Registry 不經 collect（走 collect_registry）
+    for s in Section::ALL.into_iter().filter(|s| *s != Section::Registry) {
         let mut p = c.collect(s).unwrap_or_else(|e| panic!("{s:?}: {e:#}"));
         sanitize(&mut p);
         assert_eq!(p.validate(), Ok(()), "{s:?}");
@@ -207,6 +208,27 @@ fn collector_reports_this_machine() {
                 assert!(v.iter().any(|s| s.name.eq_ignore_ascii_case("EventLog")))
             }
             InventoryPayload::Patches(_) => {}
+            InventoryPayload::Security(sec) => {
+                // CI 機器不一定有 BitLocker、Defender；防火牆、密碼原則、管理員一定要成功
+                assert!(
+                    matches!(sec.firewall, protocol::Probe::Ok(_)),
+                    "{:?}",
+                    sec.firewall
+                );
+                assert!(
+                    matches!(sec.password, protocol::Probe::Ok(_)),
+                    "{:?}",
+                    sec.password
+                );
+                let protocol::Probe::Ok(admins) = &sec.admins else {
+                    panic!("{:?}", sec.admins)
+                };
+                assert!(
+                    !admins.is_empty() && admins.iter().all(|a| a.sid.starts_with("S-1-")),
+                    "{admins:?}"
+                );
+            }
+            InventoryPayload::Registry(_) => unreachable!("registry 不經 collect"),
         }
     }
 }
@@ -296,4 +318,46 @@ fn configure_hardens_dir_and_writes_files() {
     unconfigure(&data).unwrap();
     assert!(!data.exists());
     unconfigure(&data).unwrap(); // 不存在也成功
+}
+
+#[test]
+fn registry_values_are_read_and_guarded() {
+    use protocol::{RegState, RegistryQuery};
+    let q = |p: &str, n: &str| RegistryQuery {
+        path: p.into(),
+        name: n.into(),
+    };
+    let v = endpoint_agent::windows::registry::read_values(&[
+        q(
+            r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion",
+            "CurrentBuild",
+        ),
+        q(
+            r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion",
+            "NoSuchValue-EM",
+        ),
+        q(r"HKLM\SAM\SAM", "C"),
+        q("hklm/sam/SAM", "C"),
+        q(
+            r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon",
+            "DefaultPassword",
+        ),
+        // Windows API 讀到 NUL 就停：守衛必須擋下，不能讀到 ProductName
+        q(
+            &format!(
+                r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion{}\x",
+                '\u{0}'
+            ),
+            "ProductName",
+        ),
+        q(
+            r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion",
+            "ProductName\u{0}junk",
+        ),
+    ]);
+    assert_eq!(v.len(), 7);
+    assert_eq!(v[0].state, RegState::Present, "{:?}", v[0]);
+    assert!(v[0].data.parse::<u32>().is_ok(), "{:?}", v[0]);
+    assert_eq!(v[1].state, RegState::Absent);
+    assert!(v[2..].iter().all(|x| x.state == RegState::Denied), "{v:?}");
 }

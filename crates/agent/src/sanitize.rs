@@ -61,6 +61,47 @@ pub fn sanitize(p: &mut InventoryPayload) {
                 fix_opt(&mut s.binary_path);
             }
         }
+        InventoryPayload::Security(s) => {
+            fn fix_probe<T>(p: &mut protocol::Probe<T>, f: impl FnOnce(&mut T)) {
+                match p {
+                    protocol::Probe::Ok(v) => f(v),
+                    protocol::Probe::Error(e) => fix(e),
+                }
+            }
+            fix_probe(&mut s.firewall, |_| {});
+            fix_probe(&mut s.defender, |_| {});
+            fix_probe(&mut s.password, |_| {});
+            fix_probe(&mut s.bitlocker, |v| {
+                v.truncate(MAX_ITEMS);
+                v.iter_mut().for_each(|d| fix(&mut d.drive));
+            });
+            fix_probe(&mut s.admins, |v| {
+                v.truncate(MAX_ITEMS);
+                for a in v {
+                    fix(&mut a.name);
+                    fix(&mut a.sid);
+                }
+            });
+        }
+        InventoryPayload::Registry(v) => {
+            v.truncate(protocol::MAX_REGISTRY_VALUES);
+            for r in v {
+                fix(&mut r.path);
+                // 值名稱可以是空字串（機碼的預設值），只移除 NUL 與截斷，不去頭尾空白
+                r.name = r
+                    .name
+                    .chars()
+                    .filter(|c| *c != '\0')
+                    .take(protocol::MAX_STRING_LEN)
+                    .collect();
+                r.data = r
+                    .data
+                    .chars()
+                    .filter(|c| *c != '\0')
+                    .take(protocol::MAX_STRING_LEN)
+                    .collect();
+            }
+        }
     }
 }
 

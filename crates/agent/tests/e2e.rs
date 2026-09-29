@@ -194,6 +194,24 @@ impl Collector for Fake {
         })
     }
 
+    fn collect_registry(
+        &self,
+        queries: &[protocol::RegistryQuery],
+    ) -> anyhow::Result<InventoryPayload> {
+        Ok(InventoryPayload::Registry(
+            queries
+                .iter()
+                .map(|q| protocol::RegistryValue {
+                    path: q.path.clone(),
+                    name: q.name.clone(),
+                    state: protocol::RegState::Present,
+                    kind: protocol::RegKind::Dword,
+                    data: "1".into(),
+                })
+                .collect(),
+        ))
+    }
+
     fn collect(&self, s: Section) -> anyhow::Result<InventoryPayload> {
         Ok(match s {
             Section::Basic => InventoryPayload::Basic(BasicInfo {
@@ -224,6 +242,30 @@ impl Collector for Fake {
                 state: "Running".into(),
                 binary_path: None,
             }]),
+            Section::Security => InventoryPayload::Security(protocol::SecurityInfo {
+                firewall: protocol::Probe::Ok(protocol::FirewallInfo {
+                    domain: true,
+                    private: true,
+                    public: false,
+                }),
+                bitlocker: protocol::Probe::Error("no BitLocker".into()),
+                defender: protocol::Probe::Ok(protocol::DefenderInfo {
+                    active: true,
+                    realtime: true,
+                    tamper: false,
+                    signature_updated: None,
+                }),
+                password: protocol::Probe::Ok(protocol::PasswordPolicy {
+                    min_length: 8,
+                    max_age_days: 42,
+                    lockout_threshold: 0,
+                }),
+                admins: protocol::Probe::Ok(vec![protocol::AccountInfo {
+                    name: r"FAKE-PC\Administrator".into(),
+                    sid: "S-1-5-21-1-500".into(),
+                }]),
+            }),
+            Section::Registry => anyhow::bail!("registry is collected via collect_registry"),
         })
     }
 }
@@ -296,6 +338,8 @@ async fn unchanged_inventory_is_not_reuploaded(pool: PgPool) {
         .await
         .unwrap()
     };
+    // 第二輪伺服器已表明支援，會上傳 security／registry；之後內容不變就不再上傳
+    next(a.run_cycle().await);
     let before = stamp().await;
     next(a.run_cycle().await);
     assert_eq!(stamp().await, before);
@@ -509,4 +553,34 @@ async fn expired_certificate_stops_agent(pool: PgPool) {
 
     let mut a = Agent::new(e.dir.path(), Fake::new()).unwrap();
     assert_eq!(a.run_cycle().await, Cycle::Stop);
+}
+
+#[sqlx::test(migrations = false)]
+async fn config_sections_start_after_server_confirms_support(pool: PgPool) {
+    let e = env(pool, 1).await;
+    let mut a = Agent::new(e.dir.path(), Fake::new()).unwrap();
+    next(a.run_cycle().await);
+    let id = a.state().device_id.unwrap();
+    let sections = || {
+        let pool = e.pool.clone();
+        async move {
+            sqlx::query_scalar::<_, String>(
+                "SELECT section FROM inventory_sections WHERE device_id = $1 ORDER BY section",
+            )
+            .bind(id)
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    assert!(
+        !sections().await.contains(&"security".to_string()),
+        "第一輪還不知道伺服器是否支援"
+    );
+    next(a.run_cycle().await);
+    let s = sections().await;
+    assert!(
+        s.contains(&"security".to_string()) && s.contains(&"registry".to_string()),
+        "{s:?}"
+    );
 }
