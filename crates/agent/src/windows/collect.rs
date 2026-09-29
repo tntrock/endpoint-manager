@@ -130,7 +130,7 @@ fn optional<T, E: std::fmt::Display>(what: &str, r: Result<Vec<T>, E>) -> Vec<T>
 static LAST_ERROR: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
 
 /// 這個查詢的這個錯誤是否還沒記錄過（記錄過就不再記，錯誤改變或恢復後才再記）。
-fn first_report(what: &str, err: &str) -> bool {
+pub(crate) fn first_report(what: &str, err: &str) -> bool {
     let mut last = LAST_ERROR.lock().unwrap_or_else(|p| p.into_inner());
     match last.iter_mut().find(|(w, _)| w == what) {
         Some((_, e)) if e == err => false,
@@ -145,7 +145,7 @@ fn first_report(what: &str, err: &str) -> bool {
     }
 }
 
-fn recovered(what: &str) {
+pub(crate) fn recovered(what: &str) {
     let mut last = LAST_ERROR.lock().unwrap_or_else(|p| p.into_inner());
     last.retain(|(w, _)| w != what);
 }

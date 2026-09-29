@@ -298,3 +298,33 @@ fn configure_hardens_dir_and_writes_files() {
     assert!(!data.exists());
     unconfigure(&data).unwrap(); // 不存在也成功
 }
+
+#[test]
+fn registry_values_are_read_and_guarded() {
+    use protocol::{RegState, RegistryQuery};
+    let q = |p: &str, n: &str| RegistryQuery {
+        path: p.into(),
+        name: n.into(),
+    };
+    let v = endpoint_agent::windows::registry::read_values(&[
+        q(
+            r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion",
+            "CurrentBuild",
+        ),
+        q(
+            r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion",
+            "NoSuchValue-EM",
+        ),
+        q(r"HKLM\SAM\SAM", "C"),
+        q("hklm/sam/SAM", "C"),
+        q(
+            r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon",
+            "DefaultPassword",
+        ),
+    ]);
+    assert_eq!(v.len(), 5);
+    assert_eq!(v[0].state, RegState::Present, "{:?}", v[0]);
+    assert!(v[0].data.parse::<u32>().is_ok(), "{:?}", v[0]);
+    assert_eq!(v[1].state, RegState::Absent);
+    assert!(v[2..].iter().all(|x| x.state == RegState::Denied), "{v:?}");
+}
