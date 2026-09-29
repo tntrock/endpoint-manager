@@ -129,6 +129,7 @@ async fn basic_section_updates_device_columns(pool: PgPool) {
         is_domain_joined: true,
         os_caption: "Windows 11 Pro".into(),
         os_build: "26100".into(),
+        os_ubr: None,
     });
     assert_eq!(put(&s, &a, "basic", &upload(p)).await, 204);
     let (h, joined): (String, bool) =
@@ -215,6 +216,7 @@ async fn nul_in_every_section_is_400(pool: PgPool) {
             is_domain_joined: false,
             os_caption: "W".into(),
             os_build: "1".into(),
+            os_ubr: None,
         }),
         InventoryPayload::Hardware(protocol::HardwareInfo {
             manufacturer: Some(nul.clone()),
@@ -254,4 +256,35 @@ async fn duplicate_patches_roundtrip_without_spurious_changes(pool: PgPool) {
         assert_eq!(put(&s, &a, "patches", &upload(p.clone())).await, 204);
     }
     assert_eq!(change_count(&s, &a).await, 0);
+}
+
+#[sqlx::test(migrations = false)]
+async fn basic_ubr_roundtrip(pool: PgPool) {
+    let (s, a) = setup(pool).await;
+    let p = InventoryPayload::Basic(protocol::BasicInfo {
+        hostname: "PC1".into(),
+        domain: None,
+        is_domain_joined: false,
+        os_caption: "Windows 11".into(),
+        os_build: "22631".into(),
+        os_ubr: Some(4317),
+    });
+    assert_eq!(put(&s, &a, "basic", &upload(p.clone())).await, 204);
+    let ubr: Option<i32> = sqlx::query_scalar("SELECT os_ubr FROM devices WHERE id = $1")
+        .bind(a.device_id)
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    assert_eq!(ubr, Some(4317));
+    let mut c = s.pool.acquire().await.unwrap();
+    let back =
+        endpoint_server::inventory::load_payload(&mut c, a.device_id, protocol::Section::Basic)
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(
+        back.canonical_hash(),
+        p.canonical_hash(),
+        "讀回的內容與上傳一致"
+    );
 }

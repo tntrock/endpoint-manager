@@ -62,6 +62,12 @@ pub async fn upload(
             .await
             .map_err(|e| AppError::Internal(e.into()))??;
     store_section(&st.pool, device.device_id, &payload, &hash).await?;
+    // 評估失敗不影響上傳：盤點已寫入，結果會在下次上傳或背景重算時補上
+    if crate::compliance::affects_compliance(section)
+        && let Err(e) = crate::compliance::refresh_after_upload(&st, device.device_id).await
+    {
+        tracing::error!(device_id = %device.device_id, error = %e, "compliance evaluation failed");
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -138,7 +144,14 @@ pub async fn store_section(
     Ok(())
 }
 
-type BasicRow = (String, Option<String>, bool, Option<String>, Option<String>);
+type BasicRow = (
+    String,
+    Option<String>,
+    bool,
+    Option<String>,
+    Option<String>,
+    Option<i32>,
+);
 type HardwareRow = (Option<String>, Option<String>, Option<String>, i64, String);
 type SoftwareRow = (
     String,
@@ -167,9 +180,9 @@ pub async fn load_payload(
     }
     let payload = match section {
         Section::Basic => {
-            let (hostname, domain, is_domain_joined, os_caption, os_build): BasicRow =
+            let (hostname, domain, is_domain_joined, os_caption, os_build, os_ubr): BasicRow =
                 sqlx::query_as(
-                    "SELECT hostname, domain, is_domain_joined, os_caption, os_build \
+                    "SELECT hostname, domain, is_domain_joined, os_caption, os_build, os_ubr \
                      FROM devices WHERE id = $1",
                 )
                 .bind(device_id)
@@ -181,6 +194,7 @@ pub async fn load_payload(
                 is_domain_joined,
                 os_caption: os_caption.unwrap_or_default(),
                 os_build: os_build.unwrap_or_default(),
+                os_ubr: os_ubr.and_then(|u| u32::try_from(u).ok()),
             })
         }
         Section::Hardware => {
@@ -269,7 +283,7 @@ async fn write_payload(
         InventoryPayload::Basic(b) => {
             sqlx::query(
                 "UPDATE devices SET hostname = $2, domain = $3, is_domain_joined = $4, \
-                 os_caption = $5, os_build = $6 WHERE id = $1",
+                 os_caption = $5, os_build = $6, os_ubr = $7 WHERE id = $1",
             )
             .bind(device_id)
             .bind(&b.hostname)
@@ -277,6 +291,7 @@ async fn write_payload(
             .bind(b.is_domain_joined)
             .bind(&b.os_caption)
             .bind(&b.os_build)
+            .bind(b.os_ubr.and_then(|u| i32::try_from(u).ok()))
             .execute(&mut *conn)
             .await?;
         }

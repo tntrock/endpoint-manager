@@ -4,6 +4,7 @@ pub mod accounts;
 pub mod audit;
 pub mod ca;
 pub mod checkin;
+pub mod compliance;
 pub mod config;
 pub mod db;
 pub mod devices;
@@ -50,6 +51,8 @@ pub struct AppState {
     pub agent_public_url: String,
     /// 伺服器憑證的名稱（下載安裝檔時檢查網址）
     pub server_names: Arc<Vec<String>>,
+    /// 合規規則快取
+    pub rules: Arc<compliance::RuleCache>,
 }
 
 impl AppState {
@@ -70,6 +73,7 @@ impl AppState {
             agent_msi: None,
             agent_public_url: String::new(),
             server_names: Arc::new(vec![]),
+            rules: Arc::new(compliance::RuleCache::new()),
         }
     }
 
@@ -161,6 +165,7 @@ pub async fn serve(cfg: config::Config) -> anyhow::Result<()> {
             }
         }
     });
+    compliance::worker::spawn(pool.clone());
 
     let listener = tokio::net::TcpListener::bind(cfg.agent_listen).await?;
     tracing::info!(addr = %cfg.agent_listen, "agent API listening");
