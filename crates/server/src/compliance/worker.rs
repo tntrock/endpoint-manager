@@ -11,9 +11,11 @@ use uuid::Uuid;
 use super::store::{load_ruleset, refresh_device, refresh_device_fresh};
 
 pub const BATCH: i64 = 1000;
-/// 全量重算時同時處理的裝置數（`EM_RECOMPUTE_CONCURRENCY`，1–32，預設 4）。
+/// 全量重算時同時處理的裝置數（`EM_RECOMPUTE_CONCURRENCY`，1–16，預設 4）。
+/// 上限為連線池（32）的一半，留連線給報到與上傳。
 /// 負載測試：8 路時重算較快，但會把資料庫佔滿，重算期間報到 p99 升到約 600ms
 pub const DEFAULT_CONCURRENCY: usize = 4;
+pub const MAX_CONCURRENCY: usize = 16;
 
 fn concurrency() -> usize {
     static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
@@ -22,7 +24,7 @@ fn concurrency() -> usize {
             .ok()
             .and_then(|v| v.trim().parse::<usize>().ok())
             .unwrap_or(DEFAULT_CONCURRENCY)
-            .clamp(1, 32)
+            .clamp(1, MAX_CONCURRENCY)
     })
 }
 pub const DEFAULT_HISTORY_DAYS: i64 = 365;
@@ -69,17 +71,34 @@ pub async fn recompute_step_with(pool: &PgPool, concurrency: usize) -> Result<bo
     .fetch_all(pool)
     .await?;
     // 整批處理完才推進游標，所以平行處理的順序不影響續跑
+    let failed = std::sync::Mutex::new(Vec::new());
     futures_util::stream::iter(&ids)
         .for_each_concurrent(concurrency.max(1), |id| {
-            let rules = &rules;
+            let (rules, failed) = (&rules, &failed);
             async move {
-                // 單台失敗只記錄、不中斷：否則游標永遠卡在這台，之後的裝置都不會重算
-                if let Err(e) = refresh_device(pool, rules, *id).await {
-                    tracing::error!(device_id = %id, error = %e, "compliance recompute failed for device");
+                if refresh_device(pool, rules, *id).await.is_err() {
+                    failed.lock().expect("failed list").push(*id);
                 }
             }
         })
         .await;
+    // 失敗的裝置（例如忙碌時取不到連線）依序重試一次；仍失敗只記錄、不中斷，
+    // 否則游標永遠卡在這台，之後的裝置都不會重算
+    let failed = failed.into_inner().expect("failed list");
+    let mut still = 0;
+    for id in &failed {
+        if let Err(e) = refresh_device(pool, &rules, *id).await {
+            still += 1;
+            tracing::error!(device_id = %id, error = %e, "compliance recompute failed for device");
+        }
+    }
+    if still > 0 {
+        tracing::warn!(
+            generation,
+            failed = still,
+            "compliance recompute skipped devices; they are re-evaluated on their next upload"
+        );
+    }
     if (ids.len() as i64) < BATCH {
         // 用 run_generation（不是現在的 generation）：途中又有變更時 done 仍落後，下一輪從頭來
         let elapsed: Option<f64> = sqlx::query_scalar(

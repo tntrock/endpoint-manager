@@ -517,6 +517,30 @@ async fn parallel_recompute_covers_every_device(pool: PgPool) {
     assert!(!worker::progress(&s.pool).await.unwrap().running);
 }
 
+/// 暫時性失敗（例如取不到連線）的裝置在同一批結束時重試一次，不會被永久跳過
+#[sqlx::test(migrations = false)]
+async fn recompute_retries_transient_failure(pool: PgPool) {
+    let (s, a) = setup(pool).await;
+    put(&s, &a, InventoryPayload::Patches(vec![])).await;
+    // 序列不受交易回復影響：只有第一次寫入會失敗
+    sqlx::raw_sql(
+        "CREATE SEQUENCE fail_once; \
+         CREATE FUNCTION fail_first() RETURNS trigger AS $$ BEGIN \
+           IF nextval('fail_once') = 1 THEN RAISE EXCEPTION 'transient'; END IF; RETURN NEW; \
+         END $$ LANGUAGE plpgsql; \
+         CREATE TRIGGER fail_first BEFORE INSERT ON device_violations \
+           FOR EACH ROW EXECUTE FUNCTION fail_first();",
+    )
+    .execute(&s.pool)
+    .await
+    .unwrap();
+    let id = admin::create_rule(&s.pool, &kb_rule("KB5031455"), "admin")
+        .await
+        .unwrap();
+    worker::recompute_all(&s.pool).await.unwrap();
+    assert_eq!(violations(&s, &a).await, vec![(id, "violating".into())]);
+}
+
 /// 單台裝置評估失敗不能卡住整個重算
 #[sqlx::test(migrations = false)]
 async fn recompute_skips_failing_device(pool: PgPool) {
