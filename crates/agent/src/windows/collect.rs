@@ -175,6 +175,7 @@ impl Collector for WindowsCollector {
                         .and_then(|o| o.caption.clone())
                         .unwrap_or_default(),
                     os_build: os.and_then(|o| o.build_number).unwrap_or_default(),
+                    os_ubr: read_ubr(),
                 })
             }
             Section::Hardware => {
@@ -230,6 +231,16 @@ impl Collector for WindowsCollector {
             Section::Software => unreachable!("handled above"),
         })
     }
+}
+
+/// 月更新小版號，例如 22631.4317 的 4317；讀不到就不報。
+fn read_ubr() -> Option<u32> {
+    use winreg::RegKey;
+    use winreg::enums::HKEY_LOCAL_MACHINE;
+    RegKey::predef(HKEY_LOCAL_MACHINE)
+        .open_subkey(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion")
+        .and_then(|k| k.get_value::<u32, _>("UBR"))
+        .ok()
 }
 
 #[cfg(test)]

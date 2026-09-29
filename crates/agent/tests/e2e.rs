@@ -202,6 +202,7 @@ impl Collector for Fake {
                 is_domain_joined: true,
                 os_caption: "Windows 11 Pro".into(),
                 os_build: "26100".into(),
+                os_ubr: None,
             }),
             Section::Hardware => InventoryPayload::Hardware(HardwareInfo {
                 manufacturer: Some("Dell".into()),

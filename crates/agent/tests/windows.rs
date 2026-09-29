@@ -194,7 +194,13 @@ fn collector_reports_this_machine() {
         sanitize(&mut p);
         assert_eq!(p.validate(), Ok(()), "{s:?}");
         match p {
-            InventoryPayload::Basic(b) => assert!(!b.os_caption.is_empty()),
+            InventoryPayload::Basic(b) => {
+                assert!(!b.os_caption.is_empty());
+                assert!(
+                    b.os_ubr.is_some_and(|u| u > 0),
+                    "Windows 10/11 一定有 UBR: {b:?}"
+                );
+            }
             InventoryPayload::Hardware(h) => assert!(h.ram_mb > 0),
             InventoryPayload::Software(v) => assert!(!v.is_empty()),
             InventoryPayload::Services(v) => {
