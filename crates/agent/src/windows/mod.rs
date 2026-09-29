@@ -6,6 +6,7 @@ pub mod install;
 pub mod registry;
 pub mod regwatch;
 pub mod secdir;
+pub mod security;
 pub mod service;
 
 use std::path::{Path, PathBuf};

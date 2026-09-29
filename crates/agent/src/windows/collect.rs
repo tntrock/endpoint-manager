@@ -195,6 +195,9 @@ impl Collector for WindowsCollector {
                 super::registry::read_all_software(),
             ));
         }
+        if section == Section::Security {
+            return Ok(InventoryPayload::Security(super::security::collect()));
+        }
         let con = wmi()?;
         Ok(match section {
             Section::Basic => {

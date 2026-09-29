@@ -189,7 +189,8 @@ fn collector_reports_this_machine() {
     let hb = c.heartbeat().unwrap();
     assert!(hb.boot_time < chrono::Utc::now());
 
-    for s in Section::LEGACY {
+    // Registry 不經 collect（走 collect_registry）
+    for s in Section::ALL.into_iter().filter(|s| *s != Section::Registry) {
         let mut p = c.collect(s).unwrap_or_else(|e| panic!("{s:?}: {e:#}"));
         sanitize(&mut p);
         assert_eq!(p.validate(), Ok(()), "{s:?}");
@@ -207,7 +208,27 @@ fn collector_reports_this_machine() {
                 assert!(v.iter().any(|s| s.name.eq_ignore_ascii_case("EventLog")))
             }
             InventoryPayload::Patches(_) => {}
-            InventoryPayload::Security(_) | InventoryPayload::Registry(_) => unreachable!(),
+            InventoryPayload::Security(sec) => {
+                // CI 機器不一定有 BitLocker、Defender；防火牆、密碼原則、管理員一定要成功
+                assert!(
+                    matches!(sec.firewall, protocol::Probe::Ok(_)),
+                    "{:?}",
+                    sec.firewall
+                );
+                assert!(
+                    matches!(sec.password, protocol::Probe::Ok(_)),
+                    "{:?}",
+                    sec.password
+                );
+                let protocol::Probe::Ok(admins) = &sec.admins else {
+                    panic!("{:?}", sec.admins)
+                };
+                assert!(
+                    !admins.is_empty() && admins.iter().all(|a| a.sid.starts_with("S-1-")),
+                    "{admins:?}"
+                );
+            }
+            InventoryPayload::Registry(_) => unreachable!("registry 不經 collect"),
         }
     }
 }
