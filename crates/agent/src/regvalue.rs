@@ -8,13 +8,11 @@ fn cap(s: String) -> String {
 
 /// UTF-16LE → 以 NUL 分隔的字串；奇數長度（格式錯誤）回 None。
 fn utf16(bytes: &[u8]) -> Option<Vec<String>> {
-    if bytes.len() % 2 != 0 {
+    let (pairs, rest) = bytes.as_chunks::<2>();
+    if !rest.is_empty() {
         return None;
     }
-    let units: Vec<u16> = bytes
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
-        .collect();
+    let units: Vec<u16> = pairs.iter().map(|c| u16::from_le_bytes(*c)).collect();
     Some(
         units
             .split(|u| *u == 0)
