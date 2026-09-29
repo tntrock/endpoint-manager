@@ -40,10 +40,23 @@ pub fn validate_webhook_url(u: &str) -> Result<(), String> {
         .strip_prefix("https://")
         .ok_or("Webhook 網址必須以 https:// 開頭")?;
     let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let bad = || "Webhook 網址格式不正確".to_string();
     if host.is_empty() || u.chars().any(|c| c.is_whitespace() || c.is_control()) {
-        return Err("Webhook 網址格式不正確".into());
+        return Err(bad());
+    }
+    // 完整解析（埠號範圍、IPv6 括號等），避免存了之後每次重試都失敗
+    let parsed = reqwest::Url::parse(u).map_err(|_| bad())?;
+    if parsed.host_str().is_none_or(str::is_empty) {
+        return Err(bad());
     }
     Ok(())
+}
+
+/// 稽核只記主機：Slack、Teams 等 Webhook 網址本身就是權杖
+fn webhook_host(u: &Option<String>) -> Option<String> {
+    u.as_deref()
+        .and_then(|u| reqwest::Url::parse(u).ok())
+        .and_then(|u| u.host_str().map(str::to_string))
 }
 
 async fn setting(pool: &PgPool, key: &str) -> Result<Option<serde_json::Value>, sqlx::Error> {
@@ -116,6 +129,13 @@ pub async fn save_settings(pool: &PgPool, s: &NotifySettings, actor: &str) -> an
         )
         .execute(&mut *tx)
         .await?;
+    } else if s.webhook_url.is_some() && before.webhook_url != s.webhook_url {
+        // 換了網址（例如修好故障的網址）：清掉重試等待，游標不動
+        sqlx::query(
+            "UPDATE notify_channels SET failures = 0, next_attempt_at = NULL, last_error = NULL              WHERE channel = 'webhook'",
+        )
+        .execute(&mut *tx)
+        .await?;
     }
     crate::audit::record(
         &mut tx,
@@ -124,7 +144,7 @@ pub async fn save_settings(pool: &PgPool, s: &NotifySettings, actor: &str) -> an
         None,
         serde_json::json!({
             "min_severity": s.min_severity.as_str(), "interval_minutes": s.interval_minutes,
-            "webhook_url": s.webhook_url
+            "webhook_host": webhook_host(&s.webhook_url)
         }),
     )
     .await?;
@@ -145,6 +165,8 @@ mod tests {
             "https://",
             "not a url",
             "https://a b/",
+            "https://h:99999/",
+            "https://[::1",
         ] {
             assert!(validate_webhook_url(bad).is_err(), "{bad}");
         }

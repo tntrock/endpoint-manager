@@ -355,3 +355,138 @@ async fn backlog_cap_ignores_irrelevant_events(pool: PgPool) {
         (Some(1), Some(0))
     );
 }
+
+/// 修改 Webhook 網址（例如修好故障的網址）時，清掉重試等待，不必等到下一次重試
+#[sqlx::test(migrations = false)]
+async fn changing_webhook_url_resets_backoff(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(1).await;
+    let a = s.enroll_ok(&tok, None, None).await;
+    let (bad, _) = receiver(StatusCode::SERVICE_UNAVAILABLE).await;
+    enable_webhook(&s, &bad).await;
+    event(&s, a.device_id, "high", "none", "violating").await;
+    let settings = notify::load_settings(&s.pool).await.unwrap();
+    let secrets = notify::NotifySecrets::default();
+    worker::run_channel(
+        &s.pool,
+        "webhook",
+        &settings,
+        &secrets,
+        &senders(),
+        Utc::now(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(channel_row(&s).await.1, 1);
+    let mut fixed = settings.clone();
+    fixed.webhook_url = Some("https://hooks.example.com/fixed".into());
+    notify::save_settings(&s.pool, &fixed, "admin")
+        .await
+        .unwrap();
+    let (cursor, failures, err) = channel_row(&s).await;
+    assert_eq!(
+        (cursor, failures, err),
+        (0, 0, None),
+        "游標不動，只清掉重試狀態"
+    );
+}
+
+/// 送出途中管理員重設了游標（停用再啟用）：送完不能把游標寫回舊值
+#[sqlx::test(migrations = false)]
+async fn in_flight_send_does_not_overwrite_cursor_reset(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(1).await;
+    let a = s.enroll_ok(&tok, None, None).await;
+    let db = s.pool.clone();
+    let app = Router::new().route(
+        "/hook",
+        post(move || {
+            let db = db.clone();
+            async move {
+                sqlx::query("UPDATE notify_channels SET last_event_id = 999999")
+                    .execute(&db)
+                    .await
+                    .unwrap();
+                StatusCode::OK
+            }
+        }),
+    );
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/hook", l.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+    enable_webhook(&s, &url).await;
+    event(&s, a.device_id, "high", "none", "violating").await;
+    let settings = notify::load_settings(&s.pool).await.unwrap();
+    let secrets = notify::NotifySecrets::default();
+    worker::run_channel(
+        &s.pool,
+        "webhook",
+        &settings,
+        &secrets,
+        &senders(),
+        Utc::now(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(channel_row(&s).await.0, 999999);
+}
+
+/// 違規變成「未知」（規則參數壞掉、資料不足）不是「已解除」
+#[sqlx::test(migrations = false)]
+async fn violating_to_unknown_is_not_resolved(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(1).await;
+    let a = s.enroll_ok(&tok, None, None).await;
+    let (url, seen) = receiver(StatusCode::OK).await;
+    enable_webhook(&s, &url).await;
+    event(&s, a.device_id, "high", "violating", "unknown").await;
+    event(&s, a.device_id, "high", "violating", "none").await;
+    let settings = notify::load_settings(&s.pool).await.unwrap();
+    let secrets = notify::NotifySecrets::default();
+    worker::run_channel(
+        &s.pool,
+        "webhook",
+        &settings,
+        &secrets,
+        &senders(),
+        Utc::now(),
+    )
+    .await
+    .unwrap();
+    let v: serde_json::Value = serde_json::from_str(&seen.lock().unwrap()[0].1).unwrap();
+    assert_eq!(v["total_resolved"], 1);
+}
+
+/// 連線失敗的錯誤訊息要帶原因（拒絕連線、DNS、TLS、逾時），不能只有「error sending request」
+#[tokio::test]
+async fn webhook_error_includes_cause() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/hook", l.local_addr().unwrap());
+    drop(l);
+    let err = send::send_webhook(&senders().webhook, &url, None, &serde_json::json!({}))
+        .await
+        .unwrap_err();
+    assert!(err.contains("（"), "{err}");
+}
+
+/// 稽核記錄只存 Webhook 主機（網址可能含權杖），稽核頁有中文標籤
+#[sqlx::test(migrations = false)]
+async fn audit_keeps_only_webhook_host(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let mut n = notify::load_settings(&s.pool).await.unwrap();
+    n.webhook_url = Some("https://hooks.example.com/services/T0/B0/SECRET-TOKEN".into());
+    notify::save_settings(&s.pool, &n, "admin").await.unwrap();
+    let detail: String =
+        sqlx::query_scalar("SELECT detail::text FROM audit_log WHERE action = 'notify_settings'")
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+    assert!(
+        detail.contains("hooks.example.com") && !detail.contains("SECRET-TOKEN"),
+        "{detail}"
+    );
+    let admin = s.admin_client().await;
+    let (_, html) = s.page(&admin, "/audit").await;
+    assert!(html.contains("修改通知設定"), "稽核頁標籤");
+}

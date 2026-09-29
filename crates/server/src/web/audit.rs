@@ -33,6 +33,14 @@ fn label(action: &str) -> &str {
         "admin_enable" => "啟用帳號",
         "admin_password_reset" => "重設帳號密碼",
         "admin_unlock" => "解除帳號鎖定",
+        "rule_create" => "建立合規規則",
+        "rule_update" => "修改合規規則",
+        "rule_delete" => "刪除合規規則",
+        "exemption_create" => "新增豁免",
+        "exemption_revoke" => "撤銷豁免",
+        "exemption_expire" => "豁免到期",
+        "compliance_export" => "匯出違規清單",
+        "notify_settings" => "修改通知設定",
         other => other,
     }
 }
