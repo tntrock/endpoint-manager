@@ -18,6 +18,7 @@ pub struct GroupRow {
     pub devices: i64,
     pub tokens: i64,
     pub admins: i64,
+    pub rules: i64,
 }
 
 #[derive(Template)]
@@ -42,19 +43,20 @@ pub async fn list(
     let mut conn = st.pool.acquire().await?;
     let mut rows = Vec::with_capacity(groups.len());
     for (id, name) in groups {
-        let (devices, tokens, admins) = crate::groups::usage(&mut conn, id).await?;
-        rows.push((id, name, devices, tokens, admins));
+        let (devices, tokens, admins, rules) = crate::groups::usage(&mut conn, id).await?;
+        rows.push((id, name, devices, tokens, admins, rules));
     }
     Ok(render(&GroupsPage {
         nav: Nav::from(&s),
         rows: rows
             .into_iter()
-            .map(|(id, name, devices, tokens, admins)| GroupRow {
+            .map(|(id, name, devices, tokens, admins, rules)| GroupRow {
                 id,
                 name,
                 devices,
                 tokens,
                 admins,
+                rules,
             })
             .collect(),
     }))
