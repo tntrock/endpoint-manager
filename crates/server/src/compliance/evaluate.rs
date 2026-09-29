@@ -97,6 +97,14 @@ fn older(s: &SoftwareFact, than: &str) -> bool {
 
 fn check_one(c: &Check, f: &DeviceFacts) -> Option<(Status, Value)> {
     match c {
+        // 計畫 9 Task 2 實作
+        Check::RegistryValue { .. }
+        | Check::ServiceState { .. }
+        | Check::Firewall { .. }
+        | Check::Bitlocker { .. }
+        | Check::Defender { .. }
+        | Check::PasswordPolicy { .. }
+        | Check::LocalAdmins { .. } => None,
         Check::Forbidden {
             name,
             publisher,
