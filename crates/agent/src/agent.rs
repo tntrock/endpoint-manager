@@ -41,6 +41,11 @@ pub fn sections_to_collect(supported: bool) -> Vec<Section> {
     }
 }
 
+/// 已在回報新區段時報到被 400／422 拒絕：多半是舊版伺服器不認得新區段，應退回只送舊區段。
+pub fn fall_back_on_checkin_error(supported: bool, e: &ClientError) -> bool {
+    supported && matches!(e, ClientError::Rejected(400 | 422, _))
+}
+
 /// 伺服器要求、手上有資料、且不是「同一份內容已被拒絕」的區段。
 pub fn plan_uploads(
     requested: &[Section],
@@ -146,6 +151,17 @@ impl<C: Collector> Agent<C> {
 
     pub fn state(&self) -> &AgentState {
         &self.state
+    }
+
+    /// 停止回報 security／registry：清掉快取與查詢清單，等伺服器再次表明支援。
+    fn drop_config_sections(&mut self) {
+        self.server_supports_config = false;
+        for s in [Section::Security, Section::Registry] {
+            self.cache.remove(&s);
+            self.errors.remove(&s);
+        }
+        self.registry_hash = None;
+        self.registry_queries.clear();
     }
 
     pub fn trigger(&mut self, s: Section) {
@@ -343,6 +359,12 @@ impl<C: Collector> Agent<C> {
                 self.backing_off = true;
                 return Cycle::Next(after);
             }
+            Err(e) if fall_back_on_checkin_error(self.server_supports_config, &e) => {
+                // 伺服器不認得新區段（降版或混合部署）：只送舊區段，稍後立刻重試
+                tracing::warn!(error = %e, "checkin rejected; falling back to legacy sections");
+                self.drop_config_sections();
+                return Cycle::Next(Duration::from_secs(1));
+            }
             Err(e) => {
                 tracing::warn!(error = %e, "checkin failed");
                 return self.retry_later();
@@ -351,6 +373,10 @@ impl<C: Collector> Agent<C> {
         self.backoff.reset();
         self.backing_off = false;
         self.intervals = resp.collection_intervals.clone();
+        // 每次報到都依回應決定：換到舊版伺服器時回應沒有這個欄位，就停止回報新區段
+        if resp.registry_queries_hash.is_none() && self.server_supports_config {
+            self.drop_config_sections();
+        }
         if let Some(h) = &resp.registry_queries_hash {
             self.server_supports_config = true;
             if self.registry_hash.as_ref() != Some(h) {
@@ -380,10 +406,7 @@ impl<C: Collector> Agent<C> {
                         tracing::warn!(section = s.as_str(), %msg, "server does not support config sections");
                     }
                     self.unsupported_error = Some(msg);
-                    self.server_supports_config = false;
-                    self.cache.remove(&Section::Security);
-                    self.cache.remove(&Section::Registry);
-                    self.registry_hash = None;
+                    self.drop_config_sections();
                 }
                 Err(ClientError::Rejected(code, msg)) => {
                     tracing::warn!(section = s.as_str(), code, %msg, "section rejected by server");
@@ -515,6 +538,32 @@ mod tests {
             );
             assert_eq!(seen, vec![Section::Software], "變更都要記下");
         }
+    }
+
+    /// 伺服器降版或新舊伺服器混合部署：舊伺服器看到新區段會以 400／422 拒絕整個報到，
+    /// 這時要退回只送舊區段並立刻重試，不能一直退避到服務重啟
+    #[test]
+    fn falls_back_when_checkin_is_rejected_while_supported() {
+        assert!(fall_back_on_checkin_error(
+            true,
+            &ClientError::Rejected(422, "x".into())
+        ));
+        assert!(fall_back_on_checkin_error(
+            true,
+            &ClientError::Rejected(400, "x".into())
+        ));
+        assert!(
+            !fall_back_on_checkin_error(false, &ClientError::Rejected(422, "x".into())),
+            "已經只送舊區段"
+        );
+        assert!(!fall_back_on_checkin_error(
+            true,
+            &ClientError::Rejected(413, "x".into())
+        ));
+        assert!(!fall_back_on_checkin_error(
+            true,
+            &ClientError::Unauthorized
+        ));
     }
 
     #[test]
