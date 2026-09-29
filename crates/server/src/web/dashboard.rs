@@ -1,9 +1,10 @@
 //! 儀表板：範圍內的數量統計與待核准清單。
 
 use askama::Template;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::response::{IntoResponse, Response};
 use chrono::{DateTime, Utc};
+use serde::Deserialize;
 use uuid::Uuid;
 
 use super::auth::{AdminSession, Nav, Session};
@@ -31,11 +32,30 @@ struct DashboardPage {
     online: i64,
     duplicate: i64,
     pending: Vec<PendingRow>,
+    /// 全部核准的結果：(核准, 略過)
+    approve_result: Option<(u32, u32)>,
 }
 
-pub async fn page(State(st): State<AppState>, AdminSession(s): AdminSession) -> Response {
+#[derive(Deserialize)]
+pub struct DashboardQuery {
+    #[serde(default)]
+    approved: Option<String>,
+    #[serde(default)]
+    skipped: Option<String>,
+}
+
+pub async fn page(
+    State(st): State<AppState>,
+    AdminSession(s): AdminSession,
+    Query(q): Query<DashboardQuery>,
+) -> Response {
+    let num = |v: &Option<String>| v.as_deref().and_then(|v| v.parse::<u32>().ok());
+    let result = num(&q.approved).map(|a| (a, num(&q.skipped).unwrap_or(0)));
     match build(&st, &s).await {
-        Ok(p) => render(&p),
+        Ok(mut p) => {
+            p.approve_result = result;
+            render(&p)
+        }
         Err(e) => e.into_response(),
     }
 }
@@ -84,5 +104,6 @@ async fn build(st: &AppState, s: &Session) -> Result<DashboardPage, AppError> {
                 },
             )
             .collect(),
+        approve_result: None,
     })
 }

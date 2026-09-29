@@ -110,10 +110,44 @@ fn hostname(cs: Option<&ComputerSystem>) -> String {
 /// 非必要的 WMI 查詢：失敗時記錄並當成沒有資料，不讓整個 identity／heartbeat 失敗
 /// （例如某些虛擬機或損壞的 WMI 儲存庫查不到 BIOS）。
 fn optional<T, E: std::fmt::Display>(what: &str, r: Result<Vec<T>, E>) -> Vec<T> {
-    r.unwrap_or_else(|e| {
-        tracing::debug!(query = what, error = %e, "optional WMI query failed");
-        vec![]
-    })
+    match r {
+        Ok(v) => {
+            recovered(what);
+            v
+        }
+        Err(e) => {
+            // 服務模式只把 INFO 以上寫進事件記錄；同一個錯誤只記一次，避免每分鐘洗版
+            let e = e.to_string();
+            if first_report(what, &e) {
+                tracing::warn!(query = what, error = %e, "optional WMI query failed");
+            }
+            vec![]
+        }
+    }
+}
+
+/// 各查詢上一次記錄的錯誤
+static LAST_ERROR: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
+
+/// 這個查詢的這個錯誤是否還沒記錄過（記錄過就不再記，錯誤改變或恢復後才再記）。
+fn first_report(what: &str, err: &str) -> bool {
+    let mut last = LAST_ERROR.lock().unwrap_or_else(|p| p.into_inner());
+    match last.iter_mut().find(|(w, _)| w == what) {
+        Some((_, e)) if e == err => false,
+        Some((_, e)) => {
+            *e = err.to_string();
+            true
+        }
+        None => {
+            last.push((what.to_string(), err.to_string()));
+            true
+        }
+    }
+}
+
+fn recovered(what: &str) {
+    let mut last = LAST_ERROR.lock().unwrap_or_else(|p| p.into_inner());
+    last.retain(|(w, _)| w != what);
 }
 
 pub struct WindowsCollector;
@@ -254,5 +288,17 @@ mod tests {
         assert_eq!(optional("x", ok), vec![1, 2]);
         let err: Result<Vec<u8>, String> = Err("WBEM_E_FAILED".into());
         assert!(optional("x", err).is_empty());
+    }
+
+    /// 服務模式只記 INFO 以上：失敗要以 warning 記錄才看得到，但同一個查詢的同一個錯誤
+    /// 只記一次（heartbeat 每分鐘都查，不能洗版事件記錄）；錯誤改變或恢復後再次失敗才再記
+    #[test]
+    fn same_failure_is_reported_once() {
+        assert!(first_report("q-test", "E1"));
+        assert!(!first_report("q-test", "E1"));
+        assert!(first_report("q-test", "E2"), "錯誤改變");
+        assert!(first_report("q-other", "E2"), "不同查詢各自計算");
+        recovered("q-test");
+        assert!(first_report("q-test", "E2"), "恢復後再次失敗");
     }
 }

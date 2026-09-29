@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>儀表板</h1>
+{% if let Some(r) = approve_result %}<p class="notice">已核准 {{ r.0 }} 台{% if r.1 > 0 %}，略過 {{ r.1 }} 台（原因記錄在伺服器日誌，仍留在待核准清單）{% endif %}。</p>{% endif %}
 <div class="cards">
   <div class="card">裝置總數<b>{{ total }}</b></div>
   <div class="card online">在線<b>{{ online }}</b></div>

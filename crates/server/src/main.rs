@@ -73,7 +73,7 @@ async fn main() -> anyhow::Result<()> {
                 }
                 None => None,
             };
-            let (id, token) = tokens::create_token(
+            let (id, token) = tokens::create_token_audited(
                 &pool,
                 &tokens::NewToken {
                     name: args[1].clone(),

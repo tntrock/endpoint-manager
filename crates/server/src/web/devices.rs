@@ -334,12 +334,18 @@ pub async fn approve_all(
     .await
     .map_err(db_error)?;
     // 逐台核准：其中一台失敗（例如原裝置已除役）不影響其他台，失敗的留在待核准清單
+    let (mut approved, mut skipped) = (0, 0);
     for id in ids {
-        if let Err(e) = crate::devices::approve(&st.pool, id, &s.username).await {
-            tracing::warn!(device_id = %id, error = %format!("{e:#}"), "approve-all skipped a device");
+        match crate::devices::approve(&st.pool, id, &s.username).await {
+            Ok(_) => approved += 1,
+            Err(e) => {
+                skipped += 1;
+                tracing::warn!(device_id = %id, error = %format!("{e:#}"), "approve-all skipped a device");
+            }
         }
     }
-    Ok(Redirect::to("/").into_response())
+    // 儀表板顯示結果（略過的仍留在待核准清單）
+    Ok(Redirect::to(&format!("/?approved={approved}&skipped={skipped}")).into_response())
 }
 
 pub struct DeviceView {
