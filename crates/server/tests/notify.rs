@@ -72,7 +72,7 @@ async fn webhook_signs_and_reports_status() {
 
 async fn event(s: &TestServer, device: uuid::Uuid, sev: &str, from: &str, to: &str) {
     sqlx::query(
-        "INSERT INTO violation_events          (device_id, rule_name, severity, from_status, to_status, detail)          VALUES ($1, '禁止 TeamViewer', $2, $3, $4, '{\"software\": []}')",
+        "INSERT INTO violation_events          (device_id, rule_name, severity, from_status, to_status, detail, at)          VALUES ($1, '禁止 TeamViewer', $2, $3, $4, '{\"software\": []}',                  now() - interval '5 minutes')",
     )
     .bind(device)
     .bind(sev)
@@ -182,7 +182,7 @@ async fn backlog_is_capped(pool: PgPool) {
     let (url, seen) = receiver(StatusCode::OK).await;
     enable_webhook(&s, &url).await;
     sqlx::query(
-        "INSERT INTO violation_events          (device_id, rule_name, severity, from_status, to_status, detail)          SELECT $1, 'r', 'high', 'none', 'violating', '{}' FROM generate_series(1, $2)",
+        "INSERT INTO violation_events          (device_id, rule_name, severity, from_status, to_status, detail, at)          SELECT $1, 'r', 'high', 'none', 'violating', '{}', now() - interval '5 minutes'          FROM generate_series(1, $2)",
     )
     .bind(a.device_id)
     .bind((worker::MAX_BACKLOG + 5) as i32)
@@ -273,4 +273,87 @@ async fn notify_settings_page(pool: PgPool) {
     assert_eq!(s.page(&g, "/compliance/notify").await.0, 403);
     let (_, html) = s.page(&g, "/compliance").await;
     assert!(!html.contains("Webhook"), "通知狀態只給平台管理員");
+}
+
+/// 剛寫入的事件可能屬於尚未提交的交易（id 較小的晚提交）：游標只推進到確定已提交的事件，
+/// 否則晚提交的事件會被永遠跳過
+#[sqlx::test(migrations = false)]
+async fn cursor_does_not_pass_recent_events(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(1).await;
+    let a = s.enroll_ok(&tok, None, None).await;
+    let (url, seen) = receiver(StatusCode::OK).await;
+    enable_webhook(&s, &url).await;
+    sqlx::query(
+        "INSERT INTO violation_events          (device_id, rule_name, severity, from_status, to_status, detail)          VALUES ($1, 'r', 'high', 'none', 'violating', '{}')",
+    )
+    .bind(a.device_id)
+    .execute(&s.pool)
+    .await
+    .unwrap();
+    let settings = notify::load_settings(&s.pool).await.unwrap();
+    let secrets = notify::NotifySecrets::default();
+    worker::run_channel(
+        &s.pool,
+        "webhook",
+        &settings,
+        &secrets,
+        &senders(),
+        Utc::now(),
+    )
+    .await
+    .unwrap();
+    assert!(seen.lock().unwrap().is_empty(), "剛寫入的事件先不送");
+    assert_eq!(channel_row(&s).await.0, 0, "游標不越過它");
+    sqlx::query("UPDATE violation_events SET at = now() - interval '5 minutes'")
+        .execute(&s.pool)
+        .await
+        .unwrap();
+    worker::run_channel(
+        &s.pool,
+        "webhook",
+        &settings,
+        &secrets,
+        &senders(),
+        Utc::now(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(seen.lock().unwrap().len(), 1);
+}
+
+/// 積壓上限只算會通知的事件：大量「未知」事件不能讓正常的管道跳過真正的違規
+#[sqlx::test(migrations = false)]
+async fn backlog_cap_ignores_irrelevant_events(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(1).await;
+    let a = s.enroll_ok(&tok, None, None).await;
+    let (url, seen) = receiver(StatusCode::OK).await;
+    enable_webhook(&s, &url).await;
+    event(&s, a.device_id, "high", "none", "violating").await;
+    sqlx::query(
+        "INSERT INTO violation_events          (device_id, rule_name, severity, from_status, to_status, detail, at)          SELECT $1, 'r', 'high', 'none', 'unknown', '{}', now() - interval '5 minutes'          FROM generate_series(1, $2)",
+    )
+    .bind(a.device_id)
+    .bind((worker::MAX_BACKLOG + 5) as i32)
+    .execute(&s.pool)
+    .await
+    .unwrap();
+    let settings = notify::load_settings(&s.pool).await.unwrap();
+    let secrets = notify::NotifySecrets::default();
+    worker::run_channel(
+        &s.pool,
+        "webhook",
+        &settings,
+        &secrets,
+        &senders(),
+        Utc::now(),
+    )
+    .await
+    .unwrap();
+    let v: serde_json::Value = serde_json::from_str(&seen.lock().unwrap()[0].1).unwrap();
+    assert_eq!(
+        (v["total_new"].as_i64(), v["dropped"].as_i64()),
+        (Some(1), Some(0))
+    );
 }

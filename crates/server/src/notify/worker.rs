@@ -12,7 +12,7 @@ use super::digest::{Digest, EventInfo, MAX_WEBHOOK_ITEMS, email_text, webhook_bo
 use super::{NotifySecrets, NotifySettings, load_settings, send};
 use crate::compliance::rules::Severity;
 
-/// 積壓超過這個數量的事件時，只看最新的這麼多筆，其餘記為略過
+/// 會通知的事件積壓超過這個數量時，只看最新的這麼多筆，其餘記為略過
 pub const MAX_BACKLOG: i64 = 100_000;
 
 pub struct Senders {
@@ -81,17 +81,21 @@ async fn events(
 }
 
 /// (after, upto] 之間、嚴重度達門檻的新增與解除事件（各最多 MAX_WEBHOOK_ITEMS 筆＋總數）。
+fn severities(min: Severity) -> Vec<&'static str> {
+    Severity::ALL
+        .into_iter()
+        .filter(|s| *s >= min)
+        .map(Severity::as_str)
+        .collect()
+}
+
 pub async fn load_digest(
     pool: &PgPool,
     after: i64,
     upto: i64,
     min: Severity,
 ) -> Result<Digest, sqlx::Error> {
-    let sev: Vec<&str> = Severity::ALL
-        .into_iter()
-        .filter(|s| *s >= min)
-        .map(Severity::as_str)
-        .collect();
+    let sev = severities(min);
     let (total_new, total_resolved): (i64, i64) = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT count(*) FILTER (WHERE e.to_status = 'violating'), \
                     count(*) FILTER (WHERE e.to_status <> 'violating') \
@@ -144,17 +148,44 @@ pub async fn run_channel(
     if failures == 0 && last_sent.is_some_and(|t| now < t + interval) {
         return Ok(());
     }
-    let upto: i64 = sqlx::query_scalar("SELECT coalesce(max(id), 0) FROM violation_events")
+    // 事件 id 依寫入順序配發，但交易可能晚提交：只推進到一分鐘前的事件，
+    // 確保 id 比游標小的事件都已提交，不會被永遠跳過
+    // ponytail: 假設寫入事件的交易都在一分鐘內完成（每台裝置一個短交易）
+    let upto: i64 = sqlx::query_scalar(
+        "SELECT coalesce(max(id), 0) FROM violation_events WHERE at < now() - interval '1 minute'",
+    )
+    .fetch_one(pool)
+    .await?;
+    if upto <= cursor {
+        return Ok(());
+    }
+    // 積壓上限只算會通知的事件；其餘（例如大量「未知」）不影響
+    let sev = severities(settings.min_severity);
+    let cut: Option<i64> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT e.id FROM violation_events e WHERE {RELEVANT} ORDER BY e.id DESC OFFSET $4 LIMIT 1"
+    )))
+    .bind(cursor)
+    .bind(upto)
+    .bind(&sev)
+    .bind(MAX_BACKLOG)
+    .fetch_optional(pool)
+    .await?;
+    if let Some(cut) = cut {
+        let skipped: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "SELECT count(*) FROM violation_events e WHERE {RELEVANT}"
+        )))
+        .bind(cursor)
+        .bind(cut)
+        .bind(&sev)
         .fetch_one(pool)
         .await?;
-    if upto - cursor > MAX_BACKLOG {
-        dropped += upto - MAX_BACKLOG - cursor;
+        dropped += skipped;
         tracing::warn!(
             channel,
             dropped,
             "notification backlog too large; skipping oldest events"
         );
-        cursor = upto - MAX_BACKLOG;
+        cursor = cut;
     }
     let mut digest = load_digest(pool, cursor, upto, settings.min_severity).await?;
     digest.dropped = dropped;
