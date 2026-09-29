@@ -288,7 +288,7 @@ fn check_one(c: &Check, f: &DeviceFacts) -> Option<(Status, Value)> {
                 Err(u) => return u,
             };
             let in_scope: Vec<_> = vols.iter().filter(|v| *all_fixed || v.is_system).collect();
-            if in_scope.is_empty() && !all_fixed {
+            if in_scope.is_empty() {
                 return Some((Status::Violating, json!({"reason": "no_system_volume"})));
             }
             let bad: Vec<&str> = in_scope
@@ -318,18 +318,23 @@ fn check_one(c: &Check, f: &DeviceFacts) -> Option<(Status, Value)> {
             if *tamper && !d.tamper {
                 failed.push("tamper");
             }
+            // 病毒碼日期未知不能蓋掉其他已確定的違規：先看其他項，全部通過才回報未知
+            let mut signature_unknown = false;
             if let Some(max) = max_signature_age_days {
-                let Some(updated) = d.signature_updated else {
-                    return Some((Status::Unknown, json!({"reason": "signature_unknown"})));
-                };
-                let age = (f.now - updated).num_days().max(0);
-                if age > i64::from(*max) {
-                    failed.push("signature");
-                    detail.insert("signature_age_days".into(), json!(age));
+                match d.signature_updated {
+                    None => signature_unknown = true,
+                    Some(updated) => {
+                        let age = (f.now - updated).num_days().max(0);
+                        if age > i64::from(*max) {
+                            failed.push("signature");
+                            detail.insert("signature_age_days".into(), json!(age));
+                        }
+                    }
                 }
             }
             if failed.is_empty() {
-                return None;
+                return signature_unknown
+                    .then(|| (Status::Unknown, json!({"reason": "signature_unknown"})));
             }
             detail.insert("failed".into(), json!(failed));
             Some((Status::Violating, Value::Object(detail)))
@@ -939,6 +944,49 @@ mod tests {
             ),
             None
         );
+    }
+
+    /// 病毒碼日期未知時，已確定的其他違規仍要回報違規，不能被蓋成未知
+    #[test]
+    fn defender_known_failure_beats_unknown_signature() {
+        let mut f = cfg_facts();
+        if let Some(s) = f.security.as_mut() {
+            s.defender = Probe::Ok(DefenderInfo {
+                active: true,
+                realtime: false,
+                tamper: true,
+                signature_updated: None,
+            });
+        }
+        let r = one(
+            &f,
+            "defender",
+            json!({"realtime": true, "max_signature_age_days": 7}),
+        );
+        assert_eq!(r.map(|x| x.0), Some(Status::Violating));
+        let r = one(
+            &f,
+            "defender",
+            json!({"tamper": true, "max_signature_age_days": 7}),
+        );
+        assert_eq!(
+            r.map(|x| x.0),
+            Some(Status::Unknown),
+            "其他項都通過時才是未知"
+        );
+    }
+
+    /// 範圍「所有固定磁碟」卻一個磁碟都沒有：和「系統磁碟」範圍一樣算違規
+    #[test]
+    fn bitlocker_without_volumes_is_violating_for_both_scopes() {
+        let mut f = cfg_facts();
+        if let Some(s) = f.security.as_mut() {
+            s.bitlocker = Probe::Ok(vec![]);
+        }
+        for scope in ["system", "all_fixed"] {
+            let r = one(&f, "bitlocker", json!({ "scope": scope }));
+            assert_eq!(r.map(|x| x.0), Some(Status::Violating), "{scope}");
+        }
     }
 
     #[test]

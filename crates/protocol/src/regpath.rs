@@ -15,6 +15,8 @@ const WINLOGON: [&str; 2] = [
     r"HKLM\SOFTWARE\WOW6432NODE\MICROSOFT\WINDOWS NT\CURRENTVERSION\WINLOGON",
 ];
 const DENIED_WINLOGON_NAMES: [&str; 2] = ["DEFAULTPASSWORD", "ALTDEFAULTPASSWORD"];
+/// 登錄檔機碼路徑的長度上限（Windows 機碼名稱最長 255 字元，完整路徑遠低於此）
+pub const MAX_PATH_LEN: usize = 1024;
 
 /// 正規化成 `HKLM\子機碼\...`：接受 `HKEY_LOCAL_MACHINE` 別名、`/`、重複或結尾的 `\`、前後空白；
 /// 不接受其他根機碼、沒有子機碼、含 `.`／`..` 段落，或含控制字元（包括 NUL）的路徑。
@@ -24,7 +26,10 @@ pub fn normalize(path: &str) -> Result<String, &'static str> {
         return Err("登錄檔路徑不能包含控制字元");
     }
     let path = path.trim().replace('/', "\\");
-    let mut parts = path.split('\\').filter(|p| !p.is_empty());
+    if path.chars().count() > MAX_PATH_LEN {
+        return Err("登錄檔路徑過長");
+    }
+    let mut parts = path.split('\\').map(str::trim).filter(|p| !p.is_empty());
     let root = parts.next().ok_or("登錄檔路徑必填")?;
     if !root.eq_ignore_ascii_case("HKLM") && !root.eq_ignore_ascii_case("HKEY_LOCAL_MACHINE") {
         return Err("登錄檔路徑必須以 HKLM\\ 開頭");
@@ -80,6 +85,12 @@ mod tests {
         assert_eq!(n(r"hklm\SOFTWARE\Foo\"), r"HKLM\SOFTWARE\Foo");
         assert_eq!(n("HKEY_LOCAL_MACHINE/SOFTWARE//Foo"), r"HKLM\SOFTWARE\Foo");
         assert_eq!(n(r"  HKLM\SOFTWARE\Foo  "), r"HKLM\SOFTWARE\Foo");
+        // 每一段都去頭尾空白：Agent 回報時也會清理，兩邊的比對鍵才會一致
+        assert_eq!(n(r"HKLM\ SOFTWARE \Foo \ "), r"HKLM\SOFTWARE\Foo");
+        assert!(
+            normalize(&format!(r"HKLM\{}", "x".repeat(1100))).is_err(),
+            "過長"
+        );
         for bad in [
             r"HKCU\Software",
             r"HKU\S-1-5-18",

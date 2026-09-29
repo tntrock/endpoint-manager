@@ -250,3 +250,67 @@ async fn old_agent_is_unknown_not_violating(pool: PgPool) {
     .unwrap();
     assert!(detail.contains("agent_outdated"), "{detail}");
 }
+
+/// 上傳時濾掉了值（查詢清單剛變）：存過濾後內容的雜湊，下次報到會要求重傳，
+/// 否則規則重新啟用後該值可能永遠不再收集
+#[sqlx::test(migrations = false)]
+async fn filtered_upload_is_requested_again(pool: PgPool) {
+    let (s, a) = setup(pool).await;
+    admin::create_rule(&s.pool, &reg_rule(r"HKLM\X", "V1"), "admin")
+        .await
+        .unwrap();
+    let r2 = admin::create_rule(&s.pool, &reg_rule(r"HKLM\X", "V2"), "admin")
+        .await
+        .unwrap();
+    let mut off = reg_rule(r"HKLM\X", "V2");
+    off.enabled = false;
+    admin::update_rule(&s.pool, r2, &off, "admin")
+        .await
+        .unwrap();
+    let v = |name: &str| protocol::RegistryValue {
+        path: r"HKLM\X".into(),
+        name: name.into(),
+        state: protocol::RegState::Present,
+        kind: protocol::RegKind::Dword,
+        data: "1".into(),
+    };
+    let payload = InventoryPayload::Registry(vec![v("V1"), v("V2")]);
+    let full_hash = payload.canonical_hash();
+    put(&s, &a, payload).await;
+    let r: protocol::CheckinResponse = s
+        .client(Some(&a))
+        .post(s.url("/v1/checkin"))
+        .json(&protocol::CheckinRequest {
+            schema_version: SCHEMA_VERSION,
+            agent_version: "0.3.0".into(),
+            boot_time: chrono::Utc::now(),
+            logged_on_user: None,
+            ip_addresses: vec![],
+            section_hashes: [(protocol::Section::Registry, full_hash)]
+                .into_iter()
+                .collect(),
+            section_errors: Default::default(),
+        })
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        r.request_sections.contains(&protocol::Section::Registry),
+        "{:?}",
+        r.request_sections
+    );
+}
+
+#[sqlx::test(migrations = false)]
+async fn overlong_registry_path_is_rejected(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let long = format!(r"HKLM\{}", "x".repeat(1100));
+    assert!(
+        admin::create_rule(&s.pool, &reg_rule(&long, "V"), "admin")
+            .await
+            .is_err()
+    );
+}

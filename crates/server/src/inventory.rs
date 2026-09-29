@@ -58,24 +58,31 @@ pub async fn upload(
         .acquire()
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
-    let (payload, hash) =
+    let (payload, mut hash) =
         tokio::task::spawn_blocking(move || parse_upload(section, &headers, &body))
             .await
             .map_err(|e| AppError::Internal(e.into()))??;
-    // 只保存規則需要的登錄檔值（比對不分大小寫）；雜湊仍用 Agent 送來的完整內容，
-    // 下次報到雜湊相同就不會被要求重傳
+    // 只保存規則需要的登錄檔值（比對不分大小寫）。有值被濾掉時改存過濾後的雜湊：
+    // 和 Agent 的雜湊不同，下次報到會被要求重傳，查詢清單剛變時也能收斂
     let payload = match payload {
         InventoryPayload::Registry(v) => {
             let rules = st.rules.get(&st.pool).await?;
-            InventoryPayload::Registry(
-                v.into_iter()
-                    .filter(|r| {
-                        rules
-                            .registry_keys
-                            .contains(&crate::compliance::rules::registry_key(&r.path, &r.name))
-                    })
-                    .collect(),
-            )
+            let total = v.len();
+            let kept: Vec<_> = v
+                .into_iter()
+                .filter(|r| {
+                    rules
+                        .registry_keys
+                        .contains(&crate::compliance::rules::registry_key(&r.path, &r.name))
+                })
+                .collect();
+            let filtered = InventoryPayload::Registry(kept);
+            if let InventoryPayload::Registry(k) = &filtered
+                && k.len() != total
+            {
+                hash = filtered.canonical_hash();
+            }
+            filtered
         }
         other => other,
     };
