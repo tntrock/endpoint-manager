@@ -1,7 +1,8 @@
 mod common;
 
-use common::{TestAgent, TestServer};
+use common::{TestAgent, TestServer, csrf_from};
 use endpoint_server::compliance::rules::{Params, Rule, Severity};
+use endpoint_server::web::auth::Role;
 use protocol::{Arch, InventoryPayload, InventoryUpload, PatchItem, SCHEMA_VERSION, SoftwareItem};
 use sqlx::PgPool;
 
@@ -80,4 +81,84 @@ async fn preview_counts_matching_devices(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(c.violating, 1);
+}
+
+#[sqlx::test(migrations = false)]
+async fn rule_pages_and_permissions(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let admin = s.admin_client().await;
+    let (st, html) = s
+        .page(&admin, "/compliance/rules/new?kind=forbidden_software")
+        .await;
+    assert_eq!(st, 200);
+    let csrf = csrf_from(&html);
+    let r = admin
+        .post(s.web_url("/compliance/rules"))
+        .form(&[
+            ("csrf", csrf.as_str()),
+            ("kind", "forbidden_software"),
+            ("name", "禁止 TeamViewer"),
+            ("severity", "high"),
+            ("enabled", "1"),
+            ("p_name", "*TeamViewer*"),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 303);
+    let (_, html) = s.page(&admin, "/compliance/rules").await;
+    assert!(html.contains("禁止 TeamViewer") && html.contains("禁止軟體"));
+
+    // 壞參數 → 409 與中文訊息
+    let r = admin
+        .post(s.web_url("/compliance/rules"))
+        .form(&[
+            ("csrf", csrf.as_str()),
+            ("kind", "required_kb"),
+            ("name", "x"),
+            ("severity", "high"),
+            ("p_kb", "123"),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 409);
+    assert!(r.text().await.unwrap().contains("KB 格式"));
+
+    // 預覽
+    let r = admin
+        .post(s.web_url("/compliance/rules/preview"))
+        .form(&[
+            ("csrf", csrf.as_str()),
+            ("kind", "required_kb"),
+            ("name", "x"),
+            ("severity", "high"),
+            ("p_kb", "KB5034439"),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert!(r.text().await.unwrap().contains("共評估 0 台"));
+
+    // 群組管理員可看清單，不能新增或編輯
+    let g = s.login_as("gary", Role::GroupAdmin, &["台北"]).await;
+    let (st, html) = s.page(&g, "/compliance/rules").await;
+    assert_eq!(st, 200);
+    assert!(html.contains("禁止 TeamViewer") && !html.contains("/compliance/rules/new"));
+    let (st, _) = s.page(&g, "/compliance/rules/new?kind=required_kb").await;
+    assert_eq!(st, 403);
+    let gcsrf = csrf_from(&html);
+    let r = g
+        .post(s.web_url("/compliance/rules"))
+        .form(&[
+            ("csrf", gcsrf.as_str()),
+            ("kind", "required_kb"),
+            ("name", "x"),
+            ("severity", "high"),
+            ("p_kb", "KB5034439"),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 403);
 }
