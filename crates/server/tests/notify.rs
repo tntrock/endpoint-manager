@@ -212,3 +212,65 @@ fn backoff_doubles_to_an_hour() {
     let m = |f| worker::backoff(f).num_minutes();
     assert_eq!((m(1), m(2), m(3), m(7), m(30)), (1, 2, 4, 60, 60));
 }
+
+#[sqlx::test(migrations = false)]
+async fn notify_settings_page(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let admin = s.admin_client().await;
+    let (st, html) = s.page(&admin, "/compliance/notify").await;
+    assert_eq!(st, 200);
+    assert!(
+        html.contains("EM_SMTP_PASSWORD") && html.contains("未設定"),
+        "只顯示機密是否已設定"
+    );
+    let csrf = common::csrf_from(&html);
+    let post = |pairs: Vec<(&'static str, String)>| {
+        let c = admin.clone();
+        let url = s.web_url("/compliance/notify");
+        async move { c.post(url).form(&pairs).send().await.unwrap() }
+    };
+    let r = post(vec![
+        ("csrf", csrf.clone()),
+        ("min_severity", "high".into()),
+        ("interval_minutes", "5".into()),
+        ("webhook_url", "http://insecure.example.com".into()),
+    ])
+    .await;
+    assert_eq!(r.status(), 409);
+    assert!(r.text().await.unwrap().contains("https://"));
+    let r = post(vec![
+        ("csrf", csrf.clone()),
+        ("min_severity", "high".into()),
+        ("interval_minutes", "5".into()),
+        ("webhook_url", "https://hooks.example.com/x".into()),
+        ("smtp_host", "smtp.example.com".into()),
+        ("smtp_port", "587".into()),
+        ("smtp_tls", "starttls".into()),
+        ("smtp_from", "em@example.com".into()),
+        ("smtp_to", "a@example.com, b@example.com".into()),
+    ])
+    .await;
+    assert_eq!(r.status(), 303);
+    let n = notify::load_settings(&s.pool).await.unwrap();
+    assert_eq!(
+        n.min_severity,
+        endpoint_server::compliance::rules::Severity::High
+    );
+    assert_eq!(n.email.unwrap().to, vec!["a@example.com", "b@example.com"]);
+    let (_, html) = s.page(&admin, "/compliance").await;
+    assert!(
+        html.contains("Webhook") && html.contains("Email"),
+        "總覽顯示通知狀態"
+    );
+
+    let g = s
+        .login_as(
+            "gary",
+            endpoint_server::web::auth::Role::GroupAdmin,
+            &["台北"],
+        )
+        .await;
+    assert_eq!(s.page(&g, "/compliance/notify").await.0, 403);
+    let (_, html) = s.page(&g, "/compliance").await;
+    assert!(!html.contains("Webhook"), "通知狀態只給平台管理員");
+}

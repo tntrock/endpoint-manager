@@ -247,6 +247,42 @@ struct OverviewPage {
     progress_total: i64,
     trend: Vec<TrendRow>,
     trend_max: i64,
+    channels: Vec<ChannelStatus>,
+}
+
+pub struct ChannelStatus {
+    pub name: &'static str,
+    pub enabled: bool,
+    pub last_ok: String,
+    pub error: String,
+}
+
+type ChannelRow = (String, Option<DateTime<Utc>>, Option<String>);
+
+/// 通知管道狀態（只給平台管理員）
+async fn channels(st: &AppState) -> Result<Vec<ChannelStatus>, sqlx::Error> {
+    let n = crate::notify::load_settings(&st.pool).await?;
+    let rows: Vec<ChannelRow> = sqlx::query_as(
+        "SELECT channel, last_ok_at, last_error FROM notify_channels ORDER BY channel",
+    )
+    .fetch_all(&st.pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(c, ok, err)| {
+            let email = c == "email";
+            ChannelStatus {
+                name: if email { "Email" } else { "Webhook" },
+                enabled: if email {
+                    n.email.is_some()
+                } else {
+                    n.webhook_url.is_some()
+                },
+                last_ok: fmt_time(st, ok),
+                error: err.unwrap_or_default(),
+            }
+        })
+        .collect())
 }
 
 type SummaryRow = (i64, String, String, i64, i64, i64);
@@ -322,6 +358,11 @@ pub async fn overview(
             })
             .collect(),
         trend_max,
+        channels: if s.all_devices() {
+            channels(&st).await?
+        } else {
+            vec![]
+        },
     }))
 }
 

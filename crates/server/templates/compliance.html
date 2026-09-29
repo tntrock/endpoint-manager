@@ -21,6 +21,13 @@
   </tr>
   {% endfor %}
 </table>
+{% if !channels.is_empty() %}
+<h2>通知 <a href="/compliance/notify">設定</a></h2>
+<table>
+  <tr><th>管道</th><th>狀態</th><th>最後成功</th><th>最後錯誤</th></tr>
+  {% for c in channels %}<tr><td>{{ c.name }}</td><td>{% if c.enabled %}啟用{% else %}<span class="muted">停用</span>{% endif %}</td><td>{{ c.last_ok }}</td><td class="error">{{ c.error }}</td></tr>{% endfor %}
+</table>
+{% endif %}
 {% if !trend.is_empty() %}
 <h2>近 30 天違規數</h2>
 <table>

@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>通知設定</h1>
+<p><a href="/compliance">← 合規總覽</a></p>
+<form method="post" action="/compliance/notify">
+  <input type="hidden" name="csrf" value="{{ nav.csrf }}">
+  <p><label>通知門檻 <select name="min_severity">{% for o in severities %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}以上</option>{% endfor %}</select></label>
+     <label>彙整間隔 <input name="interval_minutes" type="number" min="1" max="1440" value="{{ interval_minutes }}" required> 分鐘</label></p>
+  <fieldset><legend>Email（SMTP 主機留空＝停用）</legend>
+    <p><label>SMTP 主機 <input name="smtp_host" value="{{ smtp_host }}" size="30"></label>
+       <label>埠 <input name="smtp_port" value="{{ smtp_port }}" size="5"></label>
+       <label><input type="radio" name="smtp_tls" value="starttls" {% if starttls %}checked{% endif %}> STARTTLS</label>
+       <label><input type="radio" name="smtp_tls" value="tls" {% if !starttls %}checked{% endif %}> TLS</label></p>
+    <p><label>帳號 <input name="smtp_username" value="{{ smtp_username }}" autocomplete="off"></label>
+       密碼：環境變數 <code>EM_SMTP_PASSWORD</code>（{% if smtp_password_set %}已設定{% else %}未設定{% endif %}）</p>
+    <p><label>寄件者 <input name="smtp_from" value="{{ smtp_from }}" size="30"></label></p>
+    <p><label>收件人（逗號分隔）<input name="smtp_to" value="{{ smtp_to }}" size="60"></label></p>
+  </fieldset>
+  <fieldset><legend>Webhook（網址留空＝停用）</legend>
+    <p><label>網址 <input name="webhook_url" value="{{ webhook_url }}" size="60" placeholder="https://"></label></p>
+    <p class="muted">簽章密鑰：環境變數 <code>EM_WEBHOOK_SECRET</code>（{% if webhook_secret_set %}已設定{% else %}未設定{% endif %}）。設定後每個請求帶 <code>X-EM-Timestamp</code> 與 <code>X-EM-Signature: sha256=HMAC(密鑰, 時間戳記 + "." + 內文)</code>。</p>
+  </fieldset>
+  <p><button>儲存</button></p>
+</form>
+<form hx-post="/compliance/notify/test" hx-target="#test-result">
+  <input type="hidden" name="csrf" value="{{ nav.csrf }}">
+  <button name="channel" value="email">送出測試 Email</button>
+  <button name="channel" value="webhook">送出測試 Webhook</button>
+</form>
+<div id="test-result"></div>
+{% endblock %}
