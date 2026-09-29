@@ -5,6 +5,7 @@ pub mod evaluate;
 pub mod matcher;
 pub mod rules;
 pub mod store;
+pub mod worker;
 
 use std::sync::Arc;
 

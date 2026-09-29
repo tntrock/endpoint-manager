@@ -318,3 +318,137 @@ async fn exemption_marks_exempt_and_revoke_restores(pool: PgPool) {
             .unwrap();
     assert_eq!(n, 2);
 }
+
+use endpoint_server::compliance::worker;
+
+fn kb_rule(kb: &str) -> RuleInput {
+    input("required_kb", serde_json::json!({ "kb": kb }))
+}
+
+#[sqlx::test(migrations = false)]
+async fn recompute_applies_rule_changes_to_all_devices(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(3).await;
+    let mut agents = vec![];
+    for _ in 0..3 {
+        let a = s.enroll_ok(&tok, None, None).await;
+        put(&s, &a, InventoryPayload::Patches(vec![])).await;
+        agents.push(a);
+    }
+    let id = admin::create_rule(&s.pool, &kb_rule("KB5031455"), "admin")
+        .await
+        .unwrap();
+    for a in &agents {
+        assert!(violations(&s, a).await.is_empty(), "還沒重算");
+    }
+    worker::recompute_all(&s.pool).await.unwrap();
+    for a in &agents {
+        assert_eq!(violations(&s, a).await, vec![(id, "violating".into())]);
+    }
+    assert!(!worker::progress(&s.pool).await.unwrap().running);
+
+    // 停用 → 重算後清除並寫解除事件
+    let mut off = kb_rule("KB5031455");
+    off.enabled = false;
+    admin::update_rule(&s.pool, id, &off, "admin")
+        .await
+        .unwrap();
+    assert!(worker::progress(&s.pool).await.unwrap().running);
+    worker::recompute_all(&s.pool).await.unwrap();
+    for a in &agents {
+        assert!(violations(&s, a).await.is_empty());
+        assert_eq!(
+            events(&s, a).await.last().unwrap(),
+            &("violating".to_string(), "none".to_string())
+        );
+    }
+}
+
+#[sqlx::test(migrations = false)]
+async fn recompute_restarts_when_rules_change_midway(pool: PgPool) {
+    let (s, a) = setup(pool).await;
+    put(&s, &a, InventoryPayload::Patches(vec![])).await;
+    admin::create_rule(&s.pool, &kb_rule("KB5031455"), "admin")
+        .await
+        .unwrap();
+    // 模擬跑到一半（cursor 已越過這台）時規則又改了
+    sqlx::query(
+        "UPDATE compliance_state SET run_generation = generation, \
+         cursor = 'ffffffff-ffff-ffff-ffff-ffffffffffff'",
+    )
+    .execute(&s.pool)
+    .await
+    .unwrap();
+    let second = admin::create_rule(&s.pool, &kb_rule("KB5031456"), "admin")
+        .await
+        .unwrap();
+    worker::recompute_all(&s.pool).await.unwrap();
+    let v = violations(&s, &a).await;
+    assert_eq!(v.len(), 2, "從頭重算，兩條規則都套用：{v:?}");
+    assert_eq!(v[1].0, second);
+    let (g, done): (i64, i64) =
+        sqlx::query_as("SELECT generation, done_generation FROM compliance_state")
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+    assert_eq!(g, done);
+}
+
+#[sqlx::test(migrations = false)]
+async fn expired_exemption_is_removed_and_reevaluated(pool: PgPool) {
+    let (s, a) = setup(pool).await;
+    let rule = admin::create_rule(&s.pool, &kb_rule("KB5031455"), "admin")
+        .await
+        .unwrap();
+    put(&s, &a, InventoryPayload::Patches(vec![])).await;
+    admin::create_exemption(
+        &s.pool,
+        a.device_id,
+        rule,
+        "暫時",
+        chrono::Utc::now() + chrono::Duration::days(1),
+        "admin",
+    )
+    .await
+    .unwrap();
+    assert_eq!(violations(&s, &a).await, vec![(rule, "exempt".into())]);
+    sqlx::query("UPDATE compliance_exemptions SET expires_at = now() - interval '1 second'")
+        .execute(&s.pool)
+        .await
+        .unwrap();
+    assert_eq!(worker::expire_exemptions(&s.pool).await.unwrap(), 1);
+    assert_eq!(violations(&s, &a).await, vec![(rule, "violating".into())]);
+    let n: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM audit_log WHERE action = 'exemption_expire'")
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+    assert_eq!(n, 1);
+}
+
+#[sqlx::test(migrations = false)]
+async fn daily_snapshot_and_history_cleanup(pool: PgPool) {
+    let (s, a) = setup(pool).await;
+    let rule = admin::create_rule(&s.pool, &kb_rule("KB5031455"), "admin")
+        .await
+        .unwrap();
+    put(&s, &a, InventoryPayload::Patches(vec![])).await;
+    let today = chrono::Utc::now().date_naive();
+    worker::snapshot_daily(&s.pool, today).await.unwrap();
+    worker::snapshot_daily(&s.pool, today).await.unwrap();
+    let row: (i32, i32, i32) = sqlx::query_as(
+        "SELECT violating, unknown, exempt FROM compliance_daily WHERE day = $1 AND rule_id = $2",
+    )
+    .bind(today)
+    .bind(rule)
+    .fetch_one(&s.pool)
+    .await
+    .unwrap();
+    assert_eq!(row, (1, 0, 0));
+
+    sqlx::query("UPDATE violation_events SET at = now() - interval '400 days'")
+        .execute(&s.pool)
+        .await
+        .unwrap();
+    assert_eq!(worker::cleanup_history(&s.pool).await.unwrap(), 1);
+}
