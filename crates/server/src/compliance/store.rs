@@ -192,6 +192,13 @@ pub async fn load_facts(
 /// 一次寫入的歷程事件：(rule_id, rule_name, severity, from, to, detail)
 type EventRow = (i64, String, String, String, String, String);
 
+/// 只在「未知」與「無結果」之間變動的轉換不寫歷程：規則剛上線、資料還沒收集時，
+/// 每台 × 每條規則都會是未知，逐筆記錄會讓歷程暴增（三萬台 × 千條規則＝三千萬筆）。
+fn recorded(from: &str, to: &str) -> bool {
+    let quiet = |s: &str| s == "none" || s == "unknown";
+    !(quiet(from) && quiet(to))
+}
+
 async fn insert_events(
     conn: &mut PgConnection,
     device: Uuid,
@@ -284,6 +291,7 @@ async fn apply(
     for (rule_id, status, detail, name, severity) in old.into_values() {
         events.push((rule_id, name, severity, status, "none".into(), detail));
     }
+    events.retain(|e| recorded(&e.3, &e.4));
 
     if !inserts.is_empty() {
         sqlx::query(
