@@ -147,10 +147,11 @@ pub async fn expire_exemptions(pool: &PgPool) -> Result<u64, sqlx::Error> {
 pub async fn snapshot_daily(pool: &PgPool, day: NaiveDate) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO compliance_daily (day, rule_id, violating, unknown, exempt) \
-         SELECT $1, rule_id, count(*) FILTER (WHERE status = 'violating'), \
-                count(*) FILTER (WHERE status = 'unknown'), \
-                count(*) FILTER (WHERE status = 'exempt') \
-         FROM device_violations GROUP BY rule_id \
+         SELECT $1, r.id, count(v.rule_id) FILTER (WHERE v.status = 'violating'), \
+                count(v.rule_id) FILTER (WHERE v.status = 'unknown'), \
+                count(v.rule_id) FILTER (WHERE v.status = 'exempt') \
+         FROM compliance_rules r LEFT JOIN device_violations v ON v.rule_id = r.id \
+         WHERE r.enabled GROUP BY r.id \
          ON CONFLICT (day, rule_id) DO UPDATE SET violating = EXCLUDED.violating, \
            unknown = EXCLUDED.unknown, exempt = EXCLUDED.exempt",
     )
@@ -190,7 +191,8 @@ pub async fn cleanup_history(pool: &PgPool) -> Result<u64, sqlx::Error> {
     Ok(events)
 }
 
-pub fn spawn(pool: PgPool) {
+/// display_offset：以管理網頁的時區決定每日快照屬於哪一天
+pub fn spawn(pool: PgPool, display_offset: chrono::FixedOffset) {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(5));
         let mut last_expire: Option<Instant> = None;
@@ -208,7 +210,9 @@ pub fn spawn(pool: PgPool) {
             }
             if last_hourly.is_none_or(|t| t.elapsed() >= Duration::from_secs(3600)) {
                 last_hourly = Some(Instant::now());
-                let today = chrono::Utc::now().date_naive();
+                let today = chrono::Utc::now()
+                    .with_timezone(&display_offset)
+                    .date_naive();
                 if let Err(e) = snapshot_daily(&pool, today).await {
                     tracing::error!(error = %e, "compliance snapshot failed");
                 }
