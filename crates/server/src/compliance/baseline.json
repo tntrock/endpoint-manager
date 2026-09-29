@@ -1,0 +1,222 @@
+[
+  {
+    "key": "firewall_all_profiles",
+    "category": "網路與防火牆",
+    "name": "防火牆三個設定檔皆啟用",
+    "description": "網域、私人、公用設定檔都必須啟用 Windows 防火牆。",
+    "severity": "high",
+    "kind": "firewall",
+    "params": {"profiles": ["domain", "private", "public"]},
+    "source": "https://learn.microsoft.com/windows/security/operating-system-security/network-security/windows-firewall/"
+  },
+  {
+    "key": "smb1_server_disabled",
+    "category": "網路與防火牆",
+    "name": "停用 SMBv1 伺服器",
+    "description": "LanmanServer\\Parameters\\SMB1 = 0。未設定時視為符合，適用於未安裝 SMBv1 的電腦（Windows 10 1709 以後的預設）；已安裝 SMBv1 功能的舊電腦沒有這個值時實際是啟用的，請搭配「停用 SMBv1 用戶端驅動程式」一起使用。",
+    "severity": "medium",
+    "kind": "registry_value",
+    "params": {"path": "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanServer\\Parameters", "name": "SMB1", "op": "equals", "expected": "0", "absent_ok": true},
+    "source": "https://learn.microsoft.com/windows-server/storage/file-server/troubleshoot/detect-enable-and-disable-smbv1-v2-v3"
+  },
+  {
+    "key": "smb1_client_disabled",
+    "category": "網路與防火牆",
+    "name": "停用 SMBv1 用戶端驅動程式",
+    "description": "mrxsmb10 驅動程式的 Start = 4（停用）。未安裝 SMBv1 時沒有這個機碼，視為符合。",
+    "severity": "medium",
+    "kind": "registry_value",
+    "params": {"path": "HKLM\\SYSTEM\\CurrentControlSet\\Services\\mrxsmb10", "name": "Start", "op": "equals", "expected": "4", "absent_ok": true},
+    "source": "https://learn.microsoft.com/windows-server/storage/file-server/troubleshoot/detect-enable-and-disable-smbv1-v2-v3"
+  },
+  {
+    "key": "smb_server_signing_required",
+    "category": "網路與防火牆",
+    "name": "要求 SMB 伺服器簽章",
+    "description": "Microsoft 網路伺服器：數位簽章通訊（自動）＝啟用（LanManServer\\Parameters\\RequireSecuritySignature = 1）。",
+    "severity": "medium",
+    "kind": "registry_value",
+    "params": {"path": "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanManServer\\Parameters", "name": "RequireSecuritySignature", "op": "equals", "expected": "1"},
+    "source": "https://learn.microsoft.com/troubleshoot/windows-server/networking/overview-server-message-block-signing"
+  },
+  {
+    "key": "llmnr_disabled",
+    "category": "網路與防火牆",
+    "name": "停用 LLMNR",
+    "description": "群組原則「關閉多點傳送名稱解析」（DNSClient\\EnableMulticast = 0）。",
+    "severity": "low",
+    "kind": "registry_value",
+    "params": {"path": "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows NT\\DNSClient", "name": "EnableMulticast", "op": "equals", "expected": "0"},
+    "source": "https://learn.microsoft.com/windows/client-management/mdm/policy-csp-admx-dnsclient#turn_off_multicast"
+  },
+  {
+    "key": "remote_registry_disabled",
+    "category": "網路與防火牆",
+    "name": "停用遠端登錄服務",
+    "description": "RemoteRegistry 服務必須停用（未安裝也算符合）。",
+    "severity": "medium",
+    "kind": "service_state",
+    "params": {"name": "RemoteRegistry", "require": "disabled"},
+    "source": "https://learn.microsoft.com/windows-server/security/windows-services/security-guidelines-for-disabling-system-services-in-windows-server"
+  },
+  {
+    "key": "rdp_nla_required",
+    "category": "網路與防火牆",
+    "name": "遠端桌面要求網路層級驗證（NLA）",
+    "description": "RDP-Tcp\\UserAuthentication = 1。只檢查本機設定；以群組原則（Policies\\...\\Terminal Services）設定的值不在檢查範圍內。",
+    "severity": "medium",
+    "kind": "registry_value",
+    "params": {"path": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server\\WinStations\\RDP-Tcp", "name": "UserAuthentication", "op": "equals", "expected": "1"},
+    "source": "https://learn.microsoft.com/troubleshoot/azure/virtual-machines/windows/cannot-connect-rdp-azure-vm"
+  },
+  {
+    "key": "ntlmv2_only",
+    "category": "帳號與密碼",
+    "name": "只允許 NTLMv2",
+    "description": "LAN Manager 驗證等級 5：只送 NTLMv2 回應，拒絕 LM 與 NTLM（Lsa\\LmCompatibilityLevel ≥ 5）。",
+    "severity": "high",
+    "kind": "registry_value",
+    "params": {"path": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa", "name": "LmCompatibilityLevel", "op": "gte", "expected": "5"},
+    "source": "https://learn.microsoft.com/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/network-security-lan-manager-authentication-level"
+  },
+  {
+    "key": "wdigest_disabled",
+    "category": "帳號與密碼",
+    "name": "停用 WDigest 明文認證快取",
+    "description": "WDigest\\UseLogonCredential = 0。Windows 8.1 以後未設定時預設為 0，視為符合。",
+    "severity": "high",
+    "kind": "registry_value",
+    "params": {"path": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\SecurityProviders\\WDigest", "name": "UseLogonCredential", "op": "equals", "expected": "0", "absent_ok": true},
+    "source": "https://support.microsoft.com/help/2871997"
+  },
+  {
+    "key": "restrict_anonymous",
+    "category": "帳號與密碼",
+    "name": "限制匿名列舉 SAM 帳戶與共用",
+    "description": "網路存取：不允許 SAM 帳戶和共用的匿名列舉＝啟用（Lsa\\RestrictAnonymous = 1）。",
+    "severity": "medium",
+    "kind": "registry_value",
+    "params": {"path": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa", "name": "RestrictAnonymous", "op": "equals", "expected": "1"},
+    "source": "https://learn.microsoft.com/previous-versions/windows/it-pro/windows-server-2012-r2-and-2012/jj852184(v=ws.11)"
+  },
+  {
+    "key": "lsa_protection",
+    "category": "帳號與密碼",
+    "name": "LSA 保護",
+    "description": "Lsa\\RunAsPPL = 1（搭配 UEFI 變數）或 2（不搭配 UEFI 變數），兩者都算啟用。",
+    "severity": "medium",
+    "kind": "registry_value",
+    "params": {"path": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa", "name": "RunAsPPL", "op": "gte", "expected": "1"},
+    "source": "https://learn.microsoft.com/windows-server/security/credentials-protection-and-management/configuring-additional-lsa-protection"
+  },
+  {
+    "key": "password_min_length_12",
+    "category": "帳號與密碼",
+    "name": "本機密碼最短 12 碼",
+    "description": "只約束本機帳號；網域帳號由網域原則決定。",
+    "severity": "medium",
+    "kind": "password_policy",
+    "params": {"min_length": 12},
+    "source": "https://learn.microsoft.com/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/minimum-password-length"
+  },
+  {
+    "key": "lockout_threshold_10",
+    "category": "帳號與密碼",
+    "name": "帳號鎖定門檻 10 次以內",
+    "description": "門檻為 0（永不鎖定）也算不符合。只約束本機帳號。",
+    "severity": "medium",
+    "kind": "password_policy",
+    "params": {"max_lockout_threshold": 10},
+    "source": "https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/account-lockout-threshold"
+  },
+  {
+    "key": "local_admins_builtin_only",
+    "category": "帳號與密碼",
+    "name": "本機管理員只允許內建 Administrator",
+    "description": "建立後請自行補上公司的網域管理群組，例如 網域\\Domain Admins。",
+    "severity": "high",
+    "kind": "local_admins",
+    "params": {"allowed": ["*\\Administrator"]},
+    "source": "https://learn.microsoft.com/windows-server/identity/ad-ds/plan/security-best-practices/implementing-least-privilege-administrative-models"
+  },
+  {
+    "key": "defender_realtime",
+    "category": "防毒與加密",
+    "name": "Defender 即時保護",
+    "description": "Microsoft Defender 防毒必須是作用中的防毒，且即時保護開啟。",
+    "severity": "high",
+    "kind": "defender",
+    "params": {"realtime": true},
+    "source": "https://learn.microsoft.com/defender-endpoint/configure-real-time-protection-microsoft-defender-antivirus"
+  },
+  {
+    "key": "defender_signature_7d",
+    "category": "防毒與加密",
+    "name": "Defender 病毒碼 7 天內更新",
+    "description": "病毒碼超過 7 天未更新算不符合。",
+    "severity": "medium",
+    "kind": "defender",
+    "params": {"max_signature_age_days": 7},
+    "source": "https://learn.microsoft.com/defender-endpoint/microsoft-defender-antivirus-updates"
+  },
+  {
+    "key": "defender_tamper",
+    "category": "防毒與加密",
+    "name": "Defender 防竄改保護",
+    "description": "防竄改保護必須開啟。",
+    "severity": "medium",
+    "kind": "defender",
+    "params": {"tamper": true},
+    "source": "https://learn.microsoft.com/defender-endpoint/prevent-changes-to-security-settings-with-tamper-protection"
+  },
+  {
+    "key": "bitlocker_system",
+    "category": "防毒與加密",
+    "name": "BitLocker 保護系統磁碟",
+    "description": "系統磁碟必須啟用 BitLocker 且保護中。",
+    "severity": "high",
+    "kind": "bitlocker",
+    "params": {"scope": "system"},
+    "source": "https://learn.microsoft.com/windows/security/operating-system-security/data-protection/bitlocker/"
+  },
+  {
+    "key": "uac_enabled",
+    "category": "系統強化",
+    "name": "UAC 開啟",
+    "description": "以管理員核准模式執行所有系統管理員＝啟用（Policies\\System\\EnableLUA = 1，預設值）。",
+    "severity": "high",
+    "kind": "registry_value",
+    "params": {"path": "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System", "name": "EnableLUA", "op": "equals", "expected": "1", "absent_ok": true},
+    "source": "https://learn.microsoft.com/windows/security/application-security/application-control/user-account-control/settings-and-configuration"
+  },
+  {
+    "key": "uac_admin_prompt",
+    "category": "系統強化",
+    "name": "UAC 提升權限前必須提示管理員",
+    "description": "ConsentPromptBehaviorAdmin 不能是 0（不提示直接提升）。預設值 5 算符合。",
+    "severity": "low",
+    "kind": "registry_value",
+    "params": {"path": "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System", "name": "ConsentPromptBehaviorAdmin", "op": "not_equals", "expected": "0", "absent_ok": true},
+    "source": "https://learn.microsoft.com/windows/security/application-security/application-control/user-account-control/settings-and-configuration"
+  },
+  {
+    "key": "autorun_disabled",
+    "category": "系統強化",
+    "name": "停用所有磁碟的自動執行",
+    "description": "群組原則「關閉自動播放」套用到所有磁碟（Policies\\Explorer\\NoDriveTypeAutoRun = 255）。",
+    "severity": "medium",
+    "kind": "registry_value",
+    "params": {"path": "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer", "name": "NoDriveTypeAutoRun", "op": "equals", "expected": "255"},
+    "source": "https://learn.microsoft.com/windows/win32/shell/autoplay-reg"
+  },
+  {
+    "key": "powershell_scriptblock_logging",
+    "category": "系統強化",
+    "name": "PowerShell 指令碼區塊記錄",
+    "description": "Windows PowerShell 5.1 的「開啟 PowerShell 指令碼區塊記錄」（ScriptBlockLogging\\EnableScriptBlockLogging = 1）。",
+    "severity": "low",
+    "kind": "registry_value",
+    "params": {"path": "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell\\ScriptBlockLogging", "name": "EnableScriptBlockLogging", "op": "equals", "expected": "1"},
+    "source": "https://learn.microsoft.com/powershell/module/microsoft.powershell.core/about/about_logging?view=powershell-5.1"
+  }
+]

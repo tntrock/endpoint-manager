@@ -6,7 +6,8 @@ use loadsim::{Device, Report, Target};
 const USAGE: &str = "usage:
   loadsim enroll    --server URL --root root.pem --token TOKEN --count N [--concurrency 50] --out devices.json
   loadsim heartbeat --server URL --root root.pem --devices devices.json [--rate 500] [--secs 60] [--max-p99-ms 200]
-  loadsim upload    --server URL --root root.pem --devices devices.json [--items 150] [--concurrency 100] [--max-secs 600]";
+  loadsim upload    --server URL --root root.pem --devices devices.json [--items 150] [--concurrency 100] [--max-secs 600]
+  loadsim config    --server URL --root root.pem --devices devices.json [--concurrency 100] [--max-secs 900]";
 
 fn arg(args: &[String], name: &str) -> Option<String> {
     let i = args.iter().position(|a| a == name)?;
@@ -100,6 +101,20 @@ async fn main() -> anyhow::Result<()> {
             print(&r);
             println!("unverified {unverified}");
             let max = Duration::from_secs(num(&args, "--max-secs", 600)?);
+            if r.errors > 0 || unverified > 0 || r.elapsed > max {
+                bail!(
+                    "FAIL: errors {} / unverified {unverified} / elapsed {:?}",
+                    r.errors,
+                    r.elapsed
+                );
+            }
+        }
+        "config" => {
+            let (r, unverified) =
+                loadsim::config(&t, &load()?, num(&args, "--concurrency", 100)?).await;
+            print(&r);
+            println!("unverified {unverified}");
+            let max = Duration::from_secs(num(&args, "--max-secs", 900)?);
             if r.errors > 0 || unverified > 0 || r.elapsed > max {
                 bail!(
                     "FAIL: errors {} / unverified {unverified} / elapsed {:?}",

@@ -31,6 +31,48 @@
   {% else if kind == "required_kb" %}
     <p><label>KB 編號 <input name="p_kb" value="{{ p.kb }}" required placeholder="KB5034439"></label></p>
     <p class="muted">每月累積更新會取代舊 KB，請用「最低組建號」規則檢查累積更新；這裡適合不走累積更新的獨立修補。</p>
+  {% else if kind == "registry_value" %}
+    <p><label>機碼路徑 <input name="p_reg_path" value="{{ p.reg_path }}" required maxlength="1024" size="70" placeholder="HKLM\SOFTWARE\Policies\Microsoft\Windows\..."></label></p>
+    <p><label>值名稱 <input name="p_reg_name" value="{{ p.reg_name }}" maxlength="256" size="40"></label></p>
+    <p><label>比對方式 <select name="p_reg_op">
+      <option value="equals" {% if p.reg_op == "equals" %}selected{% endif %}>等於</option>
+      <option value="not_equals" {% if p.reg_op == "not_equals" %}selected{% endif %}>不等於</option>
+      <option value="gte" {% if p.reg_op == "gte" %}selected{% endif %}>大於等於</option>
+      <option value="lte" {% if p.reg_op == "lte" %}selected{% endif %}>小於等於</option>
+      <option value="contains" {% if p.reg_op == "contains" %}selected{% endif %}>包含</option>
+      <option value="exists" {% if p.reg_op == "exists" %}selected{% endif %}>存在</option>
+      <option value="not_exists" {% if p.reg_op == "not_exists" %}selected{% endif %}>不存在</option>
+    </select></label>
+       <label>期望值 <input name="p_reg_expected" value="{{ p.reg_expected }}" maxlength="256"></label></p>
+    <p><label><input type="checkbox" name="p_reg_absent_ok" value="1" {% if p.reg_absent_ok %}checked{% endif %}> 未設定時視為符合</label></p>
+    <p class="muted">只能讀取 HKLM，不能讀取 SAM、SECURITY 與自動登入密碼；值名稱留空代表機碼的預設值。大於等於／小於等於的期望值必須是數字（可用 0x 十六進位）；存在／不存在不需要期望值。</p>
+  {% else if kind == "service_state" %}
+    <p><label>服務名稱 <input name="p_svc_name" value="{{ p.svc_name }}" required maxlength="256" placeholder="RemoteRegistry"></label></p>
+    <p><label><input type="radio" name="p_svc_require" value="disabled" {% if p.svc_require != "running" %}checked{% endif %}> 必須停用</label>
+       <label><input type="radio" name="p_svc_require" value="running" {% if p.svc_require == "running" %}checked{% endif %}> 必須執行中</label></p>
+    <p class="muted">「必須停用」時，未安裝也算符合；「必須執行中」時，未安裝算違規。</p>
+  {% else if kind == "firewall" %}
+    <p>必須啟用的設定檔：
+       <label><input type="checkbox" name="p_fw_domain" value="1" {% if p.fw_domain %}checked{% endif %}> 網域</label>
+       <label><input type="checkbox" name="p_fw_private" value="1" {% if p.fw_private %}checked{% endif %}> 私人</label>
+       <label><input type="checkbox" name="p_fw_public" value="1" {% if p.fw_public %}checked{% endif %}> 公用</label></p>
+  {% else if kind == "bitlocker" %}
+    <p><label><input type="radio" name="p_bl_scope" value="system" {% if p.bl_scope != "all_fixed" %}checked{% endif %}> 只看系統磁碟</label>
+       <label><input type="radio" name="p_bl_scope" value="all_fixed" {% if p.bl_scope == "all_fixed" %}checked{% endif %}> 所有固定磁碟</label></p>
+  {% else if kind == "defender" %}
+    <p><label><input type="checkbox" name="p_df_realtime" value="1" {% if p.df_realtime %}checked{% endif %}> 即時保護必須開啟</label>
+       <label><input type="checkbox" name="p_df_tamper" value="1" {% if p.df_tamper %}checked{% endif %}> 防竄改保護必須開啟</label></p>
+    <p><label>病毒碼最多幾天未更新（選填）<input name="p_df_days" value="{{ p.df_days }}" inputmode="numeric" placeholder="7"></label></p>
+    <p class="muted">Defender 不是作用中的防毒（例如改用其他防毒）時結果為「未知」。</p>
+  {% else if kind == "password_policy" %}
+    <p><label>密碼最短長度（至少）<input name="p_pw_min_length" value="{{ p.pw_min_length }}" inputmode="numeric" placeholder="12"></label></p>
+    <p><label>密碼最長使用天數（至多，永不過期算不符合）<input name="p_pw_max_age" value="{{ p.pw_max_age }}" inputmode="numeric" placeholder="90"></label></p>
+    <p><label>帳號鎖定門檻（至多，且不能為 0）<input name="p_pw_max_lockout" value="{{ p.pw_max_lockout }}" inputmode="numeric" placeholder="10"></label></p>
+    <p class="muted">只約束本機帳號；網域帳號由網域原則決定。至少填一項。</p>
+  {% else if kind == "local_admins" %}
+    <p><label>允許的 Administrators 成員<br>
+       <textarea name="p_admins_allowed" rows="8" cols="60">{{ p.admins_allowed }}</textarea></label></p>
+    <p class="muted">每行一個，<code>*</code> 代表任意字元，不分大小寫，例如 <code>*\Administrator</code>、<code>CORP\Domain Admins</code>。清單外的成員算違規。</p>
   {% endif %}
   </fieldset>
 

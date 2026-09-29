@@ -329,6 +329,7 @@ async fn security_and_registry_roundtrip_with_history(pool: PgPool) {
             params: serde_json::json!({"path": r"HKLM\SOFTWARE\X", "name": "Y", "op": "exists"}),
             include: vec![],
             exclude: vec![],
+            template_key: None,
         },
         "admin",
     )

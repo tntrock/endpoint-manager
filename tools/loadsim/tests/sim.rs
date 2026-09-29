@@ -56,4 +56,19 @@ async fn enroll_heartbeat_upload(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(rows, 250);
+
+    // 組態：套用 config_rules.sql 後，每台上傳 1,000 個登錄檔值與 security
+    sqlx::raw_sql(include_str!("../config_rules.sql"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    // 報到用的規則快取最多每 5 秒確認一次 generation
+    tokio::time::sleep(Duration::from_millis(5500)).await;
+    let (cfg, unverified) = loadsim::config(&t, &devices, 5).await;
+    assert_eq!((cfg.ok, cfg.errors, unverified), (5, 0, 0));
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM device_registry")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(rows, 5 * 1000);
 }

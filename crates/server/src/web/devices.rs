@@ -498,6 +498,7 @@ pub async fn detail(
         },
         tabs: vec![
             ("compliance", "合規"),
+            ("security", "安全設定"),
             ("software", "軟體"),
             ("patches", "修補（KB）"),
             ("services", "服務"),
@@ -515,6 +516,9 @@ pub async fn tab(
 ) -> Result<Response, AppError> {
     if tab == "compliance" {
         return super::compliance::device_tab(&st, &s, id).await;
+    }
+    if tab == "security" {
+        return super::compliance::security_tab(&st, &s, id).await;
     }
     if device_group_in_scope(&st, &s, id).await?.is_none() {
         return Ok(not_found());

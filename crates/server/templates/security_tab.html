@@ -1,0 +1,8 @@
+{% if let Some(u) = updated %}
+<p class="muted">最後更新：{{ u }}</p>
+<table>
+  {% for l in lines %}<tr><th>{{ l.label }}</th><td>{% if l.error %}<span class="error">收集失敗：{{ l.value }}</span>{% else %}{{ l.value }}{% endif %}</td></tr>{% endfor %}
+</table>
+{% else %}
+<p class="muted">尚未收到安全設定（Agent 版本需 0.3.0 以上）。</p>
+{% endif %}

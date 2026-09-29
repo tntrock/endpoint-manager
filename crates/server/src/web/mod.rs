@@ -13,6 +13,7 @@ pub mod groups;
 pub mod login;
 pub mod notify;
 pub mod password;
+pub mod registry;
 pub mod rules;
 pub mod software;
 pub mod tokens;
@@ -119,6 +120,8 @@ pub fn web_router(state: AppState) -> Router {
         .route("/logout", post(login::logout))
         .route("/devices", get(devices::list))
         .route("/software", get(software::search))
+        .route("/registry", get(registry::query))
+        .route("/registry/devices", get(registry::devices))
         .route("/compliance", get(compliance::overview))
         .route("/compliance/violations", get(compliance::violations))
         .route("/compliance/violations.csv", get(compliance::export_csv))
@@ -126,6 +129,10 @@ pub fn web_router(state: AppState) -> Router {
         .route("/compliance/notify/test", post(notify::test))
         .route("/compliance/rules", get(rules::list).post(rules::create))
         .route("/compliance/rules/new", get(rules::new_form))
+        .route(
+            "/compliance/rules/templates",
+            get(rules::templates_page).post(rules::create_from_templates),
+        )
         .route("/compliance/rules/preview", post(rules::preview))
         .route(
             "/compliance/rules/{id}",

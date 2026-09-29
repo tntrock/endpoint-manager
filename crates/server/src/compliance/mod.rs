@@ -6,6 +6,7 @@ pub mod matcher;
 pub mod preview;
 pub mod rules;
 pub mod store;
+pub mod templates;
 pub mod worker;
 
 use std::sync::Arc;

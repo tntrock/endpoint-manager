@@ -42,6 +42,25 @@ pub struct ParamFields {
     pub build: String,
     pub min_ubr: String,
     pub kb: String,
+    pub reg_path: String,
+    pub reg_name: String,
+    pub reg_op: String,
+    pub reg_expected: String,
+    pub reg_absent_ok: bool,
+    pub svc_name: String,
+    pub svc_require: String,
+    pub fw_domain: bool,
+    pub fw_private: bool,
+    pub fw_public: bool,
+    pub bl_scope: String,
+    pub df_realtime: bool,
+    pub df_days: String,
+    pub df_tamper: bool,
+    pub pw_min_length: String,
+    pub pw_max_age: String,
+    pub pw_max_lockout: String,
+    /// 每行一個
+    pub admins_allowed: String,
 }
 
 pub fn parse_form(raw: &[u8]) -> RuleForm {
@@ -65,6 +84,24 @@ pub fn parse_form(raw: &[u8]) -> RuleForm {
             "p_build" => f.p.build = v,
             "p_min_ubr" => f.p.min_ubr = v,
             "p_kb" => f.p.kb = v,
+            "p_reg_path" => f.p.reg_path = v,
+            "p_reg_name" => f.p.reg_name = v,
+            "p_reg_op" => f.p.reg_op = v,
+            "p_reg_expected" => f.p.reg_expected = v,
+            "p_reg_absent_ok" => f.p.reg_absent_ok = v == "1",
+            "p_svc_name" => f.p.svc_name = v,
+            "p_svc_require" => f.p.svc_require = v,
+            "p_fw_domain" => f.p.fw_domain = v == "1",
+            "p_fw_private" => f.p.fw_private = v == "1",
+            "p_fw_public" => f.p.fw_public = v == "1",
+            "p_bl_scope" => f.p.bl_scope = v,
+            "p_df_realtime" => f.p.df_realtime = v == "1",
+            "p_df_days" => f.p.df_days = v,
+            "p_df_tamper" => f.p.df_tamper = v == "1",
+            "p_pw_min_length" => f.p.pw_min_length = v,
+            "p_pw_max_age" => f.p.pw_max_age = v,
+            "p_pw_max_lockout" => f.p.pw_max_lockout = v,
+            "p_admins_allowed" => f.p.admins_allowed = v,
             _ => {}
         }
     }
@@ -118,6 +155,49 @@ pub fn form_to_input(f: &RuleForm) -> Result<RuleInput, String> {
             Value::Object(m)
         }
         "required_kb" => json!({ "kb": p.kb }),
+        "registry_value" => {
+            let mut m = serde_json::Map::new();
+            m.insert("path".into(), json!(p.reg_path));
+            m.insert("name".into(), json!(p.reg_name));
+            m.insert("op".into(), json!(p.reg_op));
+            if !matches!(p.reg_op.as_str(), "exists" | "not_exists") {
+                m.insert("expected".into(), json!(p.reg_expected));
+            }
+            m.insert("absent_ok".into(), json!(p.reg_absent_ok));
+            Value::Object(m)
+        }
+        "service_state" => json!({"name": p.svc_name, "require": p.svc_require}),
+        "firewall" => {
+            let profiles: Vec<&str> = [
+                ("domain", p.fw_domain),
+                ("private", p.fw_private),
+                ("public", p.fw_public),
+            ]
+            .into_iter()
+            .filter_map(|(n, on)| on.then_some(n))
+            .collect();
+            json!({ "profiles": profiles })
+        }
+        "bitlocker" => json!({ "scope": p.bl_scope }),
+        "defender" => json!({
+            "realtime": p.df_realtime,
+            "tamper": p.df_tamper,
+            "max_signature_age_days": num("病毒碼天數", &p.df_days)?,
+        }),
+        "password_policy" => json!({
+            "min_length": num("最短長度", &p.pw_min_length)?,
+            "max_age_days": num("最長使用天數", &p.pw_max_age)?,
+            "max_lockout_threshold": num("鎖定門檻", &p.pw_max_lockout)?,
+        }),
+        "local_admins" => {
+            let allowed: Vec<&str> = p
+                .admins_allowed
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .collect();
+            json!({ "allowed": allowed })
+        }
         other => return Err(format!("未知的規則類型：{other}")),
     };
     Ok(RuleInput {
@@ -129,6 +209,7 @@ pub fn form_to_input(f: &RuleForm) -> Result<RuleInput, String> {
         params,
         include: f.include.clone(),
         exclude: f.exclude.clone(),
+        template_key: None,
     })
 }
 
@@ -139,7 +220,47 @@ pub fn params_to_form(kind: &str, v: &Value) -> ParamFields {
         Value::Number(n) => n.to_string(),
         _ => String::new(),
     };
+    let b = |k: &str| v[k].as_bool().unwrap_or(false);
+    let profile = |p: &str| {
+        v["profiles"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|x| x == p))
+    };
     ParamFields {
+        reg_path: s("path"),
+        reg_name: if kind == "registry_value" {
+            s("name")
+        } else {
+            String::new()
+        },
+        reg_op: s("op"),
+        reg_expected: s("expected"),
+        reg_absent_ok: b("absent_ok"),
+        svc_name: if kind == "service_state" {
+            s("name")
+        } else {
+            String::new()
+        },
+        svc_require: s("require"),
+        fw_domain: profile("domain"),
+        fw_private: profile("private"),
+        fw_public: profile("public"),
+        bl_scope: s("scope"),
+        df_realtime: b("realtime"),
+        df_days: s("max_signature_age_days"),
+        df_tamper: b("tamper"),
+        pw_min_length: s("min_length"),
+        pw_max_age: s("max_age_days"),
+        pw_max_lockout: s("max_lockout_threshold"),
+        admins_allowed: v["allowed"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default(),
         name: s("name"),
         publisher: s("publisher"),
         version: if kind == "required_software" {
@@ -167,6 +288,98 @@ pub fn params_to_form(kind: &str, v: &Value) -> ParamFields {
         min_ubr: s("min_ubr"),
         kb: s("kb"),
     }
+}
+
+pub struct TemplateRow {
+    pub key: &'static str,
+    pub name: &'static str,
+    pub description: &'static str,
+    pub severity: &'static str,
+    pub severity_class: &'static str,
+    pub source: &'static str,
+    pub used: bool,
+}
+
+#[derive(Template)]
+#[template(path = "rule_templates.html")]
+struct TemplatesPage {
+    nav: Nav,
+    /// (分類, 範本)
+    groups: Vec<(&'static str, Vec<TemplateRow>)>,
+    message: Option<String>,
+    failed: Vec<(String, String)>,
+}
+
+async fn render_templates(
+    st: &AppState,
+    s: &Session,
+    message: Option<String>,
+    failed: Vec<(String, String)>,
+) -> Result<Response, Response> {
+    let used = crate::compliance::templates::used_keys(&st.pool)
+        .await
+        .map_err(db_error)?;
+    let mut groups: Vec<(&'static str, Vec<TemplateRow>)> = vec![];
+    for t in crate::compliance::templates::all() {
+        let sev = Severity::parse(&t.severity).unwrap_or(Severity::Medium);
+        let row = TemplateRow {
+            key: &t.key,
+            name: &t.name,
+            description: &t.description,
+            severity: sev.label(),
+            severity_class: sev.as_str(),
+            source: &t.source,
+            used: used.contains(&t.key),
+        };
+        match groups.iter_mut().find(|g| g.0 == t.category) {
+            Some(g) => g.1.push(row),
+            None => groups.push((&t.category, vec![row])),
+        }
+    }
+    Ok(render(&TemplatesPage {
+        nav: Nav::from(s),
+        groups,
+        message,
+        failed,
+    }))
+}
+
+pub async fn templates_page(
+    State(st): State<AppState>,
+    AdminSession(s): AdminSession,
+) -> Result<Response, Response> {
+    platform(&s)?;
+    render_templates(&st, &s, None, vec![]).await
+}
+
+pub async fn create_from_templates(
+    State(st): State<AppState>,
+    AdminSession(s): AdminSession,
+    RawForm(raw): RawForm,
+) -> Result<Response, Response> {
+    let mut csrf = String::new();
+    let mut keys = vec![];
+    for (k, v) in form_urlencoded::parse(&raw) {
+        match k.as_ref() {
+            "csrf" => csrf = v.into_owned(),
+            "key" => keys.push(v.into_owned()),
+            _ => {}
+        }
+    }
+    check_csrf(&s, &csrf)?;
+    platform(&s)?;
+    let r = crate::compliance::templates::create(&st.pool, &keys, &s.username)
+        .await
+        .map_err(db_error)?;
+    let mut msg = format!(
+        "已建立 {} 條、略過 {} 條（已存在）",
+        r.created.len(),
+        r.skipped.len()
+    );
+    if !r.failed.is_empty() {
+        msg.push_str(&format!("、失敗 {} 條", r.failed.len()));
+    }
+    render_templates(&st, &s, Some(msg), r.failed).await
 }
 
 fn platform(s: &Session) -> Result<(), Response> {
@@ -632,6 +845,82 @@ mod tests {
             (i.include, i.exclude, i.enabled),
             (vec![3, 4], vec![5], true)
         );
+    }
+
+    #[test]
+    fn config_kinds_roundtrip_through_form() {
+        let cases = [
+            (
+                "registry_value",
+                json!({"path": r"HKLM\SOFTWARE\X", "name": "Y", "op": "gte", "expected": "5", "absent_ok": true}),
+            ),
+            (
+                "registry_value",
+                json!({"path": r"HKLM\SOFTWARE\X", "name": "", "op": "not_exists"}),
+            ),
+            (
+                "service_state",
+                json!({"name": "RemoteRegistry", "require": "disabled"}),
+            ),
+            ("firewall", json!({"profiles": ["domain", "public"]})),
+            ("bitlocker", json!({"scope": "all_fixed"})),
+            (
+                "defender",
+                json!({"realtime": true, "max_signature_age_days": 7}),
+            ),
+            (
+                "password_policy",
+                json!({"min_length": 12, "max_lockout_threshold": 10}),
+            ),
+            (
+                "local_admins",
+                json!({"allowed": ["*\\Administrator", "CORP\\Domain Admins"]}),
+            ),
+        ];
+        for (kind, params) in cases {
+            let f = RuleForm {
+                kind: kind.into(),
+                name: "r".into(),
+                severity: "high".into(),
+                enabled: true,
+                p: params_to_form(kind, &params),
+                ..Default::default()
+            };
+            let input = form_to_input(&f).unwrap();
+            let back = Params::parse(kind, &input.params).unwrap().to_json();
+            assert_eq!(back, params, "{kind}");
+        }
+    }
+
+    /// 表單送出的原始欄位（核取方塊、多行）能正確解析
+    #[test]
+    fn config_form_fields_parse() {
+        let i = form_to_input(&form(
+            "firewall",
+            &[("p_fw_private", "1"), ("p_fw_public", "1")],
+        ))
+        .unwrap();
+        assert_eq!(i.params, json!({"profiles": ["private", "public"]}));
+        let i = form_to_input(&form(
+            "local_admins",
+            &[("p_admins_allowed", " *\\Administrator \r\n\r\nCORP\\IT\n")],
+        ))
+        .unwrap();
+        assert_eq!(
+            i.params,
+            json!({"allowed": ["*\\Administrator", "CORP\\IT"]})
+        );
+        let i = form_to_input(&form(
+            "registry_value",
+            &[
+                ("p_reg_path", r"HKLM\X"),
+                ("p_reg_op", "exists"),
+                ("p_reg_expected", "ignored"),
+            ],
+        ))
+        .unwrap();
+        assert!(i.params.get("expected").is_none(), "{}", i.params);
+        assert!(form_to_input(&form("defender", &[("p_df_days", "x")])).is_err());
     }
 
     #[test]
