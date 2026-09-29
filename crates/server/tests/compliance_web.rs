@@ -242,3 +242,91 @@ async fn csv_export_is_scoped_bom_and_safe(pool: PgPool) {
             .unwrap();
     assert_eq!(n, 1);
 }
+
+#[sqlx::test(migrations = false)]
+async fn device_tab_and_exemptions(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let rule = add_rule_via_admin(&s, "required_kb", serde_json::json!({"kb": "KB5031455"})).await;
+    let a = device_in(&s, "台北", &[]).await;
+    let tab = format!("/devices/{}/tab/compliance", a.device_id);
+    let rule_id = rule.to_string();
+
+    let admin = s.admin_client().await;
+    let (st, html) = s.page(&admin, &tab).await;
+    assert_eq!(st, 200);
+    assert!(
+        html.contains("缺少 KB5031455") && html.contains("新增豁免"),
+        "{html}"
+    );
+    let (_, page) = s.page(&admin, &format!("/devices/{}", a.device_id)).await;
+    assert!(page.contains("/tab/compliance"), "裝置頁有合規分頁");
+    let csrf = csrf_from(&page);
+    let r = admin
+        .post(s.web_url(&format!("/devices/{}/exemptions", a.device_id)))
+        .form(&[
+            ("csrf", csrf.as_str()),
+            ("rule_id", rule_id.as_str()),
+            ("reason", "舊系統"),
+            ("days", "30"),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 303);
+    let (_, html) = s.page(&admin, &tab).await;
+    assert!(html.contains("豁免") && html.contains("舊系統") && html.contains("撤銷"));
+
+    // 群組管理員看得到分頁，但沒有豁免按鈕，POST 也被拒
+    let g = s.login_as("gary", Role::GroupAdmin, &["台北"]).await;
+    let (st, html) = s.page(&g, &tab).await;
+    assert_eq!(st, 200);
+    assert!(!html.contains("新增豁免") && !html.contains("撤銷"));
+    let gcsrf = csrf_from(&s.page(&g, "/").await.1);
+    let r = g
+        .post(s.web_url(&format!("/devices/{}/exemptions", a.device_id)))
+        .form(&[
+            ("csrf", gcsrf.as_str()),
+            ("rule_id", rule_id.as_str()),
+            ("reason", "x"),
+            ("days", "1"),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 403);
+
+    // 範圍外的群組管理員：分頁 404
+    let other = s.login_as("olga", Role::GroupAdmin, &["高雄"]).await;
+    assert_eq!(s.page(&other, &tab).await.0, 404);
+
+    // 撤銷
+    let ex: i64 = sqlx::query_scalar("SELECT id FROM compliance_exemptions")
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    let r = admin
+        .post(s.web_url(&format!("/exemptions/{ex}/revoke")))
+        .form(&[("csrf", csrf.as_str())])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 303);
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM compliance_exemptions")
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 0);
+}
+
+#[sqlx::test(migrations = false)]
+async fn device_tab_without_rules_or_data(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(1).await;
+    let a = s.enroll_ok(&tok, None, None).await;
+    let admin = s.admin_client().await;
+    let (st, html) = s
+        .page(&admin, &format!("/devices/{}/tab/compliance", a.device_id))
+        .await;
+    assert_eq!(st, 200);
+    assert!(html.contains("沒有違規"), "{html}");
+}

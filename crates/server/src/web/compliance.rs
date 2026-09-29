@@ -2,16 +2,19 @@
 
 use askama::Template;
 use axum::body::Body;
-use axum::extract::{Query, State};
+use axum::extract::{Form, Path, Query, State};
 use axum::http::header;
-use axum::response::{IntoResponse, Response};
+use axum::response::{IntoResponse, Redirect, Response};
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::Deserialize;
 use uuid::Uuid;
 
-use super::auth::{AdminSession, Nav};
-use super::devices::{MAX_PAGE, PAGE_SIZE, SelectOption, group_options};
-use super::{enc, escape_like, fmt_time, render};
+use super::auth::{AdminSession, Nav, Session, check_csrf};
+use super::devices::{
+    MAX_PAGE, PAGE_SIZE, SelectOption, action_error, db_error, device_group_in_scope, group_options,
+};
+use super::login::CsrfForm;
+use super::{enc, escape_like, fmt_time, forbidden, not_found, render};
 use crate::AppState;
 use crate::compliance::evaluate::{Status, summarize};
 use crate::compliance::rules::Severity;
@@ -433,6 +436,193 @@ pub async fn export_csv(
         Body::from_stream(stream),
     )
         .into_response())
+}
+
+pub struct ResultRow {
+    pub rule: String,
+    pub severity: &'static str,
+    pub severity_class: &'static str,
+    pub status: &'static str,
+    pub summary: String,
+    pub since: String,
+}
+
+pub struct ExemptionRow {
+    pub id: i64,
+    pub rule: String,
+    pub reason: String,
+    pub expires: String,
+    pub created_by: String,
+}
+
+pub struct EventRow {
+    pub at: String,
+    pub rule: String,
+    pub change: String,
+    pub summary: String,
+}
+
+#[derive(Template)]
+#[template(path = "compliance_tab.html")]
+struct TabFragment {
+    device_id: Uuid,
+    csrf: String,
+    platform: bool,
+    results: Vec<ResultRow>,
+    exemptions: Vec<ExemptionRow>,
+    events: Vec<EventRow>,
+    rules: Vec<SelectOption>,
+    max_days: i64,
+}
+
+/// 歷程的狀態文字；none 表示無結果
+fn status_word(s: &str) -> &'static str {
+    Status::parse(s).map(Status::label).unwrap_or("無")
+}
+
+type ResultDbRow = (String, String, String, String, DateTime<Utc>);
+type ExemptionDbRow = (i64, String, String, DateTime<Utc>, String);
+type EventDbRow = (DateTime<Utc>, String, String, String, String);
+
+/// 裝置頁的「合規」分頁（htmx 片段）。範圍外的裝置回 404。
+pub async fn device_tab(st: &AppState, s: &Session, id: Uuid) -> Result<Response, AppError> {
+    if device_group_in_scope(st, s, id).await?.is_none() {
+        return Ok(not_found());
+    }
+    let results: Vec<ResultDbRow> = sqlx::query_as(
+        "SELECT r.name, r.severity, v.status, v.detail::text, v.since FROM device_violations v \
+         JOIN compliance_rules r ON r.id = v.rule_id WHERE v.device_id = $1 \
+         ORDER BY CASE v.status WHEN 'violating' THEN 0 WHEN 'unknown' THEN 1 ELSE 2 END, r.name",
+    )
+    .bind(id)
+    .fetch_all(&st.pool)
+    .await?;
+    let exemptions: Vec<ExemptionDbRow> = sqlx::query_as(
+        "SELECT e.id, r.name, e.reason, e.expires_at, e.created_by FROM compliance_exemptions e \
+         JOIN compliance_rules r ON r.id = e.rule_id WHERE e.device_id = $1 ORDER BY e.expires_at",
+    )
+    .bind(id)
+    .fetch_all(&st.pool)
+    .await?;
+    let events: Vec<EventDbRow> = sqlx::query_as(
+        "SELECT at, rule_name, from_status, to_status, detail::text FROM violation_events \
+         WHERE device_id = $1 ORDER BY at DESC, id DESC LIMIT 50",
+    )
+    .bind(id)
+    .fetch_all(&st.pool)
+    .await?;
+    let rules: Vec<(i64, String)> = if s.all_devices() {
+        sqlx::query_as("SELECT id, name FROM compliance_rules WHERE enabled ORDER BY name")
+            .fetch_all(&st.pool)
+            .await?
+    } else {
+        vec![]
+    };
+    let summary = |d: &str| summarize(&serde_json::from_str(d).unwrap_or_default());
+    Ok(render(&TabFragment {
+        device_id: id,
+        csrf: s.csrf.clone(),
+        platform: s.all_devices(),
+        results: results
+            .into_iter()
+            .map(|(rule, severity, status, detail, since)| {
+                let sev = severity_of(&severity);
+                ResultRow {
+                    rule,
+                    severity: sev.label(),
+                    severity_class: sev.as_str(),
+                    status: status_word(&status),
+                    summary: summary(&detail),
+                    since: fmt_time(st, Some(since)),
+                }
+            })
+            .collect(),
+        exemptions: exemptions
+            .into_iter()
+            .map(|(id, rule, reason, expires, created_by)| ExemptionRow {
+                id,
+                rule,
+                reason,
+                expires: fmt_time(st, Some(expires)),
+                created_by,
+            })
+            .collect(),
+        events: events
+            .into_iter()
+            .map(|(at, rule, from, to, detail)| EventRow {
+                at: fmt_time(st, Some(at)),
+                rule,
+                change: format!("{} → {}", status_word(&from), status_word(&to)),
+                summary: summary(&detail),
+            })
+            .collect(),
+        rules: rules
+            .into_iter()
+            .map(|(id, name)| SelectOption {
+                value: id.to_string(),
+                label: name,
+                selected: false,
+            })
+            .collect(),
+        max_days: crate::compliance::admin::MAX_EXEMPTION_DAYS,
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct ExemptionForm {
+    csrf: String,
+    rule_id: i64,
+    reason: String,
+    days: i64,
+}
+
+pub async fn create_exemption(
+    State(st): State<AppState>,
+    AdminSession(s): AdminSession,
+    Path(id): Path<Uuid>,
+    Form(f): Form<ExemptionForm>,
+) -> Result<Response, Response> {
+    check_csrf(&s, &f.csrf)?;
+    if !s.all_devices() {
+        return Err(forbidden());
+    }
+    let days = f
+        .days
+        .clamp(1, crate::compliance::admin::MAX_EXEMPTION_DAYS);
+    crate::compliance::admin::create_exemption(
+        &st.pool,
+        id,
+        f.rule_id,
+        &f.reason,
+        Utc::now() + chrono::Duration::days(days),
+        &s.username,
+    )
+    .await
+    .map_err(action_error)?;
+    Ok(Redirect::to(&format!("/devices/{id}")).into_response())
+}
+
+pub async fn revoke_exemption(
+    State(st): State<AppState>,
+    AdminSession(s): AdminSession,
+    Path(id): Path<i64>,
+    Form(f): Form<CsrfForm>,
+) -> Result<Response, Response> {
+    check_csrf(&s, &f.csrf)?;
+    if !s.all_devices() {
+        return Err(forbidden());
+    }
+    let device: Option<Uuid> =
+        sqlx::query_scalar("SELECT device_id FROM compliance_exemptions WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&st.pool)
+            .await
+            .map_err(db_error)?;
+    let device = device.ok_or_else(not_found)?;
+    crate::compliance::admin::revoke_exemption(&st.pool, id, &s.username)
+        .await
+        .map_err(action_error)?;
+    Ok(Redirect::to(&format!("/devices/{device}")).into_response())
 }
 
 #[cfg(test)]

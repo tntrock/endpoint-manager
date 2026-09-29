@@ -152,6 +152,14 @@ pub fn web_router(state: AppState) -> Router {
         .route("/devices/{id}/retire", post(devices::retire))
         .route("/devices/{id}/group", post(devices::move_group))
         .route(
+            "/devices/{id}/exemptions",
+            post(compliance::create_exemption),
+        )
+        .route(
+            "/exemptions/{id}/revoke",
+            post(compliance::revoke_exemption),
+        )
+        .route(
             "/static/htmx.min.js",
             get(|| async {
                 asset(
