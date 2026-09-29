@@ -851,14 +851,41 @@ impl Rule {
 pub struct RuleSet {
     pub generation: i64,
     pub rules: Vec<Rule>,
+    /// 啟用中登錄檔規則需要 Agent 讀取的值（不分大小寫去重、排序）
+    pub registry_queries: Vec<protocol::RegistryQuery>,
+    pub registry_hash: String,
+    /// registry_key(path, name) 的集合：上傳時只保存這些值
+    pub registry_keys: std::collections::HashSet<(String, String)>,
 }
 
 impl RuleSet {
-    pub fn empty() -> RuleSet {
-        RuleSet {
-            generation: -1,
-            rules: vec![],
+    pub fn new(generation: i64, rules: Vec<Rule>) -> RuleSet {
+        let mut keys = std::collections::HashSet::new();
+        let mut queries = vec![];
+        for r in &rules {
+            if let Ok(Check::RegistryValue {
+                path, name, key, ..
+            }) = &r.check
+                && keys.insert(key.clone())
+            {
+                queries.push(protocol::RegistryQuery {
+                    path: path.clone(),
+                    name: name.clone(),
+                });
+            }
         }
+        queries.sort_by_key(|q| registry_key(&q.path, &q.name));
+        RuleSet {
+            generation,
+            rules,
+            registry_hash: protocol::regpath::queries_hash(&queries),
+            registry_queries: queries,
+            registry_keys: keys,
+        }
+    }
+
+    pub fn empty() -> RuleSet {
+        RuleSet::new(-1, vec![])
     }
 }
 

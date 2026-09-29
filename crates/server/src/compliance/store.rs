@@ -6,7 +6,7 @@ use serde_json::Value;
 use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
-use super::evaluate::{DeviceFacts, Outcome, SoftwareFact, evaluate};
+use super::evaluate::{DeviceFacts, Outcome, ServiceFact, SoftwareFact, evaluate, registry_key};
 use super::rules::{Params, Rule, RuleSet, Severity};
 
 type RuleRow = (i64, String, String, String, String, Vec<i64>, Vec<i64>);
@@ -46,22 +46,89 @@ pub async fn load_ruleset(conn: &mut PgConnection) -> Result<RuleSet, sqlx::Erro
             }
         })
         .collect();
-    Ok(RuleSet { generation, rules })
+    Ok(RuleSet::new(generation, rules))
 }
 
-type FactRow = (String, Option<i64>, Option<String>, Option<i32>);
+type FactRow = (
+    String,
+    Option<i64>,
+    Option<String>,
+    Option<i32>,
+    Option<String>,
+);
+
+/// security／registry／services 的事實（一次讀一批裝置）
+#[derive(Default)]
+struct ConfigFacts {
+    security: HashMap<Uuid, protocol::SecurityInfo>,
+    registry: HashMap<Uuid, HashMap<(String, String), protocol::RegistryValue>>,
+    services: HashMap<Uuid, Vec<ServiceFact>>,
+}
+
+type SecurityDbRow = (Uuid, String, String, String, String, String);
+type RegistryDbRow = (Uuid, String, String, String, String, String);
+
+async fn load_config(conn: &mut PgConnection, ids: &[Uuid]) -> Result<ConfigFacts, sqlx::Error> {
+    let mut out = ConfigFacts::default();
+    let rows: Vec<SecurityDbRow> = sqlx::query_as(
+        "SELECT device_id, firewall::text, bitlocker::text, defender::text, password::text, \
+                admins::text FROM device_security WHERE device_id = ANY($1)",
+    )
+    .bind(ids)
+    .fetch_all(&mut *conn)
+    .await?;
+    for (id, a, b, c, d, e) in rows {
+        out.security
+            .insert(id, crate::inventory::security_from_row((a, b, c, d, e)));
+    }
+    let rows: Vec<RegistryDbRow> = sqlx::query_as(
+        "SELECT device_id, path, name, state, kind, data FROM device_registry \
+         WHERE device_id = ANY($1)",
+    )
+    .bind(ids)
+    .fetch_all(&mut *conn)
+    .await?;
+    for (id, path, name, state, kind, data) in rows {
+        let v = protocol::RegistryValue {
+            state: crate::inventory::from_label(&state).unwrap_or(protocol::RegState::Absent),
+            kind: crate::inventory::from_label(&kind).unwrap_or(protocol::RegKind::Other),
+            data,
+            path,
+            name,
+        };
+        out.registry
+            .entry(id)
+            .or_default()
+            .insert(registry_key(&v.path, &v.name), v);
+    }
+    let rows: Vec<(Uuid, String, String, String)> = sqlx::query_as(
+        "SELECT device_id, name, start_mode, state FROM device_services WHERE device_id = ANY($1)",
+    )
+    .bind(ids)
+    .fetch_all(&mut *conn)
+    .await?;
+    for (id, name, start_mode, state) in rows {
+        out.services.entry(id).or_default().push(ServiceFact {
+            name,
+            start_mode,
+            state,
+        });
+    }
+    Ok(out)
+}
 type SoftwareRow = (String, Option<String>, Option<String>);
 
 pub async fn load_facts(
     conn: &mut PgConnection,
     id: Uuid,
 ) -> Result<Option<DeviceFacts>, sqlx::Error> {
-    let row: Option<FactRow> =
-        sqlx::query_as("SELECT status, group_id, os_build, os_ubr FROM devices WHERE id = $1")
-            .bind(id)
-            .fetch_optional(&mut *conn)
-            .await?;
-    let Some((status, group_id, os_build, os_ubr)) = row else {
+    let row: Option<FactRow> = sqlx::query_as(
+        "SELECT status, group_id, os_build, os_ubr, agent_version FROM devices WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some((status, group_id, os_build, os_ubr, agent_version)) = row else {
         return Ok(None);
     };
     let sections: Vec<String> =
@@ -105,6 +172,7 @@ pub async fn load_facts(
     .bind(id)
     .fetch_all(&mut *conn)
     .await?;
+    let mut cfg = load_config(conn, &[id]).await?;
     Ok(Some(DeviceFacts {
         active: status == "active",
         group_id,
@@ -113,11 +181,10 @@ pub async fn load_facts(
         software,
         kbs,
         exempt,
-        // 計畫 9 Task 3 載入
-        security: None,
-        registry: None,
-        services: None,
-        agent_version: None,
+        security: has("security").then(|| cfg.security.remove(&id)).flatten(),
+        registry: has("registry").then(|| cfg.registry.remove(&id).unwrap_or_default()),
+        services: has("services").then(|| cfg.services.remove(&id).unwrap_or_default()),
+        agent_version,
         now: chrono::Utc::now(),
     }))
 }
@@ -300,7 +367,14 @@ pub async fn refresh_device_fresh(conn: &mut PgConnection, id: Uuid) -> Result<(
     refresh_device_in(conn, &RuleSet::empty(), id).await
 }
 
-type BulkDeviceRow = (Uuid, String, Option<i64>, Option<String>, Option<i32>);
+type BulkDeviceRow = (
+    Uuid,
+    String,
+    Option<i64>,
+    Option<String>,
+    Option<i32>,
+    Option<String>,
+);
 type BulkSoftwareRow = (Uuid, String, Option<String>, Option<String>);
 
 /// 一次讀一批裝置的事實（預覽用；不含豁免、不加鎖）。
@@ -309,7 +383,8 @@ pub async fn load_facts_bulk(
     ids: &[Uuid],
 ) -> Result<Vec<(Uuid, DeviceFacts)>, sqlx::Error> {
     let devices: Vec<BulkDeviceRow> = sqlx::query_as(
-        "SELECT id, status, group_id, os_build, os_ubr FROM devices WHERE id = ANY($1) ORDER BY id",
+        "SELECT id, status, group_id, os_build, os_ubr, agent_version FROM devices \
+         WHERE id = ANY($1) ORDER BY id",
     )
     .bind(ids)
     .fetch_all(&mut *conn)
@@ -343,12 +418,13 @@ pub async fn load_facts_bulk(
     for (d, kb) in patches {
         kbs.entry(d).or_default().push(kb);
     }
+    let mut cfg = load_config(conn, ids).await?;
     let mut has: std::collections::HashSet<(Uuid, String)> = std::collections::HashSet::new();
     has.extend(sections);
     let has = |d: Uuid, s: &str| has.contains(&(d, s.to_string()));
     Ok(devices
         .into_iter()
-        .map(|(id, status, group_id, os_build, os_ubr)| {
+        .map(|(id, status, group_id, os_build, os_ubr, agent_version)| {
             let facts = DeviceFacts {
                 active: status == "active",
                 group_id,
@@ -357,10 +433,12 @@ pub async fn load_facts_bulk(
                 software: has(id, "software").then(|| sw.remove(&id).unwrap_or_default()),
                 kbs: has(id, "patches").then(|| kbs.remove(&id).unwrap_or_default()),
                 exempt: vec![],
-                security: None,
-                registry: None,
-                services: None,
-                agent_version: None,
+                security: has(id, "security")
+                    .then(|| cfg.security.remove(&id))
+                    .flatten(),
+                registry: has(id, "registry").then(|| cfg.registry.remove(&id).unwrap_or_default()),
+                services: has(id, "services").then(|| cfg.services.remove(&id).unwrap_or_default()),
+                agent_version,
                 now: chrono::Utc::now(),
             };
             (id, facts)

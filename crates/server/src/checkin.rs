@@ -63,13 +63,14 @@ pub async fn checkin(
         .collect();
 
     let settings = load_settings(&st.pool).await?;
+    let rules = st.rules.get_throttled(&st.pool).await?;
     Ok(Json(CheckinResponse {
         next_checkin_seconds: settings.checkin_interval_secs,
         request_sections: sections_to_request(&stored, &req.section_hashes),
         collection_intervals: settings.intervals,
         renew_certificate: device.cert_not_after - Utc::now() < Duration::days(RENEW_BEFORE_DAYS),
-        registry_queries: vec![],
-        registry_queries_hash: Some(protocol::regpath::queries_hash(&[])),
+        registry_queries: rules.registry_queries.clone(),
+        registry_queries_hash: Some(rules.registry_hash.clone()),
     }))
 }
 

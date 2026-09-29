@@ -1051,9 +1051,9 @@ mod tests {
     }
 
     fn set(kind: &str, params: serde_json::Value) -> RuleSet {
-        RuleSet {
-            generation: 1,
-            rules: vec![Rule {
+        RuleSet::new(
+            1,
+            vec![Rule {
                 id: 7,
                 name: "r".into(),
                 severity: Severity::High,
@@ -1061,7 +1061,7 @@ mod tests {
                 exclude: vec![],
                 check: Params::parse(kind, &params).map(|p| p.compile()),
             }],
-        }
+        )
     }
 
     #[test]

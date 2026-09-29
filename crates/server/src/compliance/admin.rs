@@ -6,7 +6,7 @@ use serde_json::json;
 use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
-use super::rules::{Params, Severity};
+use super::rules::{Params, Severity, registry_key};
 use super::store::refresh_device_fresh;
 use crate::audit;
 
@@ -96,9 +96,64 @@ fn detail(id: i64, v: &Valid, i: &RuleInput) -> serde_json::Value {
     })
 }
 
+/// 登錄檔上限設定：壞值用預設，夾在 1–MAX_REGISTRY_VALUES。
+pub async fn registry_max_values(conn: &mut PgConnection) -> Result<usize, sqlx::Error> {
+    let raw: Option<String> =
+        sqlx::query_scalar("SELECT value #>> '{}' FROM settings WHERE key = 'registry_max_values'")
+            .fetch_optional(conn)
+            .await?;
+    Ok(raw
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .unwrap_or(1000)
+        .clamp(1, protocol::MAX_REGISTRY_VALUES))
+}
+
+/// 啟用中的登錄檔規則彙總後的相異值不能超過上限（這條規則要啟用時才檢查）。
+/// 以 advisory lock 序列化，兩個管理員同時建立規則也不會一起超過上限。
+async fn check_registry_cap(
+    conn: &mut PgConnection,
+    this: Option<i64>,
+    v: &Valid,
+    enabled: bool,
+) -> anyhow::Result<()> {
+    let Some(q) = v.params.registry_query() else {
+        return Ok(());
+    };
+    if !enabled {
+        return Ok(());
+    }
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext('compliance:registry_cap'))")
+        .execute(&mut *conn)
+        .await?;
+    let others: Vec<String> = sqlx::query_scalar(
+        "SELECT params::text FROM compliance_rules \
+         WHERE enabled AND kind = 'registry_value' AND ($1::bigint IS NULL OR id <> $1)",
+    )
+    .bind(this)
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut keys: std::collections::HashSet<(String, String)> = others
+        .iter()
+        .filter_map(|p| serde_json::from_str::<serde_json::Value>(p).ok())
+        .filter_map(|p| Params::parse("registry_value", &p).ok())
+        .filter_map(|p| p.registry_query())
+        .map(|q| registry_key(&q.path, &q.name))
+        .collect();
+    keys.insert(registry_key(&q.path, &q.name));
+    let max = registry_max_values(conn).await?;
+    ensure!(
+        keys.len() <= max,
+        "登錄檔規則需要的值共 {} 個，超過上限 {max}（可在設定 registry_max_values 調整，最高 {}）",
+        keys.len(),
+        protocol::MAX_REGISTRY_VALUES
+    );
+    Ok(())
+}
+
 pub async fn create_rule(pool: &PgPool, i: &RuleInput, actor: &str) -> anyhow::Result<i64> {
     let v = validate(i)?;
     let mut tx = pool.begin().await?;
+    check_registry_cap(&mut tx, None, &v, i.enabled).await?;
     let id: i64 = sqlx::query_scalar(
         "INSERT INTO compliance_rules \
          (name, description, kind, severity, enabled, params, created_by) \
@@ -130,6 +185,7 @@ pub async fn create_rule(pool: &PgPool, i: &RuleInput, actor: &str) -> anyhow::R
 pub async fn update_rule(pool: &PgPool, id: i64, i: &RuleInput, actor: &str) -> anyhow::Result<()> {
     let v = validate(i)?;
     let mut tx = pool.begin().await?;
+    check_registry_cap(&mut tx, Some(id), &v, i.enabled).await?;
     let n = sqlx::query(
         "UPDATE compliance_rules SET name = $2, description = $3, kind = $4, severity = $5, \
          enabled = $6, params = $7::jsonb, updated_at = now() WHERE id = $1",
