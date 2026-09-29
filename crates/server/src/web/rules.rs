@@ -289,6 +289,8 @@ struct RuleFormPage {
     include: Vec<SelectOption>,
     exclude: Vec<SelectOption>,
     p: ParamFields,
+    /// 驗證失敗時顯示在表單上方
+    error: Option<String>,
 }
 
 async fn group_checks(st: &AppState, selected: &[i64]) -> Result<Vec<SelectOption>, sqlx::Error> {
@@ -344,6 +346,7 @@ pub async fn new_form(
         include: group_checks(&st, &[]).await.map_err(db_error)?,
         exclude: group_checks(&st, &[]).await.map_err(db_error)?,
         p: ParamFields::default(),
+        error: None,
     }))
 }
 
@@ -392,6 +395,7 @@ pub async fn edit_form(
         severities: severities(&severity),
         include: group_checks(&st, &include).await.map_err(db_error)?,
         exclude: group_checks(&st, &exclude).await.map_err(db_error)?,
+        error: None,
     }))
 }
 
@@ -403,11 +407,13 @@ pub async fn create(
     let f = parse_form(&raw);
     check_csrf(&s, &f.csrf)?;
     platform(&s)?;
-    let input = form_to_input(&f).map_err(conflict)?;
-    admin::create_rule(&st.pool, &input, &s.username)
-        .await
-        .map_err(|e| conflict(format!("{e:#}")))?;
-    Ok(Redirect::to("/compliance/rules").into_response())
+    let result = match form_to_input(&f) {
+        Ok(input) => admin::create_rule(&st.pool, &input, &s.username)
+            .await
+            .map(|_| ()),
+        Err(e) => Err(anyhow::anyhow!(e)),
+    };
+    saved_or_form(&st, &s, None, f, result).await
 }
 
 pub async fn update(
@@ -419,11 +425,11 @@ pub async fn update(
     let f = parse_form(&raw);
     check_csrf(&s, &f.csrf)?;
     platform(&s)?;
-    let input = form_to_input(&f).map_err(conflict)?;
-    admin::update_rule(&st.pool, id, &input, &s.username)
-        .await
-        .map_err(|e| conflict(format!("{e:#}")))?;
-    Ok(Redirect::to("/compliance/rules").into_response())
+    let result = match form_to_input(&f) {
+        Ok(input) => admin::update_rule(&st.pool, id, &input, &s.username).await,
+        Err(e) => Err(anyhow::anyhow!(e)),
+    };
+    saved_or_form(&st, &s, Some(id), f, result).await
 }
 
 pub async fn delete(
@@ -439,6 +445,41 @@ pub async fn delete(
         .await
         .map_err(|e| conflict(format!("{e:#}")))?;
     Ok(Redirect::to("/compliance/rules").into_response())
+}
+
+/// 存檔成功回規則清單；驗證失敗重新顯示表單（保留已輸入的內容）；資料庫錯誤回 500。
+async fn saved_or_form(
+    st: &AppState,
+    s: &Session,
+    id: Option<i64>,
+    f: RuleForm,
+    result: anyhow::Result<()>,
+) -> Result<Response, Response> {
+    let err = match result {
+        Ok(()) => return Ok(Redirect::to("/compliance/rules").into_response()),
+        Err(e) => match e.downcast::<sqlx::Error>() {
+            Ok(db) => return Err(db_error(db)),
+            Err(e) => format!("{e:#}"),
+        },
+    };
+    if !KINDS.contains(&f.kind.as_str()) {
+        return Err(conflict(err));
+    }
+    let page = RuleFormPage {
+        nav: Nav::from(s),
+        id,
+        kind_label: kind_label(&f.kind),
+        severities: severities(&f.severity),
+        include: group_checks(st, &f.include).await.map_err(db_error)?,
+        exclude: group_checks(st, &f.exclude).await.map_err(db_error)?,
+        kind: f.kind,
+        name: f.name,
+        description: f.description,
+        enabled: f.enabled,
+        p: f.p,
+        error: Some(err),
+    };
+    Ok((StatusCode::UNPROCESSABLE_ENTITY, render(&page)).into_response())
 }
 
 /// 同時只允許一個預覽：每次都會掃過全部裝置

@@ -2,6 +2,7 @@
 {% block content %}
 <h1>{% if id.is_some() %}編輯{% else %}新增{% endif %}規則：{{ kind_label }}</h1>
 <p><a href="/compliance/rules">← 規則清單</a></p>
+{% if let Some(e) = error %}<p class="error">{{ e }}</p>{% endif %}
 <form method="post" action="{% if let Some(i) = id %}/compliance/rules/{{ i }}{% else %}/compliance/rules{% endif %}">
   <input type="hidden" name="csrf" value="{{ nav.csrf }}">
   <input type="hidden" name="kind" value="{{ kind }}">

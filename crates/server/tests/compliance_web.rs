@@ -109,21 +109,26 @@ async fn rule_pages_and_permissions(pool: PgPool) {
     let (_, html) = s.page(&admin, "/compliance/rules").await;
     assert!(html.contains("禁止 TeamViewer") && html.contains("禁止軟體"));
 
-    // 壞參數 → 409 與中文訊息
+    // 壞參數 → 重新顯示表單：中文錯誤訊息，且保留已輸入的內容
     let r = admin
         .post(s.web_url("/compliance/rules"))
         .form(&[
             ("csrf", csrf.as_str()),
             ("kind", "required_kb"),
-            ("name", "x"),
+            ("name", "保留我的名稱"),
             ("severity", "high"),
             ("p_kb", "123"),
         ])
         .send()
         .await
         .unwrap();
-    assert_eq!(r.status(), 409);
-    assert!(r.text().await.unwrap().contains("KB 格式"));
+    assert_eq!(r.status(), 422);
+    let html = r.text().await.unwrap();
+    assert!(html.contains("KB 格式") && html.contains("<form"), "{html}");
+    assert!(
+        html.contains(r#"value="保留我的名稱""#) && html.contains(r#"value="123""#),
+        "{html}"
+    );
 
     // 預覽
     let r = admin
