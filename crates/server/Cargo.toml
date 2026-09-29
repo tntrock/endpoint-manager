@@ -35,6 +35,7 @@ askama.workspace = true
 argon2.workspace = true
 form_urlencoded = "1"
 msi = "0.10"
+futures-util = "0.3"
 
 [dev-dependencies]
 reqwest = { workspace = true, features = ["cookies", "form"] }
@@ -43,5 +44,4 @@ rcgen.workspace = true
 rustls.workspace = true
 chrono.workspace = true
 serde_json.workspace = true
-futures-util = "0.3"
 flate2.workspace = true

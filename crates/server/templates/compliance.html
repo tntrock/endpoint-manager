@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>合規總覽</h1>
+<p><a href="/compliance/rules">規則</a> · <a href="/compliance/violations?status=violating">違規清單</a></p>
+<div class="cards">
+  <div class="card offline">違規裝置<b>{{ devices_violating }}</b></div>
+  <div class="card">啟用規則<b>{{ rules.len() }}</b></div>
+</div>
+{% if running %}
+<p class="notice">規則已變更，正在重新評估：<progress value="{{ progress_done }}" max="{{ progress_total }}"></progress> {{ progress_done }} / {{ progress_total }} 台</p>
+{% endif %}
+<table>
+  <tr><th>規則</th><th>嚴重度</th><th>違規</th><th>未知</th><th>豁免</th></tr>
+  {% for r in rules %}
+  <tr>
+    <td>{{ r.name }}</td>
+    <td><span class="sev {{ r.severity_class }}">{{ r.severity }}</span></td>
+    <td><a href="/compliance/violations?rule={{ r.id }}&status=violating">{{ r.violating }}</a></td>
+    <td><a href="/compliance/violations?rule={{ r.id }}&status=unknown">{{ r.unknown }}</a></td>
+    <td><a href="/compliance/violations?rule={{ r.id }}&status=exempt">{{ r.exempt }}</a></td>
+  </tr>
+  {% endfor %}
+</table>
+{% if !trend.is_empty() %}
+<h2>近 30 天違規數</h2>
+<table>
+  {% for t in trend %}<tr><td>{{ t.day }}</td><td><progress value="{{ t.violating }}" max="{{ trend_max }}"></progress> {{ t.violating }}</td></tr>{% endfor %}
+</table>
+{% endif %}
+{% endblock %}

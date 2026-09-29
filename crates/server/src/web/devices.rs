@@ -491,6 +491,7 @@ pub async fn detail(
             can_retire: status != "retired",
         },
         tabs: vec![
+            ("compliance", "合規"),
             ("software", "軟體"),
             ("patches", "修補（KB）"),
             ("services", "服務"),
@@ -506,6 +507,9 @@ pub async fn tab(
     AdminSession(s): AdminSession,
     Path((id, tab)): Path<(Uuid, String)>,
 ) -> Result<Response, AppError> {
+    if tab == "compliance" {
+        return super::compliance::device_tab(&st, &s, id).await;
+    }
     if device_group_in_scope(&st, &s, id).await?.is_none() {
         return Ok(not_found());
     }

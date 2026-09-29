@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>{% if id.is_some() %}編輯{% else %}新增{% endif %}規則：{{ kind_label }}</h1>
+<p><a href="/compliance/rules">← 規則清單</a></p>
+{% if let Some(e) = error %}<p class="error">{{ e }}</p>{% endif %}
+<form method="post" action="{% if let Some(i) = id %}/compliance/rules/{{ i }}{% else %}/compliance/rules{% endif %}">
+  <input type="hidden" name="csrf" value="{{ nav.csrf }}">
+  <input type="hidden" name="kind" value="{{ kind }}">
+  <p><label>名稱 <input name="name" value="{{ name }}" required maxlength="100" size="40"></label></p>
+  <p><label>說明 <input name="description" value="{{ description }}" maxlength="1000" size="60"></label></p>
+  <p><label>嚴重度 <select name="severity">{% for o in severities %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}</select></label>
+     <label><input type="checkbox" name="enabled" value="1" {% if enabled %}checked{% endif %}> 啟用</label></p>
+
+  <fieldset><legend>條件</legend>
+  {% if kind == "forbidden_software" || kind == "required_software" %}
+    <p><label>軟體名稱 <input name="p_name" value="{{ p.name }}" required maxlength="256" size="40" placeholder="*TeamViewer*"></label></p>
+    <p><label>發行者（選填）<input name="p_publisher" value="{{ p.publisher }}" maxlength="256" size="40"></label></p>
+    <p><label>{% if kind == "forbidden_software" %}只禁止低於此版本（選填）{% else %}最低版本（選填）{% endif %}
+       <input name="p_version" value="{{ p.version }}" maxlength="256"></label></p>
+    <p class="muted"><code>*</code> 代表任意字元，不分大小寫。</p>
+  {% else if kind == "software_allowlist" %}
+    <p><label>允許的軟體（每行一筆：<code>名稱樣式 | 發行者樣式</code>，任一邊可留空）<br>
+       <textarea name="p_entries" rows="10" cols="70">{{ p.entries }}</textarea></label></p>
+    <p class="muted">不符合任何一筆的軟體都算違規。例：<code>| Microsoft*</code> 允許所有微軟軟體。</p>
+  {% else if kind == "os_build" %}
+    <p><label>最低組建主號 <input name="p_min_build" value="{{ p.min_build }}" inputmode="numeric" placeholder="19045"></label>
+       <span class="muted">低於此組建視為作業系統已停止支援</span></p>
+    <p>或 <label>組建主號 <input name="p_build" value="{{ p.build }}" inputmode="numeric" placeholder="22631"></label>
+       <label>最低 UBR <input name="p_min_ubr" value="{{ p.min_ubr }}" inputmode="numeric" placeholder="4317"></label></p>
+    <p class="muted">兩種擇一。第二種只檢查該組建的電腦，例如 22631.4317 以上。</p>
+  {% else if kind == "required_kb" %}
+    <p><label>KB 編號 <input name="p_kb" value="{{ p.kb }}" required placeholder="KB5034439"></label></p>
+    <p class="muted">每月累積更新會取代舊 KB，請用「最低組建號」規則檢查累積更新；這裡適合不走累積更新的獨立修補。</p>
+  {% endif %}
+  </fieldset>
+
+  <fieldset><legend>範圍（都不勾＝全部裝置；排除優先）</legend>
+    <p>只套用：{% for g in include %}<label><input type="checkbox" name="include" value="{{ g.value }}" {% if g.selected %}checked{% endif %}> {{ g.label }}</label> {% endfor %}</p>
+    <p>排除：{% for g in exclude %}<label><input type="checkbox" name="exclude" value="{{ g.value }}" {% if g.selected %}checked{% endif %}> {{ g.label }}</label> {% endfor %}</p>
+  </fieldset>
+
+  <p><button>儲存</button>
+     <button type="button" hx-post="/compliance/rules/preview" hx-include="closest form" hx-target="#preview">預覽命中台數</button></p>
+  <div id="preview"></div>
+</form>
+{% if let Some(i) = id %}
+<form method="post" action="/compliance/rules/{{ i }}/delete">
+  <input type="hidden" name="csrf" value="{{ nav.csrf }}">
+  <button class="danger">刪除規則（一併刪除其違規與豁免，歷程保留）</button>
+</form>
+{% endif %}
+{% endblock %}

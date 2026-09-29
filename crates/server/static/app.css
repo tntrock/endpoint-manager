@@ -25,3 +25,9 @@ button.danger { color: var(--bad); }
 .tabs { display: flex; gap: .5rem; margin-top: 1rem; }
 .pager { display: flex; gap: 1rem; }
 .muted { color: var(--muted); }
+.sev { padding: 0 .4em; border-radius: 3px; }
+.sev.high { background: #fde2e1; color: #a61b12; }
+.sev.medium { background: #fff1d6; color: #8a5a00; }
+.sev.low { background: #e8eef7; color: #2d4a73; }
+progress { width: 12em; vertical-align: middle; }
+textarea { font: inherit; }

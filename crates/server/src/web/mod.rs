@@ -6,11 +6,13 @@
 pub mod accounts;
 pub mod audit;
 pub mod auth;
+pub mod compliance;
 pub mod dashboard;
 pub mod devices;
 pub mod groups;
 pub mod login;
 pub mod password;
+pub mod rules;
 pub mod software;
 pub mod tokens;
 
@@ -116,6 +118,17 @@ pub fn web_router(state: AppState) -> Router {
         .route("/logout", post(login::logout))
         .route("/devices", get(devices::list))
         .route("/software", get(software::search))
+        .route("/compliance", get(compliance::overview))
+        .route("/compliance/violations", get(compliance::violations))
+        .route("/compliance/violations.csv", get(compliance::export_csv))
+        .route("/compliance/rules", get(rules::list).post(rules::create))
+        .route("/compliance/rules/new", get(rules::new_form))
+        .route("/compliance/rules/preview", post(rules::preview))
+        .route(
+            "/compliance/rules/{id}",
+            get(rules::edit_form).post(rules::update),
+        )
+        .route("/compliance/rules/{id}/delete", post(rules::delete))
         .route("/tokens", get(tokens::list).post(tokens::create))
         .route("/tokens/{id}/revoke", post(tokens::revoke))
         .route("/groups", get(groups::list).post(groups::create))
@@ -138,6 +151,14 @@ pub fn web_router(state: AppState) -> Router {
         .route("/devices/{id}/tab/{tab}", get(devices::tab))
         .route("/devices/{id}/retire", post(devices::retire))
         .route("/devices/{id}/group", post(devices::move_group))
+        .route(
+            "/devices/{id}/exemptions",
+            post(compliance::create_exemption),
+        )
+        .route(
+            "/exemptions/{id}/revoke",
+            post(compliance::revoke_exemption),
+        )
         .route(
             "/static/htmx.min.js",
             get(|| async {
