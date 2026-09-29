@@ -1,9 +1,14 @@
+mod common;
+
 use std::sync::{Arc, Mutex};
 
 use axum::Router;
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::post;
-use endpoint_server::notify::send;
+use chrono::{Duration as CDuration, Utc};
+use common::TestServer;
+use endpoint_server::notify::{self, send, worker};
+use sqlx::PgPool;
 
 type Seen = Arc<Mutex<Vec<(HeaderMap, String)>>>;
 
@@ -63,4 +68,147 @@ async fn webhook_signs_and_reports_status() {
         seen.lock().unwrap()[0].0.get("x-em-signature").is_none(),
         "沒有密鑰就不簽"
     );
+}
+
+async fn event(s: &TestServer, device: uuid::Uuid, sev: &str, from: &str, to: &str) {
+    sqlx::query(
+        "INSERT INTO violation_events          (device_id, rule_name, severity, from_status, to_status, detail)          VALUES ($1, '禁止 TeamViewer', $2, $3, $4, '{\"software\": []}')",
+    )
+    .bind(device)
+    .bind(sev)
+    .bind(from)
+    .bind(to)
+    .execute(&s.pool)
+    .await
+    .unwrap();
+}
+
+/// 直接寫設定（測試用 http 接收端；網頁存檔時才驗證 https）
+async fn enable_webhook(s: &TestServer, url: &str) {
+    sqlx::query("UPDATE settings SET value = $1::jsonb WHERE key = 'notify_webhook_url'")
+        .bind(serde_json::json!(url).to_string())
+        .execute(&s.pool)
+        .await
+        .unwrap();
+}
+
+async fn channel_row(s: &TestServer) -> (i64, i32, Option<String>) {
+    sqlx::query_as(
+        "SELECT last_event_id, failures, last_error FROM notify_channels          WHERE channel = 'webhook'",
+    )
+    .fetch_one(&s.pool)
+    .await
+    .unwrap()
+}
+
+fn senders() -> worker::Senders {
+    worker::Senders {
+        webhook: send::webhook_client(&[]).unwrap(),
+    }
+}
+
+#[sqlx::test(migrations = false)]
+async fn worker_sends_digest_filters_and_backs_off(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(1).await;
+    let a = s.enroll_ok(&tok, None, None).await;
+    let (url, seen) = receiver(StatusCode::OK).await;
+    enable_webhook(&s, &url).await;
+    let senders = senders();
+    let secrets = notify::NotifySecrets::default();
+
+    event(&s, a.device_id, "high", "none", "violating").await;
+    event(&s, a.device_id, "low", "none", "violating").await; // 低於門檻（預設 medium）
+    event(&s, a.device_id, "high", "none", "unknown").await; // 不是違規
+    event(&s, a.device_id, "high", "violating", "none").await; // 解除
+    let settings = notify::load_settings(&s.pool).await.unwrap();
+    let now = Utc::now();
+    worker::run_channel(&s.pool, "webhook", &settings, &secrets, &senders, now)
+        .await
+        .unwrap();
+    {
+        let got = seen.lock().unwrap();
+        assert_eq!(got.len(), 1);
+        let v: serde_json::Value = serde_json::from_str(&got[0].1).unwrap();
+        assert_eq!(
+            (v["total_new"].as_i64(), v["total_resolved"].as_i64()),
+            (Some(1), Some(1))
+        );
+    }
+    let max: i64 = sqlx::query_scalar("SELECT max(id) FROM violation_events")
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    assert_eq!(channel_row(&s).await.0, max, "游標推進到最新");
+
+    // 間隔未到：不送
+    event(&s, a.device_id, "high", "none", "violating").await;
+    let later = now + CDuration::minutes(1);
+    worker::run_channel(&s.pool, "webhook", &settings, &secrets, &senders, later)
+        .await
+        .unwrap();
+    assert_eq!(seen.lock().unwrap().len(), 1);
+
+    // 間隔到了但接收端故障：失敗、游標不動、倍增重試
+    let (bad, _) = receiver(StatusCode::SERVICE_UNAVAILABLE).await;
+    enable_webhook(&s, &bad).await;
+    let settings = notify::load_settings(&s.pool).await.unwrap();
+    let t = now + CDuration::minutes(11);
+    worker::run_channel(&s.pool, "webhook", &settings, &secrets, &senders, t)
+        .await
+        .unwrap();
+    let (cursor, failures, err) = channel_row(&s).await;
+    assert_eq!((cursor, failures), (max, 1));
+    assert!(err.unwrap().contains("503"));
+    let next: chrono::DateTime<Utc> =
+        sqlx::query_scalar("SELECT next_attempt_at FROM notify_channels WHERE channel = 'webhook'")
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+    assert!(next >= t + CDuration::minutes(1) - CDuration::seconds(1));
+    // 重試時間未到：不嘗試
+    let soon = t + CDuration::seconds(30);
+    worker::run_channel(&s.pool, "webhook", &settings, &secrets, &senders, soon)
+        .await
+        .unwrap();
+    assert_eq!(channel_row(&s).await.1, 1);
+}
+
+#[sqlx::test(migrations = false)]
+async fn backlog_is_capped(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(1).await;
+    let a = s.enroll_ok(&tok, None, None).await;
+    let (url, seen) = receiver(StatusCode::OK).await;
+    enable_webhook(&s, &url).await;
+    sqlx::query(
+        "INSERT INTO violation_events          (device_id, rule_name, severity, from_status, to_status, detail)          SELECT $1, 'r', 'high', 'none', 'violating', '{}' FROM generate_series(1, $2)",
+    )
+    .bind(a.device_id)
+    .bind((worker::MAX_BACKLOG + 5) as i32)
+    .execute(&s.pool)
+    .await
+    .unwrap();
+    let settings = notify::load_settings(&s.pool).await.unwrap();
+    let secrets = notify::NotifySecrets::default();
+    worker::run_channel(
+        &s.pool,
+        "webhook",
+        &settings,
+        &secrets,
+        &senders(),
+        Utc::now(),
+    )
+    .await
+    .unwrap();
+    let v: serde_json::Value = serde_json::from_str(&seen.lock().unwrap()[0].1).unwrap();
+    assert_eq!(v["dropped"], 5);
+    assert_eq!(v["total_new"], worker::MAX_BACKLOG);
+    assert_eq!(v["new"].as_array().unwrap().len(), 500);
+}
+
+#[test]
+fn backoff_doubles_to_an_hour() {
+    let m = |f| worker::backoff(f).num_minutes();
+    assert_eq!((m(1), m(2), m(3), m(7), m(30)), (1, 2, 4, 60, 60));
 }
