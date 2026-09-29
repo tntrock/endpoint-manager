@@ -62,6 +62,12 @@ pub async fn upload(
             .await
             .map_err(|e| AppError::Internal(e.into()))??;
     store_section(&st.pool, device.device_id, &payload, &hash).await?;
+    // 評估失敗不影響上傳：盤點已寫入，結果會在下次上傳或背景重算時補上
+    if crate::compliance::affects_compliance(section)
+        && let Err(e) = crate::compliance::refresh_after_upload(&st, device.device_id).await
+    {
+        tracing::error!(device_id = %device.device_id, error = %e, "compliance evaluation failed");
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

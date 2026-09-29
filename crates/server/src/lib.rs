@@ -51,6 +51,8 @@ pub struct AppState {
     pub agent_public_url: String,
     /// 伺服器憑證的名稱（下載安裝檔時檢查網址）
     pub server_names: Arc<Vec<String>>,
+    /// 合規規則快取
+    pub rules: Arc<compliance::RuleCache>,
 }
 
 impl AppState {
@@ -71,6 +73,7 @@ impl AppState {
             agent_msi: None,
             agent_public_url: String::new(),
             server_names: Arc::new(vec![]),
+            rules: Arc::new(compliance::RuleCache::new()),
         }
     }
 
