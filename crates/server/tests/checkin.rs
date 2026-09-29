@@ -211,3 +211,26 @@ async fn poisoned_row_does_not_block_other_devices(pool: PgPool) {
         "bad row dropped, not requeued forever"
     );
 }
+
+#[sqlx::test(migrations = false)]
+async fn checkin_announces_config_support(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(1).await;
+    let a = s.enroll_ok(&tok, None, None).await;
+    let r: CheckinResponse = s
+        .client(Some(&a))
+        .post(s.url("/v1/checkin"))
+        .json(&body(BTreeMap::new()))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        r.registry_queries_hash.as_deref(),
+        Some(protocol::regpath::queries_hash(&[]).as_str())
+    );
+    assert!(r.registry_queries.is_empty());
+    assert_eq!(r.collection_intervals.security_secs, 3600);
+}

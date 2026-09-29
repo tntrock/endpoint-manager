@@ -7,8 +7,9 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use flate2::read::GzDecoder;
 use protocol::{
-    Arch, BasicInfo, Disk, HardwareInfo, InventoryPayload, InventoryUpload, PatchItem,
-    SCHEMA_VERSION, Section, ServiceItem, SoftwareItem,
+    Arch, BasicInfo, Disk, HardwareInfo, InventoryPayload, InventoryUpload, PatchItem, Probe,
+    RegKind, RegState, RegistryValue, SCHEMA_VERSION, Section, SecurityInfo, ServiceItem,
+    SoftwareItem,
 };
 use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
@@ -161,6 +162,38 @@ type SoftwareRow = (
     String,
 );
 type ServiceRow = (String, Option<String>, String, String, Option<String>);
+type SecurityRow = (String, String, String, String, String);
+
+fn json<T: serde::Serialize>(v: &T) -> String {
+    serde_json::to_string(v).expect("serializable")
+}
+
+/// serde 的 enum 標籤（例如 RegState::Present → "present"）
+fn label<T: serde::Serialize>(v: &T) -> String {
+    serde_json::to_value(v)
+        .ok()
+        .and_then(|x| x.as_str().map(str::to_string))
+        .unwrap_or_default()
+}
+
+fn from_label<T: serde::de::DeserializeOwned>(s: &str) -> Option<T> {
+    serde_json::from_value(serde_json::Value::String(s.into())).ok()
+}
+
+/// 讀回的 jsonb 解析失敗時（手動改壞）當成收集失敗，不讓整個讀取失敗
+fn security_from_row(r: SecurityRow) -> SecurityInfo {
+    fn parse<T: serde::de::DeserializeOwned>(s: &str) -> Probe<T> {
+        serde_json::from_str(s)
+            .unwrap_or_else(|e| Probe::Error(format!("stored data unreadable: {e}")))
+    }
+    SecurityInfo {
+        firewall: parse(&r.0),
+        bitlocker: parse(&r.1),
+        defender: parse(&r.2),
+        password: parse(&r.3),
+        admins: parse(&r.4),
+    }
+}
 
 /// 從資料庫重建區段內容；從未上傳過（無 inventory_sections 列）則回 None。
 pub async fn load_payload(
@@ -179,8 +212,36 @@ pub async fn load_payload(
         return Ok(None);
     }
     let payload = match section {
-        // 計畫 8 Task 5 實作
-        Section::Security | Section::Registry => unimplemented!("config sections"),
+        Section::Security => {
+            let row: SecurityRow = sqlx::query_as(
+                "SELECT firewall::text, bitlocker::text, defender::text, password::text, \
+                        admins::text FROM device_security WHERE device_id = $1",
+            )
+            .bind(device_id)
+            .fetch_one(&mut *conn)
+            .await?;
+            InventoryPayload::Security(security_from_row(row))
+        }
+        Section::Registry => {
+            let rows: Vec<(String, String, String, String, String)> = sqlx::query_as(
+                "SELECT path, name, state, kind, data FROM device_registry \
+                 WHERE device_id = $1 ORDER BY path, name",
+            )
+            .bind(device_id)
+            .fetch_all(&mut *conn)
+            .await?;
+            InventoryPayload::Registry(
+                rows.into_iter()
+                    .map(|(path, name, state, kind, data)| RegistryValue {
+                        path,
+                        name,
+                        state: from_label(&state).unwrap_or(RegState::Absent),
+                        kind: from_label(&kind).unwrap_or(RegKind::Other),
+                        data,
+                    })
+                    .collect(),
+            )
+        }
         Section::Basic => {
             let (hostname, domain, is_domain_joined, os_caption, os_build, os_ubr): BasicRow =
                 sqlx::query_as(
@@ -282,9 +343,48 @@ async fn write_payload(
     payload: &InventoryPayload,
 ) -> Result<(), sqlx::Error> {
     match payload {
-        // 計畫 8 Task 5 實作
-        InventoryPayload::Security(_) | InventoryPayload::Registry(_) => {
-            unimplemented!("config sections")
+        InventoryPayload::Security(s) => {
+            sqlx::query(
+                "INSERT INTO device_security \
+                 (device_id, firewall, bitlocker, defender, password, admins) \
+                 VALUES ($1, $2::jsonb, $3::jsonb, $4::jsonb, $5::jsonb, $6::jsonb) \
+                 ON CONFLICT (device_id) DO UPDATE SET firewall = EXCLUDED.firewall, \
+                   bitlocker = EXCLUDED.bitlocker, defender = EXCLUDED.defender, \
+                   password = EXCLUDED.password, admins = EXCLUDED.admins, updated_at = now()",
+            )
+            .bind(device_id)
+            .bind(json(&s.firewall))
+            .bind(json(&s.bitlocker))
+            .bind(json(&s.defender))
+            .bind(json(&s.password))
+            .bind(json(&s.admins))
+            .execute(&mut *conn)
+            .await?;
+        }
+        InventoryPayload::Registry(v) => {
+            sqlx::query("DELETE FROM device_registry WHERE device_id = $1")
+                .bind(device_id)
+                .execute(&mut *conn)
+                .await?;
+            let paths: Vec<&str> = v.iter().map(|r| r.path.as_str()).collect();
+            let names: Vec<&str> = v.iter().map(|r| r.name.as_str()).collect();
+            let states: Vec<String> = v.iter().map(|r| label(&r.state)).collect();
+            let kinds: Vec<String> = v.iter().map(|r| label(&r.kind)).collect();
+            let data: Vec<&str> = v.iter().map(|r| r.data.as_str()).collect();
+            // 同一個值重複時只留一筆（主鍵），避免整批寫入失敗
+            sqlx::query(
+                "INSERT INTO device_registry (device_id, path, name, state, kind, data) \
+                 SELECT $1, * FROM UNNEST($2::text[], $3::text[], $4::text[], $5::text[], $6::text[]) \
+                 ON CONFLICT DO NOTHING",
+            )
+            .bind(device_id)
+            .bind(&paths)
+            .bind(&names)
+            .bind(&states)
+            .bind(&kinds)
+            .bind(&data)
+            .execute(&mut *conn)
+            .await?;
         }
         InventoryPayload::Basic(b) => {
             sqlx::query(
