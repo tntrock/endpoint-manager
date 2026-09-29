@@ -10,6 +10,8 @@ pub const DEFAULT_INTERVALS: CollectionIntervals = CollectionIntervals {
     patches_secs: 3600,
     services_secs: 3600,
     hardware_secs: 86_400,
+    security_secs: 3600,
+    registry_secs: 3600,
 };
 
 #[derive(Default)]
@@ -25,6 +27,8 @@ fn interval(s: Section, iv: &CollectionIntervals) -> Duration {
         Section::Software => iv.software_secs,
         Section::Patches => iv.patches_secs,
         Section::Services => iv.services_secs,
+        Section::Security => iv.security_secs,
+        Section::Registry => iv.registry_secs,
     };
     Duration::from_secs(secs.into())
 }
@@ -127,7 +131,9 @@ mod tests {
                 Section::Basic,
                 Section::Software,
                 Section::Patches,
-                Section::Services
+                Section::Services,
+                Section::Security,
+                Section::Registry
             ]
         );
         let much_later = t0 + Duration::from_secs(86_400);

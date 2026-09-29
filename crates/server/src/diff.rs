@@ -81,6 +81,8 @@ pub fn items_of(p: &InventoryPayload) -> BTreeMap<String, String> {
                 ));
             }
         }
+        // 計畫 8 Task 5 實作
+        InventoryPayload::Security(_) | InventoryPayload::Registry(_) => {}
     }
     let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (k, v) in pairs {

@@ -179,6 +179,8 @@ pub async fn load_payload(
         return Ok(None);
     }
     let payload = match section {
+        // 計畫 8 Task 5 實作
+        Section::Security | Section::Registry => unimplemented!("config sections"),
         Section::Basic => {
             let (hostname, domain, is_domain_joined, os_caption, os_build, os_ubr): BasicRow =
                 sqlx::query_as(
@@ -280,6 +282,10 @@ async fn write_payload(
     payload: &InventoryPayload,
 ) -> Result<(), sqlx::Error> {
     match payload {
+        // 計畫 8 Task 5 實作
+        InventoryPayload::Security(_) | InventoryPayload::Registry(_) => {
+            unimplemented!("config sections")
+        }
         InventoryPayload::Basic(b) => {
             sqlx::query(
                 "UPDATE devices SET hostname = $2, domain = $3, is_domain_joined = $4, \

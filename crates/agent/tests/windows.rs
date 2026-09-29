@@ -189,7 +189,7 @@ fn collector_reports_this_machine() {
     let hb = c.heartbeat().unwrap();
     assert!(hb.boot_time < chrono::Utc::now());
 
-    for s in Section::ALL {
+    for s in Section::LEGACY {
         let mut p = c.collect(s).unwrap_or_else(|e| panic!("{s:?}: {e:#}"));
         sanitize(&mut p);
         assert_eq!(p.validate(), Ok(()), "{s:?}");
@@ -207,6 +207,7 @@ fn collector_reports_this_machine() {
                 assert!(v.iter().any(|s| s.name.eq_ignore_ascii_case("EventLog")))
             }
             InventoryPayload::Patches(_) => {}
+            InventoryPayload::Security(_) | InventoryPayload::Registry(_) => unreachable!(),
         }
     }
 }

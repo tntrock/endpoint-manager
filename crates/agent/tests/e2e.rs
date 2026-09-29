@@ -224,6 +224,30 @@ impl Collector for Fake {
                 state: "Running".into(),
                 binary_path: None,
             }]),
+            Section::Security => InventoryPayload::Security(protocol::SecurityInfo {
+                firewall: protocol::Probe::Ok(protocol::FirewallInfo {
+                    domain: true,
+                    private: true,
+                    public: false,
+                }),
+                bitlocker: protocol::Probe::Error("no BitLocker".into()),
+                defender: protocol::Probe::Ok(protocol::DefenderInfo {
+                    active: true,
+                    realtime: true,
+                    tamper: false,
+                    signature_updated: None,
+                }),
+                password: protocol::Probe::Ok(protocol::PasswordPolicy {
+                    min_length: 8,
+                    max_age_days: 42,
+                    lockout_threshold: 0,
+                }),
+                admins: protocol::Probe::Ok(vec![protocol::AccountInfo {
+                    name: r"FAKE-PC\Administrator".into(),
+                    sid: "S-1-5-21-1-500".into(),
+                }]),
+            }),
+            Section::Registry => anyhow::bail!("registry is collected via collect_registry"),
         })
     }
 }
