@@ -3,6 +3,7 @@ mod common;
 use common::TestServer;
 use endpoint_server::deploy::admin::{self, DeploymentInput, PackageInput, Transition};
 use endpoint_server::deploy::store::{self, Stored};
+use futures_util::StreamExt;
 use sqlx::PgPool;
 
 fn chunks(
@@ -40,7 +41,7 @@ pub fn pkg_input(kind: &str) -> PackageInput {
 
 async fn package(s: &TestServer, dir: &std::path::Path, kind: &str, data: &[u8]) -> i64 {
     let st = store::save(dir, chunks(data)).await.unwrap();
-    admin::create_package(&s.pool, &st, "7z.exe", None, &pkg_input(kind), "admin")
+    admin::create_package(&s.pool, dir, &st, "7z.exe", None, &pkg_input(kind), "admin")
         .await
         .unwrap()
 }
@@ -142,19 +143,35 @@ async fn package_validation_and_delete_rules(pool: PgPool) {
         },
     ] {
         assert!(
-            admin::create_package(&s.pool, &st, "a.exe", None, &bad, "admin")
+            admin::create_package(&s.pool, dir.path(), &st, "a.exe", None, &bad, "admin")
                 .await
                 .is_err(),
             "{bad:?}"
         );
     }
-    let id = admin::create_package(&s.pool, &st, "a.exe", None, &pkg_input("exe"), "admin")
-        .await
-        .unwrap();
+    let id = admin::create_package(
+        &s.pool,
+        dir.path(),
+        &st,
+        "a.exe",
+        None,
+        &pkg_input("exe"),
+        "admin",
+    )
+    .await
+    .unwrap();
     // 同一個檔案的第二個套件：刪掉其中一個時不能刪檔
-    let id2 = admin::create_package(&s.pool, &st, "a.exe", None, &pkg_input("exe"), "admin")
-        .await
-        .unwrap();
+    let id2 = admin::create_package(
+        &s.pool,
+        dir.path(),
+        &st,
+        "a.exe",
+        None,
+        &pkg_input("exe"),
+        "admin",
+    )
+    .await
+    .unwrap();
     admin::update_package(
         &s.pool,
         id,
@@ -624,4 +641,140 @@ async fn results_are_recorded_and_failures_auto_pause(pool: PgPool) {
         .unwrap();
     s.state.deploy.invalidate();
     assert_eq!(result(&s, &devs[0], d, Succeeded, 1).await, 404);
+}
+
+/// 多台同時第一次回報失敗：外鍵的 KEY SHARE 鎖不能和自動暫停的鎖互鎖（死結 → 500）
+#[sqlx::test(migrations = false)]
+async fn concurrent_failure_reports_do_not_deadlock(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let pkg = server_package(&s, "exe", b"x").await;
+    let tok = s.create_token(12).await;
+    let mut devs = vec![];
+    for _ in 0..12 {
+        devs.push(s.enroll_ok(&tok, None, None).await);
+    }
+    let d = admin::create_deployment(
+        &s.pool,
+        &DeploymentInput {
+            min_samples: 100,
+            ..dep_input(pkg, None)
+        },
+        "admin",
+    )
+    .await
+    .unwrap();
+    s.state.deploy.invalidate();
+    let codes = futures_util::future::join_all(
+        devs.iter()
+            .map(|a| result(&s, a, d, protocol::deploy::DeployStatus::Failed, 1)),
+    )
+    .await;
+    assert!(codes.iter().all(|c| *c == 204), "{codes:?}");
+}
+
+#[sqlx::test(migrations = false)]
+async fn stale_or_future_revision_results(pool: PgPool) {
+    use protocol::deploy::DeployStatus::*;
+    let s = TestServer::start(pool).await;
+    let pkg = server_package(&s, "exe", b"x").await;
+    let a = s.enroll_ok(&s.create_token(1).await, None, None).await;
+    let d = admin::create_deployment(&s.pool, &dep_input(pkg, None), "admin")
+        .await
+        .unwrap();
+    admin::retry_failed(&s.pool, d, "admin").await.unwrap();
+    s.state.deploy.invalidate();
+    assert_eq!(
+        result(&s, &a, d, Succeeded, 3).await,
+        400,
+        "未來的 revision"
+    );
+    assert_eq!(result(&s, &a, d, Succeeded, 2).await, 204);
+    assert_eq!(
+        result(&s, &a, d, Failed, 1).await,
+        204,
+        "舊 revision 仍接受"
+    );
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM deployment_status WHERE deployment_id = $1")
+            .bind(d)
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+    assert_eq!(status, "succeeded", "但不覆寫較新的結果");
+}
+
+#[sqlx::test(migrations = false)]
+async fn exe_uninstall_args_cannot_be_cleared_while_used(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let dir = tempfile::tempdir().unwrap();
+    let st = store::save(dir.path(), chunks(b"u")).await.unwrap();
+    let input = PackageInput {
+        uninstall_args: "/uninstall /S".into(),
+        ..pkg_input("exe")
+    };
+    let pkg = admin::create_package(&s.pool, dir.path(), &st, "a.exe", None, &input, "admin")
+        .await
+        .unwrap();
+    admin::create_deployment(
+        &s.pool,
+        &DeploymentInput {
+            action: "uninstall".into(),
+            ..dep_input(pkg, None)
+        },
+        "admin",
+    )
+    .await
+    .unwrap();
+    let err = admin::update_package(&s.pool, pkg, &pkg_input("exe"), "admin")
+        .await
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("移除"), "{err:#}");
+}
+
+/// 檔案已不在（例如和刪除同時發生）時不能建立套件
+#[sqlx::test(migrations = false)]
+async fn package_requires_file_present(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let dir = tempfile::tempdir().unwrap();
+    let st = store::save(dir.path(), chunks(b"gone")).await.unwrap();
+    std::fs::remove_file(store::file_path(dir.path(), &st.sha256)).unwrap();
+    let err = admin::create_package(
+        &s.pool,
+        dir.path(),
+        &st,
+        "a.exe",
+        None,
+        &pkg_input("exe"),
+        "admin",
+    )
+    .await
+    .unwrap_err();
+    assert!(format!("{err:#}").contains("重新上傳"), "{err:#}");
+}
+
+#[tokio::test]
+async fn cancelled_upload_leaves_no_temp_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let first: Result<axum::body::Bytes, std::io::Error> =
+        Ok(axum::body::Bytes::from_static(b"part"));
+    let body = futures_util::stream::iter(vec![first]).chain(futures_util::stream::pending());
+    let r = tokio::time::timeout(
+        std::time::Duration::from_millis(200),
+        store::save(dir.path(), Box::pin(body)),
+    )
+    .await;
+    assert!(r.is_err(), "上傳卡住被取消");
+    assert_eq!(
+        std::fs::read_dir(dir.path()).unwrap().count(),
+        0,
+        "取消時刪除暫存檔"
+    );
+    std::fs::write(dir.path().join(".upload-leftover"), b"x").unwrap();
+    std::fs::write(dir.path().join("keep"), b"x").unwrap();
+    store::cleanup_temp(dir.path()).await;
+    let left: Vec<String> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(left, vec!["keep".to_string()]);
 }

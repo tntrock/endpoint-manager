@@ -160,6 +160,7 @@ pub async fn serve(cfg: config::Config) -> anyhow::Result<()> {
         .await?;
     db::migrate(&pool).await?;
     partitions::maintain_partitions(&pool, chrono::Utc::now()).await?;
+    deploy::store::cleanup_temp(&cfg.package_dir).await;
 
     let server_names = ca::server_names(&cfg.ca_dir)?;
     let public_url = if cfg.agent_public_url.is_empty() {

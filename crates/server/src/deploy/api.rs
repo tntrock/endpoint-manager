@@ -104,6 +104,11 @@ pub async fn result(
         .find(id)
         .filter(|d| active && d.targets(group))
         .ok_or(AppError::NotFound)?;
+    if r.revision > dep.revision {
+        return Err(AppError::BadRequest(
+            "revision is newer than the deployment".into(),
+        ));
+    }
     let message: String = r.message.chars().filter(|c| !c.is_control()).collect();
     let mut tx = st.pool.begin().await?;
     sqlx::query(
@@ -112,7 +117,8 @@ pub async fn result(
          VALUES ($1, $2, $3, $4, $5, $6, $7) \
          ON CONFLICT (deployment_id, device_id) DO UPDATE SET status = EXCLUDED.status, \
            exit_code = EXCLUDED.exit_code, message = EXCLUDED.message, \
-           attempts = EXCLUDED.attempts, revision = EXCLUDED.revision, updated_at = now()",
+           attempts = EXCLUDED.attempts, revision = EXCLUDED.revision, updated_at = now() \
+         WHERE deployment_status.revision <= EXCLUDED.revision",
     )
     .bind(dep.id)
     .bind(device.device_id)
@@ -122,7 +128,12 @@ pub async fn result(
     .bind(r.attempts)
     .bind(r.revision)
     .execute(&mut *tx)
-    .await?;
+    .await
+    .map_err(|e| match &e {
+        // 派送剛被刪除（快取還沒更新）
+        sqlx::Error::Database(d) if d.is_foreign_key_violation() => AppError::NotFound,
+        _ => AppError::Db(e),
+    })?;
     if r.status == DeployStatus::Failed {
         auto_pause(&mut tx, dep.id).await?;
     }
@@ -131,10 +142,12 @@ pub async fn result(
 }
 
 /// 目前 revision 下有實際嘗試過的裝置（不含 compliant）達到最少樣本數，且失敗率超過門檻時暫停。
+/// 用 FOR NO KEY UPDATE：寫入 deployment_status 時外鍵已對派送列取 KEY SHARE，
+/// FOR UPDATE 會和其他同時回報的交易互等成死結。
 async fn auto_pause(conn: &mut sqlx::PgConnection, id: i64) -> Result<(), sqlx::Error> {
     let row: Option<(String, String, i32, i32, i32)> = sqlx::query_as(
         "SELECT name, stage, revision, max_failure_pct, min_samples FROM deployments \
-         WHERE id = $1 FOR UPDATE",
+         WHERE id = $1 FOR NO KEY UPDATE",
     )
     .bind(id)
     .fetch_optional(&mut *conn)

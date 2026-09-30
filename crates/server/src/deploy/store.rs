@@ -20,6 +20,34 @@ pub fn file_path(dir: &Path, sha256: &str) -> PathBuf {
     dir.join(sha256)
 }
 
+const TEMP_PREFIX: &str = ".upload-";
+
+/// 暫存檔守衛：上傳失敗、被取消（連線中斷時 future 被 drop）或改名失敗時都會刪檔
+struct TempFile {
+    path: PathBuf,
+    keep: bool,
+}
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        if !self.keep {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// 啟動時清掉上次中斷留下的暫存檔（例如伺服器在上傳中被關閉）
+pub async fn cleanup_temp(dir: &Path) {
+    let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
+        return;
+    };
+    while let Ok(Some(e)) = entries.next_entry().await {
+        if e.file_name().to_string_lossy().starts_with(TEMP_PREFIX) {
+            let _ = tokio::fs::remove_file(e.path()).await;
+        }
+    }
+}
+
 /// 串流寫入暫存檔並邊寫邊算雜湊，完成後改名為雜湊。
 pub async fn save<S, E>(dir: &Path, body: S) -> anyhow::Result<Stored>
 where
@@ -37,9 +65,12 @@ where
     tokio::fs::create_dir_all(dir)
         .await
         .with_context(|| format!("建立套件目錄 {}", dir.display()))?;
-    let tmp = dir.join(format!(".upload-{}", uuid::Uuid::new_v4()));
-    let result = async {
-        let mut f = tokio::fs::File::create(&tmp).await?;
+    let mut tmp = TempFile {
+        path: dir.join(format!("{TEMP_PREFIX}{}", uuid::Uuid::new_v4())),
+        keep: false,
+    };
+    let st = {
+        let mut f = tokio::fs::File::create(&tmp.path).await?;
         let mut hasher = Sha256::new();
         let mut size: u64 = 0;
         while let Some(chunk) = body.next().await {
@@ -51,27 +82,18 @@ where
         }
         f.flush().await?;
         f.sync_all().await?;
-        Ok(Stored {
+        Stored {
             sha256: hex::encode(hasher.finalize()),
             size,
-        })
-    }
-    .await;
-    match result {
-        Ok(st) => {
-            let dest = file_path(dir, &st.sha256);
-            if tokio::fs::try_exists(&dest).await.unwrap_or(false) {
-                tokio::fs::remove_file(&tmp).await?;
-            } else {
-                tokio::fs::rename(&tmp, &dest).await?;
-            }
-            Ok(st)
         }
-        Err(e) => {
-            let _ = tokio::fs::remove_file(&tmp).await;
-            Err(e)
-        }
+    };
+    let dest = file_path(dir, &st.sha256);
+    // 已有同內容的檔案：守衛會刪掉暫存檔
+    if !tokio::fs::try_exists(&dest).await.unwrap_or(false) {
+        tokio::fs::rename(&tmp.path, &dest).await?;
+        tmp.keep = true;
     }
+    Ok(st)
 }
 
 #[derive(Debug, Clone, PartialEq)]

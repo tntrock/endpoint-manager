@@ -120,8 +120,19 @@ fn file_name(raw: &str) -> anyhow::Result<String> {
     Ok(base.to_string())
 }
 
+/// 同一個檔案（sha256）的建立與刪除依序進行：刪除時判斷「沒人用」並刪檔，
+/// 不能和同時建立同內容的套件交錯，否則會留下沒有檔案的套件
+async fn lock_file(conn: &mut PgConnection, sha256: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext('package:' || $1))")
+        .bind(sha256)
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
 pub async fn create_package(
     pool: &PgPool,
+    dir: &Path,
     file: &Stored,
     original_name: &str,
     msi_product_code: Option<&str>,
@@ -132,6 +143,13 @@ pub async fn create_package(
     let fname = file_name(original_name)?;
     let product_code = msi_product_code.filter(|_| v.kind == "msi");
     let mut tx = pool.begin().await?;
+    lock_file(&mut tx, &file.sha256).await?;
+    ensure!(
+        tokio::fs::try_exists(file_path(dir, &file.sha256))
+            .await
+            .unwrap_or(false),
+        "伺服器上找不到上傳的檔案，請重新上傳"
+    );
     let id: i64 = sqlx::query_scalar(
         "INSERT INTO packages (name, version, kind, file_name, size, sha256, msi_product_code, \
            install_args, uninstall_args, success_codes, detect_name, detect_publisher, \
@@ -175,6 +193,16 @@ pub async fn update_package(
 ) -> anyhow::Result<()> {
     let v = validate_package(i)?;
     let mut tx = pool.begin().await?;
+    if v.kind == "exe" && v.uninstall_args.is_empty() {
+        let used: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM deployments WHERE package_id = $1 AND action = 'uninstall' \
+             AND stage <> 'stopped'",
+        )
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+        ensure!(used == 0, "有移除派送正在使用這個套件，移除參數不能清空");
+    }
     // 類型跟著檔案，不能改（MSI 的 ProductCode 也來自檔案）
     let n = sqlx::query(
         "UPDATE packages SET name = $2, version = $3, install_args = $4, uninstall_args = \
@@ -186,7 +214,7 @@ pub async fn update_package(
     .bind(&v.name)
     .bind(&v.version)
     .bind(&v.install_args)
-    .bind(i.uninstall_args.trim())
+    .bind(&v.uninstall_args)
     .bind(&v.success_codes)
     .bind(&v.detect_name)
     .bind(&v.detect_publisher)
@@ -212,12 +240,18 @@ pub async fn update_package(
 /// 被派送引用時不能刪除；沒有其他套件使用同一個檔案時一併刪檔。
 pub async fn delete_package(pool: &PgPool, dir: &Path, id: i64, actor: &str) -> anyhow::Result<()> {
     let mut tx = pool.begin().await?;
+    let sha: String = sqlx::query_scalar("SELECT sha256 FROM packages WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .context("套件不存在")?;
+    lock_file(&mut tx, &sha).await?;
     let used: i64 = sqlx::query_scalar("SELECT count(*) FROM deployments WHERE package_id = $1")
         .bind(id)
         .fetch_one(&mut *tx)
         .await?;
     ensure!(used == 0, "套件仍被 {used} 個派送使用，請先刪除相關派送");
-    let (name, sha): (String, String) =
+    let (name, _): (String, String) =
         sqlx::query_as("DELETE FROM packages WHERE id = $1 RETURNING name, sha256")
             .bind(id)
             .fetch_optional(&mut *tx)
@@ -236,7 +270,7 @@ pub async fn delete_package(pool: &PgPool, dir: &Path, id: i64, actor: &str) -> 
         json!({"id": id, "sha256": sha}),
     )
     .await?;
-    tx.commit().await?;
+    // 在檔案鎖內刪檔：同時建立同內容套件的交易會等到這裡結束，再發現檔案不在
     if others == 0 {
         match tokio::fs::remove_file(file_path(dir, &sha)).await {
             Ok(()) => {}
@@ -244,6 +278,7 @@ pub async fn delete_package(pool: &PgPool, dir: &Path, id: i64, actor: &str) -> 
             Err(e) => tracing::warn!(sha256 = %sha, error = %e, "package file not removed"),
         }
     }
+    tx.commit().await?;
     Ok(())
 }
 

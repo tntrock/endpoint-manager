@@ -15,6 +15,9 @@ pub const MAX_PACKAGE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 pub enum DeployAction {
     Install,
     Uninstall,
+    /// 較新伺服器的新動作：舊 Agent 略過，不讓整個報到回應解析失敗
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -22,6 +25,9 @@ pub enum DeployAction {
 pub enum PackageKind {
     Msi,
     Exe,
+    /// 較新伺服器的新類型：舊 Agent 略過
+    #[serde(other)]
+    Unknown,
 }
 
 /// 「已安裝」的判斷：名稱與發行者樣式（`*` 萬用字元、不分大小寫），版本 ≥ min_version
@@ -160,6 +166,18 @@ mod tests {
         assert_eq!(v["package"]["kind"], "msi");
         let s = serde_json::to_value(DeployStatus::RebootRequired).unwrap();
         assert_eq!(s, "reboot_required");
+    }
+
+    #[test]
+    fn unknown_kinds_do_not_break_parsing() {
+        let mut v = serde_json::to_value(a(1)).unwrap();
+        v["action"] = "reinstall".into();
+        v["package"]["kind"] = "appx".into();
+        let parsed: Assignment = serde_json::from_value(v).unwrap();
+        assert_eq!(
+            (parsed.action, parsed.package.kind),
+            (DeployAction::Unknown, PackageKind::Unknown)
+        );
     }
 
     #[test]
