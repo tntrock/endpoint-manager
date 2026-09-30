@@ -91,6 +91,7 @@ pub async fn checkin(
         deployments,
         update_policy_hash: Some(protocol::update::update_policy_hash(update_policy.as_ref())),
         update_policy,
+        commands: vec![],
     }))
 }
 

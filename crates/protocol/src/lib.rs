@@ -1,5 +1,6 @@
 //! Agent 與伺服器之間的共用訊息格式。
 
+pub mod command;
 pub mod deploy;
 pub mod matcher;
 pub mod regpath;
@@ -136,6 +137,9 @@ pub struct CheckinResponse {
     /// 原則的雜湊；沒有代表伺服器不支援，Agent 完全不動 WU 設定
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub update_policy_hash: Option<String>,
+    /// 這台待執行的遠端指令（收到結果前每次報到都會重送）
+    #[serde(default)]
+    pub commands: Vec<command::Command>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
