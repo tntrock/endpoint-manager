@@ -71,6 +71,8 @@ pub async fn checkin(
         renew_certificate: device.cert_not_after - Utc::now() < Duration::days(RENEW_BEFORE_DAYS),
         registry_queries: rules.registry_queries.clone(),
         registry_queries_hash: Some(rules.registry_hash.clone()),
+        deployments: vec![],
+        deployments_hash: Some(protocol::deploy::assignments_hash(&[])),
     }))
 }
 
