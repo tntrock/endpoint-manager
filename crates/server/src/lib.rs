@@ -7,6 +7,7 @@ pub mod checkin;
 pub mod compliance;
 pub mod config;
 pub mod db;
+pub mod deploy;
 pub mod devices;
 pub mod diff;
 pub mod enroll;

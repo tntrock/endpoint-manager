@@ -349,7 +349,8 @@ async fn security_and_registry_roundtrip_with_history(pool: PgPool) {
          WHERE device_id = $1 AND section = 'security'",
     )
     .bind(a.device_id)
-    .fetch_one(&s.pool)
+    // 用手上的連線：測試連線池很小，持有 c 再向池子要連線會逾時
+    .fetch_one(&mut *c)
     .await
     .unwrap();
     assert_eq!(

@@ -65,10 +65,10 @@ pub async fn create(pool: &PgPool, name: &str, actor: &str) -> anyhow::Result<i6
 }
 
 /// 群組的使用情形：有效裝置（未除役）、有效金鑰（未作廢、未過期、未用完）、被指派的管理員
-/// （含停用中的，重新啟用時才不會沒有群組）、引用它的合規規則。群組頁與刪除檢查共用這個定義。
+/// （含停用中的，重新啟用時才不會沒有群組）、引用它的合規規則與派送。群組頁與刪除檢查共用這個定義。
 pub async fn usage(conn: &mut PgConnection, id: i64) -> Result<(i64, i64, i64, i64), sqlx::Error> {
     sqlx::query_as(
-        "SELECT (SELECT count(*) FROM devices WHERE group_id = $1 AND status <> 'retired'),                 (SELECT count(*) FROM enroll_tokens WHERE group_id = $1                    AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now())                    AND used_count < max_uses),                 (SELECT count(*) FROM admin_groups WHERE group_id = $1),                 (SELECT count(DISTINCT rule_id) FROM compliance_rule_groups WHERE group_id = $1)",
+        "SELECT (SELECT count(*) FROM devices WHERE group_id = $1 AND status <> 'retired'),                 (SELECT count(*) FROM enroll_tokens WHERE group_id = $1                    AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now())                    AND used_count < max_uses),                 (SELECT count(*) FROM admin_groups WHERE group_id = $1),                 (SELECT count(DISTINCT rule_id) FROM compliance_rule_groups WHERE group_id = $1) \n                + (SELECT count(*) FROM deployments d WHERE d.pilot_group_id = $1 OR EXISTS ( \n                     SELECT 1 FROM deployment_groups g WHERE g.deployment_id = d.id AND g.group_id = $1))",
     )
     .bind(id)
     .fetch_one(conn)
@@ -90,7 +90,7 @@ pub async fn delete(pool: &PgPool, id: i64, actor: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
         devices == 0 && tokens == 0 && admins == 0 && rules == 0,
         "群組內還有 {devices} 台裝置、{tokens} 把有效金鑰、{admins} 位管理員，\
-         並被 {rules} 條規則引用，無法刪除"
+         並被 {rules} 條規則或派送引用，無法刪除"
     );
     let mut ungrouped = vec![];
     for sql in [
