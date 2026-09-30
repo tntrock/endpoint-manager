@@ -186,11 +186,11 @@
 
 ## 5. 合規規則
 
-新增三種 kind（migration 0012 擴充 `rules.kind` 的 CHECK）。三種都支援群組範圍、豁免、違規歷史與 Webhook 通知。
+新增三種 kind（migration 0013 擴充 `compliance_rules.kind` 的 CHECK）。三種都支援群組範圍、豁免、違規歷史與 Webhook 通知。
 
 | kind | 參數 | 違規 | 未知 |
 |---|---|---|---|
-| `patch_age` | `max_days` 1–365 | `last_patch_date` 早於今天減 max_days | 沒有 `update_status`，或 `last_patch_date` 為 None |
+| `patch_age` | `max_days` 1–365 | `last_patch_date` 早於今天減 max_days | 沒有 `update_status`（「Agent 尚未回報更新狀態」），或 `last_patch_date` 為 None |
 | `reboot_pending` | `max_days` 1–90 | `reboot_pending` 為真，且 `reboot_pending_since` 早於現在減 max_days | 沒有 `update_status` |
 | `update_policy` | 無 | 狀態是 `conflict` 或 `error`；detail 顯示原因 | 沒有 `update_status` |
 
@@ -211,7 +211,7 @@
 
 **原則詳情**
 - 設定內容。
-- 依狀態列出裝置，每頁 50 台，比照派送詳情。
+- 依狀態列出裝置，每頁 100 台，比照派送詳情。
 - 按鈕（平台管理員）：暫停／恢復品質更新、暫停／恢復功能更新、刪除。
 
 **`/updates/overview`：更新概況**
@@ -220,7 +220,7 @@
 
 **裝置頁「更新」分頁**
 - 套用的原則。
-- 每個值的期望與實際：實際值取 `written`，衝突的值會另外標示。
+- 期望值清單。Agent 不回報實際寫入的值，衝突時說明欄列出被改動的值名稱。
 - 待重開機狀態、最後裝更新日期。
 
 **權限與防護**

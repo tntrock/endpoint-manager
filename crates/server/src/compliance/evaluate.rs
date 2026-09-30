@@ -101,6 +101,11 @@ pub struct Outcome {
     pub detail: Value,
 }
 
+/// 更新規則：Agent 沒有回報更新狀態（0.5.0 以前的 Agent 不支援）
+fn no_update_status() -> Option<(Status, Value)> {
+    Some((Status::Unknown, json!({"reason": "no_update_status"})))
+}
+
 fn no_data() -> Option<(Status, Value)> {
     Some((Status::Unknown, json!({"reason": "no_data"})))
 }
@@ -236,7 +241,7 @@ fn check_one(c: &Check, f: &DeviceFacts) -> Option<(Status, Value)> {
     match c {
         Check::PatchAge { max_days } => {
             let Some(u) = &f.update_status else {
-                return no_data();
+                return no_update_status();
             };
             let Some(last) = u.last_patch_date else {
                 return Some((Status::Unknown, json!({"reason": "no_patch_date"})));
@@ -251,7 +256,7 @@ fn check_one(c: &Check, f: &DeviceFacts) -> Option<(Status, Value)> {
         }
         Check::RebootPending { max_days } => {
             let Some(u) = &f.update_status else {
-                return no_data();
+                return no_update_status();
             };
             // 沒有起始時間無法判斷天數：不算違規
             let since = u.reboot_pending_since.filter(|_| u.reboot_pending)?;
@@ -265,7 +270,7 @@ fn check_one(c: &Check, f: &DeviceFacts) -> Option<(Status, Value)> {
         }
         Check::UpdatePolicy => {
             let Some(u) = &f.update_status else {
-                return no_data();
+                return no_update_status();
             };
             matches!(u.state.as_str(), "conflict" | "error").then(|| {
                 (
@@ -623,6 +628,9 @@ pub fn summarize(d: &Value) -> String {
         Some("not_installed") => return format!("服務 {} 未安裝", s("service")),
         Some("absent") => return format!("{} 未設定", s("registry")),
         Some("no_patch_date") => return "沒有可判讀的更新安裝日期".into(),
+        Some("no_update_status") => {
+            return "Agent 尚未回報更新狀態（需要 Agent 0.5.0 以上）".into();
+        }
         _ => {}
     }
     let days = d["days"].as_i64().unwrap_or_default();
@@ -1246,6 +1254,22 @@ mod tests {
             reboot_pending: false,
             reboot_pending_since: None,
             last_patch_date: None,
+        }
+    }
+
+    /// 舊版 Agent 沒有回報更新狀態：不能說成「尚未收到盤點資料」
+    #[test]
+    fn update_rules_without_status_say_agent_has_not_reported() {
+        let f = facts(vec![]);
+        for (kind, p) in [
+            ("patch_age", json!({"max_days": 30})),
+            ("reboot_pending", json!({"max_days": 7})),
+            ("update_policy", json!({})),
+        ] {
+            let (st, d) = one(&f, kind, p).unwrap();
+            assert_eq!(st, Status::Unknown);
+            assert_eq!(d["reason"], "no_update_status", "{kind}");
+            assert!(summarize(&d).contains("0.5.0"), "{}", summarize(&d));
         }
     }
 

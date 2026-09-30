@@ -158,7 +158,7 @@ Webhook 只接受 `https://`，不跟隨重新導向。簽章密鑰只放環境�
 - **期限的值名稱**：Windows 11 24H2 起的 ADMX 改用 `SetComplianceDeadlineForQU`／`ConfigureDeadlineNoAutoRebootForQualityUpdates`，較舊的 Windows 只認 `SetComplianceDeadline`／`ConfigureDeadlineNoAutoReboot`，Agent 會新舊一起寫入。請在 Windows 10 22H2／Windows 11 23H2 的「設定 > Windows Update > 進階選項 > 已設定的更新原則」確認有生效。
 - **稽核**：
   - 原則詳情依狀態（已套用／衝突／錯誤／尚未回報）列出裝置；「更新概況」（`/updates/overview`）顯示各組建的 UBR 分布與待重開機最久的電腦；裝置頁有「更新」分頁。
-  - 合規規則新增「太久沒更新」（`patch_age`）、「待重開機太久」（`reboot_pending`）、「更新原則衝突」（`update_policy`）。這三種依 Agent 回報的狀態判定，Agent 狀態有變或每 24 小時回報一次，所以跨過門檻後**最晚約一天**才出現違規。
+  - 合規規則新增「太久沒更新」（`patch_age`）、「待重開機太久」（`reboot_pending`）、「更新原則衝突」（`update_policy`）。這三種依 Agent 回報的狀態判定，Agent 狀態有變或每 24 小時回報一次，所以連線中的電腦跨過門檻後**最晚約一天**才出現違規。**離線的電腦不會隨時間重新評估**，會維持最後一次的結果（和 Defender 病毒碼天數相同）；長期離線的電腦請用裝置清單的「最後報到」找出來。0.5.0 以前的 Agent 在這三種規則顯示「未知：Agent 尚未回報更新狀態」。
 - 需要伺服器與 Agent 都升到 0.5.0 以上：先升級伺服器，再升級 Agent；舊版 Agent 會忽略更新原則。
 
 ## 部署伺服器（Docker Compose）
