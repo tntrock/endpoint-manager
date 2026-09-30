@@ -352,3 +352,98 @@ async fn group_used_by_deployment_cannot_be_deleted(pool: PgPool) {
         assert!(format!("{err:#}").contains("派送"), "{err:#}");
     }
 }
+
+async fn checkin(s: &TestServer, a: &common::TestAgent) -> protocol::CheckinResponse {
+    s.client(Some(a))
+        .post(s.url("/v1/checkin"))
+        .json(&protocol::CheckinRequest {
+            schema_version: protocol::SCHEMA_VERSION,
+            agent_version: "0.4.0".into(),
+            boot_time: chrono::Utc::now(),
+            logged_on_user: None,
+            ip_addresses: vec![],
+            section_hashes: Default::default(),
+            section_errors: Default::default(),
+        })
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap()
+}
+
+/// 報到用的快取最多每 5 秒確認一次 generation；測試直接讓快取過期
+async fn ids(s: &TestServer, a: &common::TestAgent) -> Vec<i64> {
+    s.state.deploy.invalidate();
+    checkin(s, a)
+        .await
+        .deployments
+        .iter()
+        .map(|d| d.deployment_id)
+        .collect()
+}
+
+#[sqlx::test(migrations = false)]
+async fn checkin_assigns_by_scope_and_stage(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let dir = tempfile::tempdir().unwrap();
+    let pkg = package(&s, dir.path(), "exe", b"payload").await;
+    let pilot_tok = s.create_group_token("試點", 1).await;
+    let tp_tok = s.create_group_token("台北", 1).await;
+    let ks_tok = s.create_group_token("高雄", 1).await;
+    let pilot_dev = s.enroll_ok(&pilot_tok, None, None).await;
+    let tp = s.enroll_ok(&tp_tok, None, None).await;
+    let ks = s.enroll_ok(&ks_tok, None, None).await;
+    let pilot = s.group_id("試點").await;
+    let ks_g = s.group_id("高雄").await;
+
+    let d = admin::create_deployment(
+        &s.pool,
+        &DeploymentInput {
+            exclude: vec![ks_g],
+            ..dep_input(pkg, Some(pilot))
+        },
+        "admin",
+    )
+    .await
+    .unwrap();
+    assert_eq!(ids(&s, &pilot_dev).await, vec![d], "試點階段只給試點群組");
+    assert!(ids(&s, &tp).await.is_empty());
+    let r = checkin(&s, &pilot_dev).await;
+    assert_eq!(
+        r.deployments_hash.as_deref(),
+        Some(protocol::deploy::assignments_hash(&r.deployments).as_str())
+    );
+    let spec = &r.deployments[0].package;
+    assert_eq!(
+        (spec.id, spec.size, spec.detect.name.as_str()),
+        (pkg, 7, "7-Zip*")
+    );
+
+    admin::set_stage(&s.pool, d, Transition::Expand, "admin")
+        .await
+        .unwrap();
+    assert_eq!(ids(&s, &tp).await, vec![d]);
+    assert!(ids(&s, &ks).await.is_empty(), "排除的群組");
+    admin::set_stage(&s.pool, d, Transition::Pause, "admin")
+        .await
+        .unwrap();
+    assert!(ids(&s, &tp).await.is_empty(), "暫停後不下發");
+    let paused_hash = checkin(&s, &tp).await.deployments_hash;
+    assert_eq!(
+        paused_hash.as_deref(),
+        Some(protocol::deploy::assignments_hash(&[]).as_str())
+    );
+    admin::set_stage(&s.pool, d, Transition::Resume, "admin")
+        .await
+        .unwrap();
+    assert_eq!(ids(&s, &tp).await, vec![d]);
+    // 停用的裝置不指派
+    sqlx::query("UPDATE devices SET status = 'retired' WHERE id = $1")
+        .bind(tp.device_id)
+        .execute(&s.pool)
+        .await
+        .unwrap();
+    assert!(ids(&s, &tp).await.is_empty());
+}

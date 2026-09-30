@@ -349,10 +349,12 @@ async fn security_and_registry_roundtrip_with_history(pool: PgPool) {
          WHERE device_id = $1 AND section = 'security'",
     )
     .bind(a.device_id)
-    // 用手上的連線：測試連線池很小，持有 c 再向池子要連線會逾時
+    // 測試連線池很小：用手上的連線，並在呼叫伺服器前歸還
     .fetch_one(&mut *c)
     .await
     .unwrap();
+
+    drop(c);
     assert_eq!(
         change,
         (
@@ -370,6 +372,7 @@ async fn security_and_registry_roundtrip_with_history(pool: PgPool) {
         data: "1".into(),
     }]);
     assert_eq!(put(&s, &a, "registry", &upload(reg.clone())).await, 204);
+    let mut c = s.pool.acquire().await.unwrap();
     let back =
         endpoint_server::inventory::load_payload(&mut c, a.device_id, protocol::Section::Registry)
             .await
