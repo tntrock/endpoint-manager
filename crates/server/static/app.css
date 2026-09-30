@@ -31,3 +31,4 @@ button.danger { color: var(--bad); }
 .sev.low { background: #e8eef7; color: #2d4a73; }
 progress { width: 12em; vertical-align: middle; }
 textarea { font: inherit; }
+.actions form { display: inline-block; margin-right: .5rem; }

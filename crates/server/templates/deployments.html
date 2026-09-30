@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>派送</h1>
+{% if nav.platform %}<p><a href="/deployments/new">建立派送</a>　<a href="/packages">套件</a></p>{% endif %}
+<table>
+  <tr><th>名稱</th><th>套件</th><th>動作</th><th>狀態</th><th>對象</th><th>等待中</th><th>成功</th><th>待重開機</th><th>已符合</th><th>失敗</th></tr>
+  {% for r in rows %}
+  <tr>
+    <td><a href="/deployments/{{ r.id }}">{{ r.name }}</a></td>
+    <td>{{ r.package }}</td>
+    <td>{{ r.action }}</td>
+    <td>{{ r.stage }}</td>
+    <td>{{ r.counts.targeted }}</td>
+    <td>{{ r.counts.pending() }}</td>
+    <td>{{ r.counts.succeeded }}</td>
+    <td>{{ r.counts.reboot }}</td>
+    <td>{{ r.counts.compliant }}</td>
+    <td>{% if r.counts.failed > 0 %}<span class="error">{{ r.counts.failed }}</span>{% else %}0{% endif %}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% if rows.is_empty() %}<p class="muted">還沒有派送。</p>{% endif %}
+{% if !nav.platform %}<p class="muted">台數只計算你管理範圍內的裝置。</p>{% endif %}
+{% endblock %}

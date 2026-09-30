@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>上傳套件</h1>
+<p><a href="/packages">← 套件</a></p>
+<form id="upload-form" data-csrf="{{ nav.csrf }}">
+  <p><input type="file" name="file" accept=".msi,.exe" required></p>
+  <p><button>上傳</button> <span id="upload-status" class="muted"></span></p>
+</form>
+<p class="muted">只接受 .msi 或 .exe，單檔最大 2 GiB。MSI 會自動讀出名稱、版本、發行者與 ProductCode；上傳後請到下一頁確認偵測規則，EXE 請填靜默安裝參數。</p>
+<script src="/static/upload.js" defer></script>
+{% endblock %}

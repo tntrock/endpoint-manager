@@ -31,9 +31,12 @@ services:
       EM_AGENT_MSI: /agent/endpoint-agent.msi
       EM_AGENT_PUBLIC_URL: ${EM_AGENT_PUBLIC_URL:-}
       EM_WEBHOOK_SECRET: ${EM_WEBHOOK_SECRET:-}
+      EM_PACKAGE_DIR: /packages
+      EM_DOWNLOAD_CONCURRENCY: ${EM_DOWNLOAD_CONCURRENCY:-50}
     volumes:
       - ./pki:/pki:ro
       - ./agent:/agent:ro
+      - packages:/packages
     ports:
       - "8443:8443"
       - "443:8444"
@@ -42,3 +45,4 @@ services:
 
 volumes:
   pgdata:
+  packages:

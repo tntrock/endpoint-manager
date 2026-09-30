@@ -159,6 +159,29 @@ impl ServerClient {
 
     /// 下載套件到 dest：邊寫邊算雜湊，大小或 SHA-256 不符時刪檔並回 Mismatch。
     pub async fn download(&self, pkg: &PackageSpec, dest: &Path) -> Result<(), DownloadError> {
+        let part = Partial {
+            path: dest.with_extension("part"),
+            keep: false,
+        };
+        let mut f = tokio::fs::File::create(&part.path).await?;
+        self.fetch(pkg, Some(&mut f)).await?;
+        f.flush().await?;
+        drop(f);
+        tokio::fs::rename(&part.path, dest).await?;
+        Ok(())
+    }
+
+    /// 只下載並驗證大小與 SHA-256，不寫檔（負載測試用）
+    pub async fn verify_package(&self, pkg: &PackageSpec) -> Result<(), DownloadError> {
+        self.fetch(pkg, None).await
+    }
+
+    /// 串流下載並驗證；有 sink 時同時寫入
+    async fn fetch(
+        &self,
+        pkg: &PackageSpec,
+        mut sink: Option<&mut tokio::fs::File>,
+    ) -> Result<(), DownloadError> {
         let url = self.url(&format!("/v1/packages/{}/content", pkg.id));
         let send = self.http.get(url).timeout(DOWNLOAD_MAX).send();
         let mut resp = match tokio::time::timeout(DOWNLOAD_IDLE, send).await {
@@ -178,11 +201,6 @@ impl ServerClient {
             StatusCode::UNAUTHORIZED => return Err(DownloadError::Unauthorized),
             _ => return Err(DownloadError::Retry(retry_after_of(&resp))),
         }
-        let part = Partial {
-            path: dest.with_extension("part"),
-            keep: false,
-        };
-        let mut f = tokio::fs::File::create(&part.path).await?;
         let mut hasher = Sha256::new();
         let mut size: u64 = 0;
         loop {
@@ -203,14 +221,13 @@ impl ServerClient {
                 return Err(DownloadError::Mismatch);
             }
             hasher.update(&chunk);
-            f.write_all(&chunk).await?;
+            if let Some(f) = sink.as_deref_mut() {
+                f.write_all(&chunk).await?;
+            }
         }
-        f.flush().await?;
-        drop(f);
         if size != pkg.size || !hex::encode(hasher.finalize()).eq_ignore_ascii_case(&pkg.sha256) {
             return Err(DownloadError::Mismatch);
         }
-        tokio::fs::rename(&part.path, dest).await?;
         Ok(())
     }
 

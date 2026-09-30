@@ -535,7 +535,10 @@ struct RuleFormPage {
     error: Option<String>,
 }
 
-async fn group_checks(st: &AppState, selected: &[i64]) -> Result<Vec<SelectOption>, sqlx::Error> {
+pub(super) async fn group_checks(
+    st: &AppState,
+    selected: &[i64],
+) -> Result<Vec<SelectOption>, sqlx::Error> {
     let rows: Vec<(i64, String)> =
         sqlx::query_as("SELECT id, name FROM device_groups ORDER BY name")
             .fetch_all(&st.pool)

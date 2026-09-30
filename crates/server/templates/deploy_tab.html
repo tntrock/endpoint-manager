@@ -1,0 +1,10 @@
+{% if rows.is_empty() %}
+<p class="muted">這台目前不是任何派送的對象。</p>
+{% else %}
+<table>
+  <tr><th>派送</th><th>套件</th><th>動作</th><th>派送狀態</th><th>這台的結果</th><th>訊息</th><th>更新時間</th></tr>
+  {% for r in rows %}
+  <tr><td><a href="/deployments/{{ r.id }}">{{ r.name }}</a></td><td>{{ r.package }}</td><td>{{ r.action }}</td><td>{{ r.stage }}</td><td>{{ r.status }}</td><td>{{ r.message }}</td><td>{{ r.updated }}</td></tr>
+  {% endfor %}
+</table>
+{% endif %}

@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>套件：{{ name }}</h1>
+<p><a href="/packages">← 套件</a></p>
+{% if let Some(e) = error %}<p class="error">{{ e }}</p>{% endif %}
+<table>
+  <tr><th>類型</th><td>{% if kind == "msi" %}MSI{% else %}EXE{% endif %}</td></tr>
+  <tr><th>檔案</th><td>{{ file_name }}（{{ size }}）</td></tr>
+  <tr><th>SHA-256</th><td><code>{{ sha256 }}</code></td></tr>
+  {% if kind == "msi" %}<tr><th>ProductCode</th><td><code>{{ product_code }}</code></td></tr>{% endif %}
+  <tr><th>派送</th><td>{{ used }} 個派送使用中</td></tr>
+</table>
+<form method="post" action="/packages/{{ id }}">
+  <input type="hidden" name="csrf" value="{{ nav.csrf }}">
+  <p><label>名稱 <input name="name" value="{{ name }}" required maxlength="100" size="40"></label>
+     <label>版本 <input name="version" value="{{ version }}" maxlength="256"></label></p>
+  {% if kind == "msi" %}
+  <p><label>附加屬性 <input name="install_args" value="{{ install_args }}" maxlength="1000" size="60" placeholder="ALLUSERS=1"></label></p>
+  <p class="muted">安裝指令固定為 <code>msiexec /i 套件 /qn /norestart</code>，這裡只填附加的屬性；移除以 ProductCode 執行。</p>
+  {% else %}
+  <p><label>靜默安裝參數 <input name="install_args" value="{{ install_args }}" maxlength="1000" size="60" placeholder="/S"></label></p>
+  {% if install_args.is_empty() %}<p class="error">還沒填靜默安裝參數：不帶參數執行的安裝程式可能會等待使用者操作，直到 60 分鐘逾時。</p>{% endif %}
+  <p><label>移除參數 <input name="uninstall_args" value="{{ uninstall_args }}" maxlength="1000" size="60" placeholder="/uninstall /S"></label></p>
+  <p class="muted">移除時以這個安裝檔加上移除參數執行；留空代表不能用來移除。</p>
+  {% endif %}
+  <p><label>額外的成功結束碼 <input name="success_codes" value="{{ success_codes }}" placeholder="例：1, 2"></label>
+     <span class="muted">0 一律算成功；3010、1641 為成功但需要重新開機；1618 會稍後重試。</span></p>
+  <fieldset><legend>偵測規則（判斷是否已安裝）</legend>
+    <p><label>軟體名稱 <input name="detect_name" value="{{ detect_name }}" required maxlength="256" size="40"></label>
+       <label>發行者（選填）<input name="detect_publisher" value="{{ detect_publisher }}" maxlength="256" size="30"></label>
+       <label>最低版本（選填）<input name="detect_min_version" value="{{ detect_min_version }}" maxlength="256"></label></p>
+    <p class="muted">比對「程式和功能」清單，<code>*</code> 代表任意字元、不分大小寫。安裝後偵測不到會算失敗，請確認名稱與版本正確。</p>
+  </fieldset>
+  <p><button>儲存</button></p>
+</form>
+<form method="post" action="/packages/{{ id }}/delete">
+  <input type="hidden" name="csrf" value="{{ nav.csrf }}">
+  <button class="danger">刪除套件</button> <span class="muted">有派送使用時不能刪除。</span>
+</form>
+{% endblock %}

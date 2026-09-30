@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>套件</h1>
+<p><a href="/deployments">← 派送</a>　<a href="/packages/upload">上傳套件</a></p>
+<table>
+  <tr><th>名稱</th><th>版本</th><th>類型</th><th>檔案</th><th>大小</th><th>派送</th><th>上傳時間</th></tr>
+  {% for r in rows %}
+  <tr>
+    <td><a href="/packages/{{ r.id }}">{{ r.name }}</a></td>
+    <td>{{ r.version }}</td>
+    <td>{{ r.kind }}</td>
+    <td>{{ r.file_name }}</td>
+    <td>{{ r.size }}</td>
+    <td>{{ r.used }}</td>
+    <td>{{ r.created }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% if rows.is_empty() %}<p class="muted">還沒有套件。</p>{% endif %}
+{% endblock %}

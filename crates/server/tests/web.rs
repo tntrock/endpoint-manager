@@ -13,6 +13,8 @@ async fn pages_require_login(pool: PgPool) {
         "/devices",
         "/software",
         "/registry",
+        "/deployments",
+        "/packages",
         "/compliance",
         "/compliance/rules",
         "/compliance/violations",

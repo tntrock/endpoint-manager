@@ -16,7 +16,9 @@ async fn enroll_heartbeat_upload(pool: PgPool) {
     partitions::maintain_partitions(&pool, chrono::Utc::now())
         .await
         .unwrap();
-    let state = AppState::new(pool.clone(), ca::Ca::load(pki.path()).unwrap());
+    let state_dir = pki.path().join("packages");
+    let state = AppState::new(pool.clone(), ca::Ca::load(pki.path()).unwrap())
+        .with_packages(state_dir.clone(), 4);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(tls::serve_mtls(
@@ -71,4 +73,63 @@ async fn enroll_heartbeat_upload(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(rows, 5 * 1000);
+
+    // 派送：一個套件、兩個派送；每台驗證下載並回報
+    use endpoint_server::deploy::{admin, store};
+    let data = loadsim::package_bytes(200_000);
+    let chunk: Result<bytes::Bytes, std::io::Error> = Ok(bytes::Bytes::from(data));
+    let st = store::save(&state_dir, futures_util::stream::iter(vec![chunk]))
+        .await
+        .unwrap();
+    let pkg = admin::create_package(
+        &pool,
+        &state_dir,
+        &st,
+        "loadsim.exe",
+        None,
+        &admin::PackageInput {
+            name: "Loadsim Package".into(),
+            version: "1.0".into(),
+            kind: "exe".into(),
+            install_args: "/S".into(),
+            uninstall_args: String::new(),
+            success_codes: vec![],
+            detect_name: "Loadsim Package*".into(),
+            detect_publisher: String::new(),
+            detect_min_version: String::new(),
+        },
+        "test",
+    )
+    .await
+    .unwrap();
+    for i in 0..2 {
+        admin::create_deployment(
+            &pool,
+            &admin::DeploymentInput {
+                name: format!("load {i}"),
+                package_id: pkg,
+                action: "install".into(),
+                include: vec![],
+                exclude: vec![],
+                pilot_group_id: None,
+                max_failure_pct: 100,
+                min_samples: 10_000,
+            },
+            "test",
+        )
+        .await
+        .unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(5500)).await;
+    let (dep, retries, unassigned) = loadsim::deploy(&t, &devices, 5).await;
+    assert_eq!(
+        (dep.ok, dep.errors, unassigned),
+        (5, 0, 0),
+        "retries {retries}"
+    );
+    let reported: i64 = sqlx::query_scalar("SELECT count(*) FROM deployment_status")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(reported, 5 * 2);
 }

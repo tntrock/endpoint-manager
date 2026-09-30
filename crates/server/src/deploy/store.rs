@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, ensure};
+use anyhow::Context;
 use axum::body::Bytes;
 use futures_util::{Stream, StreamExt};
 use sha2::{Digest, Sha256};
@@ -21,6 +21,18 @@ pub fn file_path(dir: &Path, sha256: &str) -> PathBuf {
 }
 
 const TEMP_PREFIX: &str = ".upload-";
+
+/// 檔案超過上限（網頁回 413）
+#[derive(Debug)]
+pub struct TooLarge;
+
+impl std::fmt::Display for TooLarge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "檔案超過上限 2 GiB")
+    }
+}
+
+impl std::error::Error for TooLarge {}
 
 /// 暫存檔守衛：上傳失敗、被取消（連線中斷時 future 被 drop）或改名失敗時都會刪檔
 struct TempFile {
@@ -76,7 +88,9 @@ where
         while let Some(chunk) = body.next().await {
             let chunk = chunk.map_err(|e| anyhow::anyhow!("上傳中斷：{e}"))?;
             size += chunk.len() as u64;
-            ensure!(size <= max, "檔案超過上限 {max} 位元組");
+            if size > max {
+                return Err(TooLarge.into());
+            }
             hasher.update(&chunk);
             f.write_all(&chunk).await?;
         }
