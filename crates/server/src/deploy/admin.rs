@@ -70,6 +70,10 @@ fn validate_package(i: &PackageInput) -> anyhow::Result<ValidPackage> {
         !name.is_empty() && name.chars().count() <= MAX_NAME_LEN,
         "套件名稱必填，最多 {MAX_NAME_LEN} 字"
     );
+    ensure!(
+        !name.chars().any(char::is_control),
+        "套件名稱不能包含控制字元"
+    );
     let version = optional("版本", &i.version)?.unwrap_or_default();
     let kind = match i.kind.as_str() {
         "msi" => "msi",
@@ -324,6 +328,10 @@ pub async fn create_deployment(
     ensure!(
         !name.is_empty() && name.chars().count() <= MAX_NAME_LEN,
         "派送名稱必填，最多 {MAX_NAME_LEN} 字"
+    );
+    ensure!(
+        !name.chars().any(char::is_control),
+        "派送名稱不能包含控制字元"
     );
     let action = match i.action.as_str() {
         "install" => "install",
