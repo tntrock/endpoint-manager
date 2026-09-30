@@ -237,6 +237,15 @@ impl ServerClient {
         Ok(())
     }
 
+    pub async fn update_status(
+        &self,
+        s: &protocol::update::UpdateStatus,
+    ) -> Result<(), ClientError> {
+        self.send(self.http.put(self.url("/v1/update-status")).json(s))
+            .await?;
+        Ok(())
+    }
+
     pub async fn upload(&self, up: &InventoryUpload) -> Result<(), ClientError> {
         let json = serde_json::to_vec(up).expect("upload serializes");
         let mut gz = GzEncoder::new(Vec::new(), Compression::default());

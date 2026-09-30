@@ -1001,3 +1001,218 @@ mod deploy {
         assert!(status(&e, d).await.is_none(), "忙碌不算嘗試、不回報");
     }
 }
+
+mod updates {
+    use super::*;
+    use endpoint_agent::updates::host::MemoryHost;
+    use endpoint_agent::updates::worker::{UpdateWork, UpdateWorker};
+    use endpoint_server::updates::admin::{self, PolicyInput};
+    use endpoint_server::updates::policy::PolicySettings;
+    use protocol::update::PolicyData;
+    use std::sync::atomic::Ordering;
+    use tokio::sync::watch;
+
+    struct Setup {
+        a: Agent<Fake>,
+        rx: watch::Receiver<Option<UpdateWork>>,
+        host: Arc<MemoryHost>,
+        worker: UpdateWorker<Fake, MemoryHost>,
+        policy: i64,
+        device: uuid::Uuid,
+    }
+
+    fn input(days: u32, group: i64) -> PolicyInput {
+        PolicyInput {
+            name: "一般".into(),
+            settings: PolicySettings {
+                quality_defer_days: Some(days),
+                ..Default::default()
+            },
+            groups: vec![group],
+        }
+    }
+
+    /// 註冊後把裝置放進「台北」，建立套用台北的原則（品質更新延後 7 天）
+    async fn setup(e: &Env) -> Setup {
+        let (tx, rx) = watch::channel(None);
+        let mut a = Agent::new(e.dir.path(), Fake::new())
+            .unwrap()
+            .with_updates(tx);
+        a.run_cycle().await;
+        let device = a.state().device_id.unwrap();
+        let g = {
+            let mut c = e.pool.acquire().await.unwrap();
+            endpoint_server::groups::find_or_create(&mut c, "台北")
+                .await
+                .unwrap()
+        };
+        sqlx::query("UPDATE devices SET group_id = $1 WHERE id = $2")
+            .bind(g)
+            .bind(device)
+            .execute(&e.pool)
+            .await
+            .unwrap();
+        let policy = admin::create_policy(&e.pool, &input(7, g), "admin")
+            .await
+            .unwrap();
+        e.state.updates.invalidate();
+        a.run_cycle().await;
+        let host = Arc::new(MemoryHost::default());
+        let worker = UpdateWorker::new(e.dir.path(), Arc::new(Fake::new()), host.clone());
+        Setup {
+            a,
+            rx,
+            host,
+            worker,
+            policy,
+            device,
+        }
+    }
+
+    fn work(s: &Setup) -> UpdateWork {
+        s.rx.borrow().clone().expect("伺服器支援更新原則")
+    }
+
+    async fn row(e: &Env, device: uuid::Uuid) -> (String, String, Option<i32>) {
+        sqlx::query_as(
+            "SELECT state, detail, revision FROM update_policy_status WHERE device_id = $1",
+        )
+        .bind(device)
+        .fetch_one(&e.pool)
+        .await
+        .unwrap()
+    }
+
+    fn value(s: &Setup, name: &str) -> Option<PolicyData> {
+        s.host.values.lock().unwrap().get(name).cloned()
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn policy_applied_conflict_and_released(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let mut s = setup(&e).await;
+        let w = work(&s);
+        assert_eq!(w.policy.as_ref().unwrap().id, s.policy);
+        s.worker.pass(&w).await;
+        assert_eq!(
+            value(&s, "DeferQualityUpdatesPeriodInDays"),
+            Some(PolicyData::Dword(7))
+        );
+        assert_eq!(value(&s, "DeferQualityUpdates"), Some(PolicyData::Dword(1)));
+        assert_eq!(
+            row(&e, s.device).await,
+            ("applied".into(), "".into(), Some(1))
+        );
+
+        // 別人（例如 GPO）改了值：回報衝突，不寫回
+        s.host.values.lock().unwrap().insert(
+            "DeferQualityUpdatesPeriodInDays".into(),
+            PolicyData::Dword(30),
+        );
+        s.worker.pass(&w).await;
+        let (state, detail, _) = row(&e, s.device).await;
+        assert_eq!(state, "conflict");
+        assert!(
+            detail.contains("DeferQualityUpdatesPeriodInDays"),
+            "{detail}"
+        );
+        assert_eq!(
+            value(&s, "DeferQualityUpdatesPeriodInDays"),
+            Some(PolicyData::Dword(30))
+        );
+
+        // 原則改版：重新寫入
+        let g = e.state.updates.get(&e.pool).await.unwrap();
+        let group = *g.by_group.keys().next().unwrap();
+        admin::update_policy(&e.pool, s.policy, &input(14, group), "admin")
+            .await
+            .unwrap();
+        e.state.updates.invalidate();
+        s.a.run_cycle().await;
+        s.worker.pass(&work(&s)).await;
+        assert_eq!(
+            value(&s, "DeferQualityUpdatesPeriodInDays"),
+            Some(PolicyData::Dword(14))
+        );
+        assert_eq!(
+            row(&e, s.device).await,
+            ("applied".into(), "".into(), Some(2))
+        );
+
+        // 刪除原則：清除自己寫的值
+        admin::delete_policy(&e.pool, s.policy, "admin")
+            .await
+            .unwrap();
+        e.state.updates.invalidate();
+        s.a.run_cycle().await;
+        let w = work(&s);
+        assert!(w.policy.is_none());
+        s.worker.pass(&w).await;
+        assert!(s.host.values.lock().unwrap().is_empty());
+        assert_eq!(
+            row(&e, s.device).await,
+            ("unmanaged".into(), "".into(), None)
+        );
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn write_failure_is_error_and_retried(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let mut s = setup(&e).await;
+        let w = work(&s);
+        s.host.fail_writes.store(true, Ordering::SeqCst);
+        s.worker.pass(&w).await;
+        let (state, detail, _) = row(&e, s.device).await;
+        assert_eq!(state, "error");
+        assert!(!detail.is_empty());
+        s.host.fail_writes.store(false, Ordering::SeqCst);
+        s.worker.pass(&w).await;
+        assert_eq!(row(&e, s.device).await.0, "applied");
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn status_not_resent_when_unchanged(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let mut s = setup(&e).await;
+        let w = work(&s);
+        let now = chrono::Utc::now();
+        s.worker.pass_at(&w, now).await;
+        let first = s.worker.state().sent_at;
+        assert_eq!(first, Some(now));
+        s.worker.pass_at(&w, now + chrono::Duration::hours(1)).await;
+        assert_eq!(s.worker.state().sent_at, first, "內容沒變不重送");
+        let later = now + chrono::Duration::hours(25);
+        s.worker.pass_at(&w, later).await;
+        assert_eq!(s.worker.state().sent_at, Some(later), "滿 24 小時重送");
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn reboot_pending_since_is_tracked(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let mut s = setup(&e).await;
+        let w = work(&s);
+        let since = |e: &Env, d| {
+            let pool = e.pool.clone();
+            async move {
+                let r: (bool, Option<chrono::DateTime<chrono::Utc>>) = sqlx::query_as(
+                    "SELECT reboot_pending, reboot_pending_since FROM update_policy_status \
+                     WHERE device_id = $1",
+                )
+                .bind(d)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+                r
+            }
+        };
+        let t0 = chrono::DateTime::from_timestamp(chrono::Utc::now().timestamp(), 0).unwrap();
+        s.host.reboot.store(true, Ordering::SeqCst);
+        s.worker.pass_at(&w, t0).await;
+        assert_eq!(since(&e, s.device).await, (true, Some(t0)));
+        s.worker.pass_at(&w, t0 + chrono::Duration::hours(2)).await;
+        assert_eq!(since(&e, s.device).await, (true, Some(t0)), "起始時間不變");
+        s.host.reboot.store(false, Ordering::SeqCst);
+        s.worker.pass_at(&w, t0 + chrono::Duration::hours(3)).await;
+        assert_eq!(since(&e, s.device).await, (false, None));
+    }
+}

@@ -99,11 +99,11 @@ impl PolicySettings {
             }
         }
         if let Some(d) = self.quality_deadline {
-            v.push(dword("SetComplianceDeadline", 1));
+            v.push(dword("SetComplianceDeadlineForQU", 1));
             v.push(dword("ConfigureDeadlineForQualityUpdates", d.days));
             v.push(dword("ConfigureDeadlineGracePeriod", d.grace));
             if self.no_auto_reboot {
-                v.push(dword("ConfigureDeadlineNoAutoReboot", 1));
+                v.push(dword("ConfigureDeadlineNoAutoRebootForQualityUpdates", 1));
             }
         }
         if let Some(d) = self.feature_deadline {
@@ -202,13 +202,13 @@ mod tests {
         };
         assert!(s.validate().is_ok());
         for (n, v) in [
-            ("SetComplianceDeadline", 1),
+            ("SetComplianceDeadlineForQU", 1),
             ("ConfigureDeadlineForQualityUpdates", 3),
             ("ConfigureDeadlineGracePeriod", 2),
             ("SetComplianceDeadlineForFU", 1),
             ("ConfigureDeadlineForFeatureUpdates", 7),
             ("ConfigureDeadlineGracePeriodForFeatureUpdates", 5),
-            ("ConfigureDeadlineNoAutoReboot", 1),
+            ("ConfigureDeadlineNoAutoRebootForQualityUpdates", 1),
             ("ConfigureDeadlineNoAutoRebootForFeatureUpdates", 1),
         ] {
             assert_eq!(get(&s, n), Some(PolicyData::Dword(v)), "{n}");
