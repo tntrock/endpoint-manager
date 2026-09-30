@@ -95,6 +95,18 @@
 
 **實測可承受的量（重算 5 分鐘、預設 4 路、同一台電腦）：** 全量重算每秒約寫 67,000 筆結果（裝置數 × 規則數），5 分鐘約 2,000 萬筆。以三萬台計，約可承受 670 條規則；每台 1,000 個值時約 20,000 台。
 
+## 軟體派送（第四期，2026-09-30）
+
+30,000 台，1 個 10 MB 套件、10 個派送（全部裝置），伺服器 `EM_DOWNLOAD_CONCURRENCY=50`。`loadsim deploy`（並行 60）讓每台報到取得 10 個指派，下載並驗證第一個套件的大小與 SHA-256（不寫磁碟），再回報 10 筆結果。
+
+| 項目 | 標準 | 結果 | |
+|---|---|---|---|
+| 有 10 個派送時，心跳 500 次／秒，持續 60 秒 | p99 < 100ms | p50 6.0ms、**p99 22.2ms**、0 錯誤 | ✅ |
+| 30,000 台各下載 10 MB 並回報 | 超過同時下載上限只回 503、沒有其他 5xx、全部回報成功 | **332 秒**，0 錯誤；503 重試 2 次；伺服器日誌沒有 ERROR；`deployment_status` = 30,000 筆成功＋270,000 筆已符合 | ✅ |
+| 同時進行的心跳 500 次／秒，持續 180 秒（參考，非標準） | — | p99 1.35 秒 | |
+
+下載期間的報到延遲變差：332 秒內傳輸約 300 GB（TLS），loadsim 與伺服器在同一台電腦搶 CPU。實際部署時伺服器與端點不在同一台，而且分點快取（之後的子專案）會分擔下載；需要時可以調低 `EM_DOWNLOAD_CONCURRENCY`，犧牲派送速度換取報到延遲。
+
 ## 測試環境與限制
 
 - Intel Core i5-12400（6 核 12 緒）、24GB、Windows 11 Home。
@@ -143,3 +155,13 @@ grep -a "compliance recompute finished" server.log        # 等重算完成，el
 ```
 
 單台評估的 p99 用和合規部分相同的指令，從 `config` 開始後的日誌計算。
+
+派送部分：
+
+```bash
+./loadsim make-package --out pkg.bin --size-mb 10            # 印出 sha256 與大小
+cp pkg.bin packages/<sha256>                                  # 伺服器的 EM_PACKAGE_DIR
+docker exec -i em-postgres psql -U postgres -d em_load -v sha=<sha256> -v size=<大小> < ../../tools/loadsim/deploy_setup.sql
+./loadsim heartbeat --server https://127.0.0.1:18443 --root pki/root.pem --devices devices.json --rate 500 --secs 60 --max-p99-ms 100
+./loadsim deploy    --server https://127.0.0.1:18443 --root pki/root.pem --devices devices.json --concurrency 60
+```
