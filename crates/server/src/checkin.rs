@@ -64,17 +64,21 @@ pub async fn checkin(
 
     let settings = load_settings(&st.pool).await?;
     let rules = st.rules.get_throttled(&st.pool).await?;
-    // 只有使用中的裝置會收到派送
+    // 只有使用中的裝置會收到派送與更新原則
     let (group_id, status): (Option<i64>, String) =
         sqlx::query_as("SELECT group_id, status FROM devices WHERE id = $1")
             .bind(device.device_id)
             .fetch_one(&st.pool)
             .await?;
     let deploy = st.deploy.get_throttled(&st.pool).await?;
-    let deployments = if status == "active" {
-        deploy.assignments_for(group_id)
+    let updates = st.updates.get_throttled(&st.pool).await?;
+    let (deployments, update_policy) = if status == "active" {
+        (
+            deploy.assignments_for(group_id),
+            updates.policy_for(group_id),
+        )
     } else {
-        vec![]
+        (vec![], None)
     };
     Ok(Json(CheckinResponse {
         next_checkin_seconds: settings.checkin_interval_secs,
@@ -85,8 +89,8 @@ pub async fn checkin(
         registry_queries_hash: Some(rules.registry_hash.clone()),
         deployments_hash: Some(protocol::deploy::assignments_hash(&deployments)),
         deployments,
-        update_policy: None,
-        update_policy_hash: Some(protocol::update::update_policy_hash(None)),
+        update_policy_hash: Some(protocol::update::update_policy_hash(update_policy.as_ref())),
+        update_policy,
     }))
 }
 

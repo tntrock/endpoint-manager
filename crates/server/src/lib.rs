@@ -66,6 +66,8 @@ pub struct AppState {
     pub package_dir: std::path::PathBuf,
     /// 同時下載套件的上限
     pub downloads: Arc<tokio::sync::Semaphore>,
+    /// 更新原則快取
+    pub updates: Arc<updates::assign::UpdatePolicyCache>,
 }
 
 impl AppState {
@@ -91,6 +93,7 @@ impl AppState {
             deploy: Arc::new(deploy::assign::DeployCache::default()),
             package_dir: "packages".into(),
             downloads: Arc::new(tokio::sync::Semaphore::new(DOWNLOAD_CONCURRENCY)),
+            updates: Arc::new(updates::assign::UpdatePolicyCache::default()),
         }
     }
 

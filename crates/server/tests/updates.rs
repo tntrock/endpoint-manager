@@ -184,3 +184,89 @@ async fn delete_releases_groups(pool: PgPool) {
         assert!(err(e).contains("原則不存在"));
     }
 }
+
+async fn checkin(s: &TestServer, a: &common::TestAgent) -> protocol::CheckinResponse {
+    // 報到用的快取最多每 5 秒確認一次 generation；測試直接讓快取過期
+    s.state.updates.invalidate();
+    s.client(Some(a))
+        .post(s.url("/v1/checkin"))
+        .json(&protocol::CheckinRequest {
+            schema_version: protocol::SCHEMA_VERSION,
+            agent_version: "0.5.0".into(),
+            boot_time: chrono::Utc::now(),
+            logged_on_user: None,
+            ip_addresses: vec![],
+            section_hashes: Default::default(),
+            section_errors: Default::default(),
+        })
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap()
+}
+
+#[sqlx::test(migrations = false)]
+async fn checkin_delivers_policy_by_group(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tp_tok = s.create_group_token("台北", 1).await;
+    let ks_tok = s.create_group_token("高雄", 1).await;
+    let tp = s.enroll_ok(&tp_tok, None, None).await;
+    let ks = s.enroll_ok(&ks_tok, None, None).await;
+    let tp_g = s.group_id("台北").await;
+    let i = input("一般", vec![tp_g]);
+    let id = admin::create_policy(&s.pool, &i, "admin").await.unwrap();
+
+    let r = checkin(&s, &tp).await;
+    let p = r.update_policy.clone().expect("台北有原則");
+    assert_eq!((p.id, p.revision), (id, 1));
+    assert_eq!(p.values, i.settings.values());
+    assert_eq!(
+        r.update_policy_hash.as_deref(),
+        Some(protocol::update::update_policy_hash(Some(&p)).as_str())
+    );
+    let r = checkin(&s, &ks).await;
+    assert!(r.update_policy.is_none(), "高雄沒有原則");
+    assert_eq!(
+        r.update_policy_hash.as_deref(),
+        Some(protocol::update::update_policy_hash(None).as_str())
+    );
+
+    let before = checkin(&s, &tp).await.update_policy_hash;
+    admin::update_policy(
+        &s.pool,
+        id,
+        &PolicyInput {
+            settings: PolicySettings {
+                quality_defer_days: Some(14),
+                ..Default::default()
+            },
+            ..i.clone()
+        },
+        "admin",
+    )
+    .await
+    .unwrap();
+    let r = checkin(&s, &tp).await;
+    assert_eq!(r.update_policy.as_ref().unwrap().revision, 2);
+    assert_ne!(r.update_policy_hash, before);
+
+    sqlx::query("UPDATE devices SET status = 'retired' WHERE id = $1")
+        .bind(tp.device_id)
+        .execute(&s.pool)
+        .await
+        .unwrap();
+    assert!(
+        checkin(&s, &tp).await.update_policy.is_none(),
+        "非使用中不下發"
+    );
+    sqlx::query("UPDATE devices SET status = 'active' WHERE id = $1")
+        .bind(tp.device_id)
+        .execute(&s.pool)
+        .await
+        .unwrap();
+    admin::delete_policy(&s.pool, id, "admin").await.unwrap();
+    let r = checkin(&s, &tp).await;
+    assert!(r.update_policy.is_none() && r.update_policy_hash.is_some());
+}
