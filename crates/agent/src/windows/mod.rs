@@ -8,6 +8,7 @@ pub mod regwatch;
 pub mod secdir;
 pub mod security;
 pub mod service;
+pub mod wupolicy;
 
 use std::path::{Path, PathBuf};
 
@@ -18,6 +19,7 @@ use windows_sys::Win32::System::Threading::{
 
 use crate::agent::{Agent, run_agent};
 use crate::deploy::worker::{ProcessRunner, Worker, run_worker};
+use crate::updates::worker::{UpdateWorker, run_update_worker};
 
 pub fn agent_dir() -> PathBuf {
     std::env::var_os("EM_AGENT_DIR")
@@ -33,7 +35,19 @@ fn lower_priority() {
 pub async fn run(dir: &Path, shutdown: watch::Receiver<bool>) -> anyhow::Result<()> {
     lower_priority();
     let (deploy_tx, deploy_rx) = watch::channel(None);
-    let agent = Agent::new(dir, collect::WindowsCollector)?.with_deploy(deploy_tx);
+    let (updates_tx, updates_rx) = watch::channel(None);
+    let agent = Agent::new(dir, collect::WindowsCollector)?
+        .with_deploy(deploy_tx)
+        .with_updates(updates_tx);
+    tokio::spawn(run_update_worker(
+        UpdateWorker::new(
+            dir,
+            std::sync::Arc::new(collect::WindowsCollector),
+            std::sync::Arc::new(wupolicy::RegistryHost::machine()),
+        ),
+        updates_rx,
+        shutdown.clone(),
+    ));
     tokio::spawn(run_worker(
         Worker::new(
             dir,

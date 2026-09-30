@@ -361,3 +361,88 @@ fn registry_values_are_read_and_guarded() {
     assert_eq!(v[1].state, RegState::Absent);
     assert!(v[2..].iter().all(|x| x.state == RegState::Denied), "{v:?}");
 }
+
+/// Agent 寫入的 WU 原則值名稱必須和 Windows 的 ADMX 一致（值名稱寫錯 Windows 會直接忽略）。
+/// Windows Home 沒有 PolicyDefinitions：本機略過，CI 必須檢查到。
+#[test]
+fn admx_declares_every_policy_value() {
+    let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+    let path = format!(r"{root}\PolicyDefinitions\WindowsUpdate.admx");
+    let Ok(admx) = std::fs::read_to_string(&path) else {
+        assert!(std::env::var_os("CI").is_none(), "CI 必須有 {path}");
+        eprintln!("略過：沒有 {path}");
+        return;
+    };
+    // 值名稱所在元素的標籤（<text、<decimal、<boolean …；原則本身的 valueName 為 <policy）
+    let tag = |name: &str| -> Option<String> {
+        let at = admx.find(&format!("valueName=\"{name}\""))?;
+        let start = admx[..at].rfind('<')?;
+        Some(
+            admx[start + 1..]
+                .split(|c: char| c.is_whitespace())
+                .next()?
+                .to_string(),
+        )
+    };
+    let missing: Vec<&str> = protocol::update::VALUE_NAMES
+        .into_iter()
+        .filter(|n| tag(n).is_none() && !protocol::update::LEGACY_VALUE_NAMES.contains(n))
+        .collect();
+    assert!(missing.is_empty(), "ADMX 沒有這些值：{missing:?}");
+    assert_eq!(tag("PauseQualityUpdatesStartTime").as_deref(), Some("text"));
+    assert_eq!(tag("PauseFeatureUpdatesStartTime").as_deref(), Some("text"));
+    assert_eq!(
+        tag("DeferQualityUpdatesPeriodInDays").as_deref(),
+        Some("decimal")
+    );
+}
+
+/// 不需系統管理員：在 HKCU 的測試機碼實際寫入、讀回、刪除
+#[test]
+fn registry_host_round_trip() {
+    use endpoint_agent::updates::host::WuHost;
+    use endpoint_agent::windows::wupolicy::RegistryHost;
+    use protocol::update::PolicyData;
+    use winreg::RegKey;
+    use winreg::enums::HKEY_CURRENT_USER;
+
+    let parent = r"Software\endpoint-manager-test";
+    let path = format!(r"{parent}\{}", uuid::Uuid::new_v4());
+    let h = RegistryHost::at(endpoint_agent::windows::regwatch::Root::CurrentUser, &path);
+    assert_eq!(h.read("DeferQualityUpdates").unwrap(), None, "機碼不存在");
+    h.write("DeferQualityUpdates", &PolicyData::Dword(1))
+        .unwrap();
+    h.write(
+        "PauseQualityUpdatesStartTime",
+        &PolicyData::String("2026-09-30".into()),
+    )
+    .unwrap();
+    assert_eq!(
+        h.read("DeferQualityUpdates").unwrap(),
+        Some(PolicyData::Dword(1))
+    );
+    assert_eq!(
+        h.read("PauseQualityUpdatesStartTime").unwrap(),
+        Some(PolicyData::String("2026-09-30".into()))
+    );
+    let key = RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey_with_flags(&path, winreg::enums::KEY_ALL_ACCESS)
+        .unwrap();
+    assert_eq!(
+        key.get_raw_value("PauseQualityUpdatesStartTime")
+            .unwrap()
+            .vtype,
+        winreg::enums::RegType::REG_SZ
+    );
+    key.set_value("Other", &vec!["a".to_string()]).unwrap();
+    assert_eq!(h.read("Other").unwrap(), Some(PolicyData::Unknown));
+    h.delete("DeferQualityUpdates").unwrap();
+    h.delete("DeferQualityUpdates").unwrap();
+    assert_eq!(h.read("DeferQualityUpdates").unwrap(), None);
+    let _ = h.reboot_pending();
+    RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey_with_flags(parent, winreg::enums::KEY_ALL_ACCESS)
+        .unwrap()
+        .delete_subkey_all(path.rsplit('\\').next().unwrap())
+        .unwrap();
+}

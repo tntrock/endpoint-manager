@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 use anyhow::Context;
 use chrono::Utc;
 use protocol::{
-    CheckinRequest, CollectionIntervals, EnrollRequest, InventoryPayload, InventoryUpload,
-    RegistryQuery, RenewRequest, SCHEMA_VERSION, Section,
+    CheckinRequest, CheckinResponse, CollectionIntervals, EnrollRequest, InventoryPayload,
+    InventoryUpload, RegistryQuery, RenewRequest, SCHEMA_VERSION, Section,
 };
 use tokio::sync::{mpsc, watch};
 
@@ -22,6 +22,7 @@ use crate::deploy::worker::Work;
 use crate::sanitize::{clean, sanitize};
 use crate::schedule::{DEFAULT_INTERVALS, Schedule};
 use crate::state::AgentState;
+use crate::updates::worker::UpdateWork;
 
 pub const DEBOUNCE: Duration = Duration::from_secs(10);
 pub const COLLECT_TIMEOUT: Duration = Duration::from_secs(60);
@@ -86,6 +87,7 @@ pub struct Agent<C: Collector> {
     unsupported_error: Option<String>,
     /// 派送的背景工作：None 表示伺服器不支援派送
     deploy_tx: Option<watch::Sender<Option<Work>>>,
+    updates_tx: Option<watch::Sender<Option<UpdateWork>>>,
 }
 
 /// 錯誤訊息和上次不同才需要記錄（避免每分鐘重複寫入事件檢視器）。
@@ -144,12 +146,18 @@ impl<C: Collector> Agent<C> {
             registry_hash: None,
             unsupported_error: None,
             deploy_tx: None,
+            updates_tx: None,
         })
     }
 
     /// 把每次報到得到的派送指派交給背景 worker
     pub fn with_deploy(mut self, tx: watch::Sender<Option<Work>>) -> Self {
         self.deploy_tx = Some(tx);
+        self
+    }
+
+    pub fn with_updates(mut self, tx: watch::Sender<Option<UpdateWork>>) -> Self {
+        self.updates_tx = Some(tx);
         self
     }
 
@@ -399,6 +407,20 @@ impl<C: Collector> Agent<C> {
                 changed
             });
         }
+        if let Some(tx) = &self.updates_tx {
+            // 只在原則變動（或伺服器支援與否改變）時喚醒 worker，連線資訊則每次都更新
+            let work = update_work(
+                &resp,
+                &self.config.server_url,
+                &self.root_pem,
+                self.state.identity_pem(),
+            );
+            tx.send_if_modified(|cur| {
+                let changed = cur.as_ref().map(|w| &w.policy) != work.as_ref().map(|w| &w.policy);
+                *cur = work;
+                changed
+            });
+        }
         // 每次報到都依回應決定：換到舊版伺服器時回應沒有這個欄位，就停止回報新區段
         if resp.registry_queries_hash.is_none() && self.server_supports_config {
             self.drop_config_sections();
@@ -529,9 +551,38 @@ pub async fn run_agent<C: Collector>(
     }
 }
 
+/// 伺服器沒有 update_policy_hash（舊版）：None，worker 完全不動 WU 設定
+pub fn update_work(
+    resp: &CheckinResponse,
+    server_url: &str,
+    root_pem: &str,
+    identity_pem: Option<String>,
+) -> Option<UpdateWork> {
+    resp.update_policy_hash.as_ref().map(|_| UpdateWork {
+        policy: resp.update_policy.clone(),
+        server_url: server_url.to_string(),
+        root_pem: root_pem.to_string(),
+        identity_pem,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_work_requires_server_support() {
+        let mut resp: CheckinResponse = serde_json::from_str(
+            r#"{"next_checkin_seconds":60,"request_sections":[],
+                "collection_intervals":{"hardware_secs":1,"software_secs":1,"patches_secs":1,
+                "services_secs":1},"renew_certificate":false}"#,
+        )
+        .unwrap();
+        assert!(update_work(&resp, "u", "r", None).is_none(), "舊伺服器");
+        resp.update_policy_hash = Some(protocol::update::update_policy_hash(None));
+        let w = update_work(&resp, "u", "r", None).unwrap();
+        assert!(w.policy.is_none(), "支援但不受管");
+    }
 
     /// 退避等待中（伺服器連不上）收到軟體變更：只記下，不提早報到；
     /// 正常等待中收到：去抖動後提早報到。

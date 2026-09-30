@@ -5,25 +5,32 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// Agent 唯一會寫入的值（`HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate` 底下）
-pub const VALUE_NAMES: [&str; 17] = [
+pub const VALUE_NAMES: [&str; 19] = [
     "DeferQualityUpdates",
     "DeferQualityUpdatesPeriodInDays",
     "PauseQualityUpdatesStartTime",
     "DeferFeatureUpdates",
     "DeferFeatureUpdatesPeriodInDays",
     "PauseFeatureUpdatesStartTime",
-    "SetComplianceDeadline",
+    "SetComplianceDeadlineForQU",
     "ConfigureDeadlineForQualityUpdates",
     "ConfigureDeadlineGracePeriod",
     "SetComplianceDeadlineForFU",
     "ConfigureDeadlineForFeatureUpdates",
     "ConfigureDeadlineGracePeriodForFeatureUpdates",
-    "ConfigureDeadlineNoAutoReboot",
+    "ConfigureDeadlineNoAutoRebootForQualityUpdates",
     "ConfigureDeadlineNoAutoRebootForFeatureUpdates",
     "SetActiveHours",
     "ActiveHoursStart",
     "ActiveHoursEnd",
+    // 24H2 以前的 ADMX 名稱：舊版 Windows 只認這兩個，與新名稱一起寫入
+    "SetComplianceDeadline",
+    "ConfigureDeadlineNoAutoReboot",
 ];
+
+/// 只出現在舊版 ADMX 的值名稱（新版 Windows 的 ADMX 沒有）
+pub const LEGACY_VALUE_NAMES: [&str; 2] =
+    ["SetComplianceDeadline", "ConfigureDeadlineNoAutoReboot"];
 
 pub const MAX_DETAIL_LEN: usize = 500;
 

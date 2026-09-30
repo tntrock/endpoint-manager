@@ -45,7 +45,7 @@
 所有值都寫在 `HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate`。
 
 - 每個項目都選填。沒設定的項目，Agent 不寫入，也會刪除自己以前寫過的對應值（見 §4.3）。
-- 值名稱依 `WindowsUpdate.admx`，實作前必須在 CI Windows runner 的 `C:\Windows\PolicyDefinitions\WindowsUpdate.admx` 逐一核對（計畫 16 第一個任務）。核對結果和下表不同時，以 ADMX 為準並更新本表。
+- 值名稱依 `WindowsUpdate.admx`，實作前必須在 CI Windows runner 的 `C:\Windows\PolicyDefinitions\WindowsUpdate.admx` 逐一核對（計畫 16 第一個任務）。核對結果和下表不同時，以 ADMX 為準並更新本表。（2026-09-30 已核對：品質更新期限用新版 ADMX 的 `SetComplianceDeadlineForQU`／`ConfigureDeadlineNoAutoRebootForQualityUpdates`，舊版名稱 `SetComplianceDeadline`／`ConfigureDeadlineNoAutoReboot` 不再出現在新版 ADMX。24H2 以前的 Windows 只認舊名稱，所以有任一期限時也寫入 `SetComplianceDeadline`=1，勾選不自動重開機時也寫入 `ConfigureDeadlineNoAutoReboot`=1，新舊並存。）
 
 | 項目 | 設定範圍 | 寫入的值 |
 |---|---|---|
@@ -53,9 +53,9 @@
 | 功能更新延後 | 0–365 天 | `DeferFeatureUpdates`=1、`DeferFeatureUpdatesPeriodInDays` |
 | 暫停品質更新 | 開始日期 | `PauseQualityUpdatesStartTime`（REG_SZ `yyyy-mm-dd`）；必須同時設定品質更新延後（ADMX 中是同一個原則）。沒設延後時，伺服器以 0 天寫入 `DeferQualityUpdates`=1 與 `DeferQualityUpdatesPeriodInDays`=0 |
 | 暫停功能更新 | 開始日期 | `PauseFeatureUpdatesStartTime`（REG_SZ）；同上，綁定功能更新延後 |
-| 品質更新期限 | 期限 0–30 天、寬限 0–7 天 | `SetComplianceDeadline`=1、`ConfigureDeadlineForQualityUpdates`、`ConfigureDeadlineGracePeriod` |
+| 品質更新期限 | 期限 0–30 天、寬限 0–7 天 | `SetComplianceDeadlineForQU`=1、`ConfigureDeadlineForQualityUpdates`、`ConfigureDeadlineGracePeriod` |
 | 功能更新期限 | 期限 0–30 天、寬限 0–7 天 | `SetComplianceDeadlineForFU`=1、`ConfigureDeadlineForFeatureUpdates`、`ConfigureDeadlineGracePeriodForFeatureUpdates` |
-| 寬限期結束前不自動重開機 | 是／否（需有任一期限） | `ConfigureDeadlineNoAutoReboot`（品質）、`ConfigureDeadlineNoAutoRebootForFeatureUpdates`（功能），兩者同值 |
+| 寬限期結束前不自動重開機 | 是／否（需有任一期限） | `ConfigureDeadlineNoAutoRebootForQualityUpdates`（品質）、`ConfigureDeadlineNoAutoRebootForFeatureUpdates`（功能），兩者同值 |
 | 使用中時段 | 開始、結束 0–23 點，時段長度 1–18 小時（可跨午夜） | `SetActiveHours`=1、`ActiveHoursStart`、`ActiveHoursEnd` |
 
 **暫停：**
