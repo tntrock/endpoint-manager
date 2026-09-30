@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>{% if id.is_some() %}編輯更新原則{% else %}建立更新原則{% endif %}</h1>
+<p><a href="/updates">← 更新原則</a></p>
+{% if let Some(e) = error %}<p class="error">{{ e }}</p>{% endif %}
+<form method="post" action="{% if let Some(i) = id %}/updates/{{ i }}/edit{% else %}/updates{% endif %}">
+  <input type="hidden" name="csrf" value="{{ nav.csrf }}">
+  <p><label>名稱 <input name="name" value="{{ f.name }}" required maxlength="100" size="40"></label></p>
+  <fieldset><legend>套用群組（一個群組只能屬於一個原則）</legend>
+    <p>{% for g in groups %}<label><input type="checkbox" name="groups" value="{{ g.value }}" {% if g.selected %}checked{% endif %}> {{ g.label }}</label> {% endfor %}</p>
+    <p class="muted">這些群組的電腦不要再用 GPO 管 Windows Update，否則會回報「衝突」。</p>
+  </fieldset>
+  <fieldset><legend>延後（空白＝不設定）</legend>
+    <p><label>品質更新延後 <input name="quality_defer_days" value="{{ f.quality_defer_days }}" inputmode="numeric" size="4"> 天（0–30）</label></p>
+    <p><label>功能更新延後 <input name="feature_defer_days" value="{{ f.feature_defer_days }}" inputmode="numeric" size="4"> 天（0–365）</label></p>
+    <p class="muted">暫停請在原則頁按「暫停」（Windows 最多暫停 35 天）。</p>
+  </fieldset>
+  <fieldset><legend>期限（空白＝不設定；寬限沒填時為 2 天）</legend>
+    <p><label>品質更新期限 <input name="quality_deadline" value="{{ f.quality_deadline }}" inputmode="numeric" size="4"> 天（0–30）</label>
+       <label>寬限 <input name="quality_grace" value="{{ f.quality_grace }}" inputmode="numeric" size="4"> 天（0–7）</label></p>
+    <p><label>功能更新期限 <input name="feature_deadline" value="{{ f.feature_deadline }}" inputmode="numeric" size="4"> 天（0–30）</label>
+       <label>寬限 <input name="feature_grace" value="{{ f.feature_grace }}" inputmode="numeric" size="4"> 天（0–7）</label></p>
+    <p><label><input type="checkbox" name="no_auto_reboot" value="1" {% if f.no_auto_reboot %}checked{% endif %}> 寬限期結束前不自動重開機</label></p>
+  </fieldset>
+  <fieldset><legend>使用中時段（這段時間內不自動重開機，最長 18 小時）</legend>
+    <p><label>開始 <select name="active_start"><option value="">不設定</option>{% for h in hours %}<option value="{{ h }}" {% if f.active_start == h.to_string() %}selected{% endif %}>{{ h }}:00</option>{% endfor %}</select></label>
+       <label>結束 <select name="active_end"><option value="">不設定</option>{% for h in hours %}<option value="{{ h }}" {% if f.active_end == h.to_string() %}selected{% endif %}>{{ h }}:00</option>{% endfor %}</select></label></p>
+  </fieldset>
+  <p><button>{% if id.is_some() %}儲存{% else %}建立{% endif %}</button></p>
+</form>
+{% endblock %}

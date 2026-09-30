@@ -19,6 +19,7 @@ pub mod registry;
 pub mod rules;
 pub mod software;
 pub mod tokens;
+pub mod updates;
 
 use askama::Template;
 use axum::Router;
@@ -130,6 +131,14 @@ pub fn web_router(state: AppState) -> Router {
         .route("/deployments/new", get(deployments::new_form))
         .route("/deployments/{id}", get(deployments::detail))
         .route("/deployments/{id}/{action}", post(deployments::act))
+        .route("/updates", get(updates::list).post(updates::create))
+        .route("/updates/new", get(updates::new_form))
+        .route("/updates/{id}", get(updates::detail))
+        .route(
+            "/updates/{id}/edit",
+            get(updates::edit_form).post(updates::update),
+        )
+        .route("/updates/{id}/{action}", post(updates::act))
         .route("/packages", get(packages::list))
         .route(
             "/packages/upload",
