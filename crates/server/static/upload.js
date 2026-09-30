@@ -8,6 +8,11 @@ document.addEventListener('DOMContentLoaded', function () {
     if (!file) return;
     var status = document.getElementById('upload-status');
     var button = form.querySelector('button');
+    // 伺服器超過上限時會在收完檔案前關閉連線，瀏覽器只會看到「連線中斷」：先在這裡擋
+    if (file.size > 2 * 1024 * 1024 * 1024) {
+      status.textContent = '檔案超過 2 GiB 上限';
+      return;
+    }
     button.disabled = true;
     var xhr = new XMLHttpRequest();
     xhr.open('PUT', '/packages/upload');
@@ -21,6 +26,9 @@ document.addEventListener('DOMContentLoaded', function () {
     xhr.onload = function () {
       if (xhr.status === 201) {
         location.href = '/packages/' + JSON.parse(xhr.responseText).id;
+      } else if (xhr.responseURL && xhr.responseURL.indexOf('/login') >= 0) {
+        status.textContent = '登入已過期，請重新登入後再上傳';
+        button.disabled = false;
       } else {
         status.textContent = '上傳失敗：' + xhr.responseText;
         button.disabled = false;

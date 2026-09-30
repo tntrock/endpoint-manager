@@ -17,12 +17,15 @@ use crate::error::AppError;
 
 /// 裝置 v 是否為派送 d 的對象（範圍內、使用中），並限制在管理員的範圍（$1 全部、$2 群組）。
 /// 規則與報到指派（deploy::assign）相同：排除優先；試點階段只含試點群組；暫停時看暫停前的階段。
+/// 已停止的派送不再指派，只算已有結果的裝置（停止時的階段已不可考，也避免歷史派送拖慢清單）。
 const TARGET: &str = "v.status = 'active' \
      AND ($1::bool OR v.group_id = ANY($2::bigint[])) \
      AND NOT EXISTS (SELECT 1 FROM deployment_groups x WHERE x.deployment_id = d.id \
                      AND x.mode = 'exclude' AND x.group_id = v.group_id) \
      AND CASE COALESCE(NULLIF(d.stage, 'paused'), d.paused_from) \
            WHEN 'pilot' THEN v.group_id = d.pilot_group_id \
+           WHEN 'stopped' THEN EXISTS (SELECT 1 FROM deployment_status z \
+                                       WHERE z.deployment_id = d.id AND z.device_id = v.id) \
            ELSE NOT EXISTS (SELECT 1 FROM deployment_groups i WHERE i.deployment_id = d.id \
                             AND i.mode = 'include') \
              OR EXISTS (SELECT 1 FROM deployment_groups i WHERE i.deployment_id = d.id \
@@ -421,7 +424,8 @@ pub async fn detail(
         action: action_label(&action),
         stage_label: stage_label(&stage),
         stage,
-        pilot,
+        // 範圍外的群組名稱不給群組管理員看
+        pilot: pilot.filter(|_| s.all_devices()),
         revision,
         max_failure_pct: max_pct,
         min_samples,

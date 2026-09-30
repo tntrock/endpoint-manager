@@ -312,7 +312,7 @@ pub async fn edit_form(
 }
 
 /// 表單欄位（逗號或空白分隔的結束碼）
-fn parse(raw: &[u8]) -> (String, PackageInput, Result<Vec<i32>, String>) {
+fn parse(raw: &[u8]) -> (String, PackageInput, String, Result<Vec<i32>, String>) {
     let mut csrf = String::new();
     let mut i = PackageInput {
         name: String::new(),
@@ -342,7 +342,7 @@ fn parse(raw: &[u8]) -> (String, PackageInput, Result<Vec<i32>, String>) {
         }
     }
     let parsed = codes
-        .split([',', ' ', '，'])
+        .split([',', ' ', '，', '\t', '\n', '\r'])
         .filter(|x| !x.trim().is_empty())
         .map(|x| {
             x.trim()
@@ -350,7 +350,7 @@ fn parse(raw: &[u8]) -> (String, PackageInput, Result<Vec<i32>, String>) {
                 .map_err(|_| format!("成功結束碼必須是整數：{x}"))
         })
         .collect();
-    (csrf, i, parsed)
+    (csrf, i, codes, parsed)
 }
 
 pub async fn update(
@@ -359,7 +359,7 @@ pub async fn update(
     Path(id): Path<i64>,
     RawForm(raw): RawForm,
 ) -> Result<Response, Response> {
-    let (csrf, mut input, codes) = parse(&raw);
+    let (csrf, mut input, codes_raw, codes) = parse(&raw);
     check_csrf(&s, &csrf)?;
     platform(&s)?;
     let mut page = load_form(&st, &s, id)
@@ -387,6 +387,7 @@ pub async fn update(
             page.detect_name = input.detect_name;
             page.detect_publisher = input.detect_publisher;
             page.detect_min_version = input.detect_min_version;
+            page.success_codes = codes_raw;
             page.error = Some(e);
             Ok((StatusCode::UNPROCESSABLE_ENTITY, render(&page)).into_response())
         }
@@ -399,7 +400,7 @@ pub async fn delete(
     Path(id): Path<i64>,
     RawForm(raw): RawForm,
 ) -> Result<Response, Response> {
-    let (csrf, _, _) = parse(&raw);
+    let (csrf, _, _, _) = parse(&raw);
     check_csrf(&s, &csrf)?;
     platform(&s)?;
     admin::delete_package(&st.pool, &st.package_dir, id, &s.username)

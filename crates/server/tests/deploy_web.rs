@@ -313,3 +313,82 @@ async fn device_tab_lists_deployments(pool: PgPool) {
     let other = s.login_as("olga", Role::GroupAdmin, &["高雄"]).await;
     assert_eq!(s.page(&other, &tab).await.0, 404);
 }
+
+/// 已停止的派送只算有結果的裝置（試點中停止時不能膨脹成全部裝置）；
+/// 試點群組名稱只給平台管理員看
+#[sqlx::test(migrations = false)]
+async fn stopped_pilot_counts_and_pilot_name_visibility(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let pkg = server_package(&s).await;
+    let pilot_dev = s
+        .enroll_ok(&s.create_group_token("試點", 1).await, None, None)
+        .await;
+    let tp_tok = s.create_group_token("台北", 3).await;
+    for _ in 0..3 {
+        s.enroll_ok(&tp_tok, None, None).await;
+    }
+    let pilot = s.group_id("試點").await;
+    let d = dadmin::create_deployment(
+        &s.pool,
+        &dadmin::DeploymentInput {
+            name: "試點停止".into(),
+            package_id: pkg,
+            action: "install".into(),
+            include: vec![],
+            exclude: vec![],
+            pilot_group_id: Some(pilot),
+            max_failure_pct: 50,
+            min_samples: 100,
+        },
+        "admin",
+    )
+    .await
+    .unwrap();
+    fail_result(&s, &pilot_dev, d, "x").await;
+    dadmin::set_stage(&s.pool, d, dadmin::Transition::Stop, "admin")
+        .await
+        .unwrap();
+    let admin = s.admin_client().await;
+    let (_, html) = s.page(&admin, &format!("/deployments/{d}")).await;
+    assert!(
+        html.contains("全部：1") && html.contains("等待中：0"),
+        "{html}"
+    );
+    assert!(html.contains("試點群組：試點"));
+    let g = s.login_as("gary", Role::GroupAdmin, &["台北"]).await;
+    let (_, html) = s.page(&g, &format!("/deployments/{d}")).await;
+    assert!(!html.contains("試點群組：試點"), "範圍外的群組名稱：{html}");
+}
+
+#[sqlx::test(migrations = false)]
+async fn package_form_error_keeps_success_codes_input(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let admin = s.admin_client().await;
+    let (_, html) = s.page(&admin, "/packages/upload").await;
+    let csrf = csrf_from(&html);
+    let (_, body) = upload(&s, &admin, &csrf, "a.exe", b"MZ keep".to_vec()).await;
+    let id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+        .as_i64()
+        .unwrap();
+    let r = admin
+        .post(s.web_url(&format!("/packages/{id}")))
+        .form(&[
+            ("csrf", csrf.as_str()),
+            ("name", "A"),
+            ("version", ""),
+            ("install_args", "/S"),
+            ("uninstall_args", ""),
+            ("success_codes", "1, x"),
+            ("detect_name", "A*"),
+            ("detect_publisher", ""),
+            ("detect_min_version", ""),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 422);
+    assert!(
+        r.text().await.unwrap().contains(r#"value="1, x""#),
+        "保留輸入"
+    );
+}
