@@ -355,6 +355,44 @@ pub async fn deploy(t: &Target, devices: &[Device], concurrency: usize) -> (Repo
     )
 }
 
+/// 每台：報到取得更新原則 → 回報一次 applied 狀態。回傳報告與沒有原則的台數。
+pub async fn updates(t: &Target, devices: &[Device], concurrency: usize) -> (Report, usize) {
+    use protocol::update::{ApplyState, UpdateStatus};
+    let sem = Arc::new(Semaphore::new(concurrency));
+    let unmanaged = Arc::new(AtomicUsize::new(0));
+    let start = Instant::now();
+    let mut set = JoinSet::new();
+    for d in devices {
+        let permit = sem.clone().acquire_owned().await.expect("semaphore open");
+        let (t, d, unmanaged) = (t.clone(), d.clone(), unmanaged.clone());
+        set.spawn(async move {
+            let _permit = permit;
+            let c = client(&t, Some(&d)).ok()?;
+            let s = Instant::now();
+            let resp = c.checkin(&checkin_req(BTreeMap::new())).await.ok()?;
+            let Some(p) = resp.update_policy else {
+                unmanaged.fetch_add(1, Ordering::Relaxed);
+                return None;
+            };
+            c.update_status(&UpdateStatus {
+                policy_id: Some(p.id),
+                revision: Some(p.revision),
+                state: ApplyState::Applied,
+                detail: String::new(),
+                reboot_pending: false,
+                reboot_pending_since: None,
+                last_patch_date: Some(chrono::Utc::now().date_naive()),
+            })
+            .await
+            .map_err(|e| eprintln!("update-status {}: {e}", d.device_id))
+            .ok()?;
+            Some(s.elapsed())
+        });
+    }
+    let report = collect(set, start).await;
+    (report, unmanaged.load(Ordering::Relaxed))
+}
+
 async fn collect(mut set: JoinSet<Option<Duration>>, start: Instant) -> Report {
     let (mut lat, mut errors) = (Vec::new(), 0);
     while let Some(r) = set.join_next().await {

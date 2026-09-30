@@ -9,6 +9,7 @@ const USAGE: &str = "usage:
   loadsim upload    --server URL --root root.pem --devices devices.json [--items 150] [--concurrency 100] [--max-secs 600]
   loadsim config    --server URL --root root.pem --devices devices.json [--concurrency 100] [--max-secs 900]
   loadsim deploy    --server URL --root root.pem --devices devices.json [--concurrency 50] [--max-secs 3600]
+  loadsim updates   --server URL --root root.pem --devices devices.json [--concurrency 60] [--max-secs 900]
   loadsim make-package --out FILE [--size-mb 10]";
 
 fn arg(args: &[String], name: &str) -> Option<String> {
@@ -144,6 +145,20 @@ async fn main() -> anyhow::Result<()> {
             let max = Duration::from_secs(num(&args, "--max-secs", 3600)?);
             if r.errors > 0 || r.elapsed > max {
                 bail!("FAIL: errors {} / elapsed {:?}", r.errors, r.elapsed);
+            }
+        }
+        "updates" => {
+            let (r, unmanaged) =
+                loadsim::updates(&t, &load()?, num(&args, "--concurrency", 60)?).await;
+            print(&r);
+            println!("unmanaged {unmanaged}");
+            let max = Duration::from_secs(num(&args, "--max-secs", 900)?);
+            if r.errors > 0 || unmanaged > 0 || r.elapsed > max {
+                bail!(
+                    "FAIL: errors {} / unmanaged {unmanaged} / elapsed {:?}",
+                    r.errors,
+                    r.elapsed
+                );
             }
         }
         _ => bail!("{USAGE}"),
