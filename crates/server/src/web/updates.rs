@@ -617,6 +617,175 @@ pub async fn act(
     Ok(Redirect::to(&format!("/updates/{id}")).into_response())
 }
 
+pub struct RebootRow {
+    pub id: String,
+    pub hostname: String,
+    pub since: String,
+    pub days: i64,
+}
+
+#[derive(Template)]
+#[template(path = "updates_overview.html")]
+struct OverviewPage {
+    nav: Nav,
+    builds: Vec<(String, String, i64)>,
+    reboots: Vec<RebootRow>,
+}
+
+pub async fn overview(
+    State(st): State<AppState>,
+    AdminSession(s): AdminSession,
+) -> Result<Response, AppError> {
+    let builds: Vec<(Option<String>, Option<i32>, i64)> = sqlx::query_as(
+        "SELECT os_build, os_ubr, count(*) FROM devices \
+         WHERE status = 'active' AND ($1::bool OR group_id = ANY($2::bigint[])) \
+         GROUP BY 1, 2 ORDER BY 1 DESC NULLS LAST, 2 DESC NULLS LAST",
+    )
+    .bind(s.all_devices())
+    .bind(&s.groups)
+    .fetch_all(&st.pool)
+    .await?;
+    let reboots: Vec<(Uuid, String, DateTime<Utc>)> = sqlx::query_as(
+        "SELECT v.id, v.hostname, u.reboot_pending_since FROM update_policy_status u \
+         JOIN devices v ON v.id = u.device_id \
+         WHERE u.reboot_pending AND u.reboot_pending_since IS NOT NULL \
+           AND v.status = 'active' AND ($1::bool OR v.group_id = ANY($2::bigint[])) \
+         ORDER BY u.reboot_pending_since, v.id LIMIT 50",
+    )
+    .bind(s.all_devices())
+    .bind(&s.groups)
+    .fetch_all(&st.pool)
+    .await?;
+    let now = Utc::now();
+    let dash = |v: Option<String>| v.unwrap_or_else(|| "—".into());
+    Ok(render(&OverviewPage {
+        nav: Nav::from(&s),
+        builds: builds
+            .into_iter()
+            .map(|(b, u, n)| (dash(b), dash(u.map(|u| u.to_string())), n))
+            .collect(),
+        reboots: reboots
+            .into_iter()
+            .map(|(id, hostname, since)| RebootRow {
+                id: id.to_string(),
+                hostname,
+                since: fmt_time(&st, Some(since)),
+                days: (now - since).num_days(),
+            })
+            .collect(),
+    }))
+}
+
+fn state_label(state: &str) -> &'static str {
+    match state {
+        "applied" => "已套用",
+        "conflict" => "衝突",
+        "error" => "錯誤",
+        "unmanaged" => "不受管",
+        _ => "未知",
+    }
+}
+
+pub struct Report {
+    pub state: &'static str,
+    pub detail: String,
+    pub policy: String,
+    pub revision: String,
+    pub reboot: String,
+    pub last_patch: String,
+    pub updated: String,
+}
+
+#[derive(Template)]
+#[template(path = "updates_tab.html")]
+struct Tab {
+    /// (原則 id, 名稱)；None 為不受管
+    policy: Option<(i64, String)>,
+    values: Vec<String>,
+    report: Option<Report>,
+}
+
+type ReportRow = (
+    String,
+    String,
+    Option<i64>,
+    Option<i32>,
+    bool,
+    Option<DateTime<Utc>>,
+    Option<NaiveDate>,
+    DateTime<Utc>,
+    Option<String>,
+);
+
+/// 裝置頁的「更新」分頁（htmx 片段）：指派的原則與期望值、Agent 回報。範圍外的裝置回 404。
+pub async fn device_tab(st: &AppState, s: &Session, device: Uuid) -> Result<Response, AppError> {
+    let Some(group) = super::devices::device_group_in_scope(st, s, device).await? else {
+        return Ok(not_found());
+    };
+    let active: bool = sqlx::query_scalar("SELECT status = 'active' FROM devices WHERE id = $1")
+        .bind(device)
+        .fetch_one(&st.pool)
+        .await?;
+    let set = st.updates.get(&st.pool).await?;
+    let assigned = if active { set.policy_for(group) } else { None };
+    let policy = match &assigned {
+        Some(p) => {
+            let name: Option<String> =
+                sqlx::query_scalar("SELECT name FROM update_policies WHERE id = $1")
+                    .bind(p.id)
+                    .fetch_optional(&st.pool)
+                    .await?;
+            name.map(|n| (p.id, n))
+        }
+        None => None,
+    };
+    let values = assigned
+        .map(|p| {
+            p.values
+                .iter()
+                .map(|v| match &v.data {
+                    protocol::update::PolicyData::Dword(d) => format!("{} = {d}", v.name),
+                    protocol::update::PolicyData::String(t) => format!("{} = {t}", v.name),
+                    protocol::update::PolicyData::Unknown => format!("{} = ?", v.name),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let row: Option<ReportRow> = sqlx::query_as(
+        "SELECT u.state, u.detail, u.policy_id, u.revision, u.reboot_pending, \
+                u.reboot_pending_since, u.last_patch_date, u.updated_at, p.name \
+         FROM update_policy_status u LEFT JOIN update_policies p ON p.id = u.policy_id \
+         WHERE u.device_id = $1",
+    )
+    .bind(device)
+    .fetch_optional(&st.pool)
+    .await?;
+    let report = row.map(
+        |(state, detail, pid, rev, reboot, since, last, at, pname)| Report {
+            state: state_label(&state),
+            detail,
+            policy: match (pid, pname) {
+                (None, _) => "—".into(),
+                (Some(_), Some(n)) => n,
+                (Some(_), None) => "已刪除的原則".into(),
+            },
+            revision: rev.map(|r| r.to_string()).unwrap_or_else(|| "—".into()),
+            reboot: match (reboot, since) {
+                (false, _) => "否".into(),
+                (true, None) => "是".into(),
+                (true, Some(t)) => format!("是（自 {} 起）", fmt_time(st, Some(t))),
+            },
+            last_patch: last.map(|d| d.to_string()).unwrap_or_else(|| "—".into()),
+            updated: fmt_time(st, Some(at)),
+        },
+    );
+    Ok(render(&Tab {
+        policy,
+        values,
+        report,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

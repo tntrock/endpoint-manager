@@ -133,6 +133,7 @@ pub fn web_router(state: AppState) -> Router {
         .route("/deployments/{id}/{action}", post(deployments::act))
         .route("/updates", get(updates::list).post(updates::create))
         .route("/updates/new", get(updates::new_form))
+        .route("/updates/overview", get(updates::overview))
         .route("/updates/{id}", get(updates::detail))
         .route(
             "/updates/{id}/edit",

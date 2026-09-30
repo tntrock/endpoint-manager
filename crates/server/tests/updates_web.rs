@@ -255,3 +255,102 @@ async fn detail_counts_and_group_admin_scope(pool: PgPool) {
         assert_eq!(st, 403, "{path}");
     }
 }
+
+async fn set_build(s: &TestServer, a: &common::TestAgent, build: &str, ubr: i32) {
+    sqlx::query("UPDATE devices SET os_build = $2, os_ubr = $3 WHERE id = $1")
+        .bind(a.device_id)
+        .bind(build)
+        .bind(ubr)
+        .execute(&s.pool)
+        .await
+        .unwrap();
+}
+
+#[sqlx::test(migrations = false)]
+async fn overview_ubr_and_reboot(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tp_tok = s.create_group_token("台北", 3).await;
+    let a1 = s.enroll_ok(&tp_tok, None, None).await;
+    let a2 = s.enroll_ok(&tp_tok, None, None).await;
+    let a3 = s.enroll_ok(&tp_tok, None, None).await;
+    let ks = s
+        .enroll_ok(&s.create_group_token("高雄", 1).await, None, None)
+        .await;
+    set_build(&s, &a1, "19045", 5000).await;
+    set_build(&s, &a2, "19045", 5000).await;
+    set_build(&s, &a3, "22631", 4000).await;
+    set_build(&s, &ks, "26100", 1742).await;
+    let since = (chrono::Utc::now() - chrono::Duration::days(3)).to_rfc3339();
+    let mut b = status(None, None, "unmanaged");
+    b["reboot_pending"] = true.into();
+    b["reboot_pending_since"] = since.into();
+    put_status(&s, &a3, b.clone()).await;
+    put_status(&s, &ks, b).await;
+
+    let admin = s.admin_client().await;
+    let (st, html) = s.page(&admin, "/updates/overview").await;
+    assert_eq!(st, 200);
+    assert!(
+        html.contains("<td>19045</td><td>5000</td><td>2</td>")
+            && html.contains("<td>22631</td><td>4000</td><td>1</td>"),
+        "{html}"
+    );
+    assert!(
+        html.contains(&a3.device_id.to_string()) && html.contains("3 天"),
+        "{html}"
+    );
+    let g = s.login_as("gary", Role::GroupAdmin, &["台北"]).await;
+    let (_, html) = s.page(&g, "/updates/overview").await;
+    assert!(
+        !html.contains("26100") && !html.contains(&ks.device_id.to_string()),
+        "{html}"
+    );
+}
+
+#[sqlx::test(migrations = false)]
+async fn device_tab_shows_policy_and_report(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let a = s
+        .enroll_ok(&s.create_group_token("台北", 1).await, None, None)
+        .await;
+    let tp = s.group_id("台北").await;
+    let id = admin::create_policy(
+        &s.pool,
+        &PolicyInput {
+            name: "一般電腦".into(),
+            settings: PolicySettings {
+                quality_defer_days: Some(7),
+                ..Default::default()
+            },
+            groups: vec![tp],
+        },
+        "admin",
+    )
+    .await
+    .unwrap();
+    let mut b = status(Some(id), Some(1), "conflict");
+    b["detail"] = "DeferQualityUpdatesPeriodInDays".into();
+    put_status(&s, &a, b).await;
+    s.state.updates.invalidate();
+    let admin_c = s.admin_client().await;
+    let tab = format!("/devices/{}/tab/updates", a.device_id);
+    let (st, html) = s.page(&admin_c, &tab).await;
+    assert_eq!(st, 200);
+    assert!(
+        html.contains("一般電腦")
+            && html.contains("DeferQualityUpdatesPeriodInDays = 7")
+            && html.contains("衝突")
+            && html.contains("DeferQualityUpdatesPeriodInDays"),
+        "{html}"
+    );
+    admin::delete_policy(&s.pool, id, "admin").await.unwrap();
+    s.state.updates.invalidate();
+    let (st, html) = s.page(&admin_c, &tab).await;
+    assert_eq!(st, 200);
+    assert!(
+        html.contains("不受管") && html.contains("已刪除的原則"),
+        "{html}"
+    );
+    let other = s.login_as("olga", Role::GroupAdmin, &["高雄"]).await;
+    assert_eq!(s.page(&other, &tab).await.0, 404);
+}
