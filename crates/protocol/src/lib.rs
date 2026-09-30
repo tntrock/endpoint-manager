@@ -1,5 +1,6 @@
 //! Agent 與伺服器之間的共用訊息格式。
 
+pub mod matcher;
 pub mod regpath;
 
 use std::collections::BTreeMap;
