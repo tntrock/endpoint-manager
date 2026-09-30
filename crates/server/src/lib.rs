@@ -4,6 +4,7 @@ pub mod accounts;
 pub mod audit;
 pub mod ca;
 pub mod checkin;
+pub mod commands;
 pub mod compliance;
 pub mod config;
 pub mod db;
