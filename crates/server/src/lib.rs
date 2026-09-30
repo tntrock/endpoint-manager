@@ -23,6 +23,7 @@ pub mod ratelimit;
 pub mod renew;
 pub mod tls;
 pub mod tokens;
+pub mod updates;
 pub mod web;
 
 use std::sync::Arc;
@@ -65,6 +66,8 @@ pub struct AppState {
     pub package_dir: std::path::PathBuf,
     /// 同時下載套件的上限
     pub downloads: Arc<tokio::sync::Semaphore>,
+    /// 更新原則快取
+    pub updates: Arc<updates::assign::UpdatePolicyCache>,
 }
 
 impl AppState {
@@ -90,6 +93,7 @@ impl AppState {
             deploy: Arc::new(deploy::assign::DeployCache::default()),
             package_dir: "packages".into(),
             downloads: Arc::new(tokio::sync::Semaphore::new(DOWNLOAD_CONCURRENCY)),
+            updates: Arc::new(updates::assign::UpdatePolicyCache::default()),
         }
     }
 
@@ -148,6 +152,7 @@ pub fn agent_router(state: AppState) -> Router {
         .route("/v1/renew", post(renew::renew))
         .route("/v1/packages/{id}/content", get(deploy::api::download))
         .route("/v1/deployments/{id}/result", post(deploy::api::result))
+        .route("/v1/update-status", put(updates::api::status))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
 }
