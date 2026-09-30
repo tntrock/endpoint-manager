@@ -396,3 +396,53 @@ fn admx_declares_every_policy_value() {
         Some("decimal")
     );
 }
+
+/// 不需系統管理員：在 HKCU 的測試機碼實際寫入、讀回、刪除
+#[test]
+fn registry_host_round_trip() {
+    use endpoint_agent::updates::host::WuHost;
+    use endpoint_agent::windows::wupolicy::RegistryHost;
+    use protocol::update::PolicyData;
+    use winreg::RegKey;
+    use winreg::enums::HKEY_CURRENT_USER;
+
+    let parent = r"Software\endpoint-manager-test";
+    let path = format!(r"{parent}\{}", uuid::Uuid::new_v4());
+    let h = RegistryHost::at(endpoint_agent::windows::regwatch::Root::CurrentUser, &path);
+    assert_eq!(h.read("DeferQualityUpdates").unwrap(), None, "機碼不存在");
+    h.write("DeferQualityUpdates", &PolicyData::Dword(1))
+        .unwrap();
+    h.write(
+        "PauseQualityUpdatesStartTime",
+        &PolicyData::String("2026-09-30".into()),
+    )
+    .unwrap();
+    assert_eq!(
+        h.read("DeferQualityUpdates").unwrap(),
+        Some(PolicyData::Dword(1))
+    );
+    assert_eq!(
+        h.read("PauseQualityUpdatesStartTime").unwrap(),
+        Some(PolicyData::String("2026-09-30".into()))
+    );
+    let key = RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey_with_flags(&path, winreg::enums::KEY_ALL_ACCESS)
+        .unwrap();
+    assert_eq!(
+        key.get_raw_value("PauseQualityUpdatesStartTime")
+            .unwrap()
+            .vtype,
+        winreg::enums::RegType::REG_SZ
+    );
+    key.set_value("Other", &vec!["a".to_string()]).unwrap();
+    assert_eq!(h.read("Other").unwrap(), Some(PolicyData::Unknown));
+    h.delete("DeferQualityUpdates").unwrap();
+    h.delete("DeferQualityUpdates").unwrap();
+    assert_eq!(h.read("DeferQualityUpdates").unwrap(), None);
+    let _ = h.reboot_pending();
+    RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey_with_flags(parent, winreg::enums::KEY_ALL_ACCESS)
+        .unwrap()
+        .delete_subkey_all(path.rsplit('\\').next().unwrap())
+        .unwrap();
+}

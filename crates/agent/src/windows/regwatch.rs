@@ -18,7 +18,7 @@ pub enum Root {
 }
 
 impl Root {
-    fn hkey(self) -> HKEY {
+    pub(crate) fn hkey(self) -> HKEY {
         match self {
             Root::LocalMachine => HKEY_LOCAL_MACHINE,
             Root::CurrentUser => HKEY_CURRENT_USER,
