@@ -540,12 +540,19 @@ async fn download_requires_assignment_and_is_limited(pool: PgPool) {
     assert_eq!(r.status(), 503);
     assert_eq!(r.headers()["retry-after"], "60");
     drop(held);
-    assert_eq!(get(&tp, pkg).await.status(), 200);
-    assert_eq!(
-        s.state.downloads.available_permits(),
-        2,
-        "串流結束後歸還許可"
-    );
+    let r = get(&tp, pkg).await;
+    assert_eq!(r.status(), 200);
+    assert_eq!(r.bytes().await.unwrap().len(), data.len());
+    // 用戶端收完最後一個位元組時，伺服器端的串流可能還沒被釋放：等一下再確認
+    let mut returned = false;
+    for _ in 0..40 {
+        if s.state.downloads.available_permits() == 2 {
+            returned = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(returned, "串流結束後歸還許可");
     // 檔案被刪掉時回 404
     let sha: String = sqlx::query_scalar("SELECT sha256 FROM packages WHERE id = $1")
         .bind(pkg)
