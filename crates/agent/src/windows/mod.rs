@@ -17,6 +17,7 @@ use windows_sys::Win32::System::Threading::{
 };
 
 use crate::agent::{Agent, run_agent};
+use crate::deploy::worker::{ProcessRunner, Worker, run_worker};
 
 pub fn agent_dir() -> PathBuf {
     std::env::var_os("EM_AGENT_DIR")
@@ -31,7 +32,17 @@ fn lower_priority() {
 
 pub async fn run(dir: &Path, shutdown: watch::Receiver<bool>) -> anyhow::Result<()> {
     lower_priority();
-    let agent = Agent::new(dir, collect::WindowsCollector)?;
+    let (deploy_tx, deploy_rx) = watch::channel(None);
+    let agent = Agent::new(dir, collect::WindowsCollector)?.with_deploy(deploy_tx);
+    tokio::spawn(run_worker(
+        Worker::new(
+            dir,
+            std::sync::Arc::new(collect::WindowsCollector),
+            ProcessRunner,
+        ),
+        deploy_rx,
+        shutdown.clone(),
+    ));
     // 有界：登錄檔大量變動時多餘的觸發直接丟棄（排程本來就會合併同一區段）
     let (tx, rx) = mpsc::channel(16);
     regwatch::watch_software(tx.clone());

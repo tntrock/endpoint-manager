@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
-use protocol::deploy::DeployStatus;
+use protocol::deploy::{DeployResult, DeployStatus};
 use serde::{Deserialize, Serialize};
 
 pub const STATE_FILE: &str = "deploy.json";
@@ -17,6 +17,9 @@ pub struct Entry {
     pub last_failed: bool,
     /// 這個 revision 最後回報給伺服器的狀態（回報成功才記錄）
     pub reported: Option<DeployStatus>,
+    /// 還沒送出的結果（伺服器暫時連不上）：下一輪先補送
+    #[serde(default)]
+    pub unreported: Option<DeployResult>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

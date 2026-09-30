@@ -277,6 +277,7 @@ mod tests {
             last_attempt: Some(now - Duration::hours(1)),
             last_failed: true,
             reported: Some(DeployStatus::Failed),
+            unreported: None,
         };
         assert_eq!(
             decide(&a, false, &failed, now),

@@ -731,4 +731,168 @@ mod deploy {
         .unwrap();
         assert_eq!(status, "succeeded");
     }
+
+    use endpoint_agent::deploy::logic::Cmd;
+    use endpoint_agent::deploy::worker::{RunResult, Runner, Work, Worker};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// 假的執行器：記錄呼叫次數，回傳固定結束碼；install=true 時把軟體加進假清單（模擬安裝成功）
+    #[derive(Clone)]
+    struct FakeRunner {
+        code: i32,
+        install: bool,
+        software: Arc<Mutex<Vec<SoftwareItem>>>,
+        runs: Arc<AtomicUsize>,
+    }
+
+    impl Runner for FakeRunner {
+        async fn run(&self, cmd: &Cmd, _timeout: Duration) -> std::io::Result<RunResult> {
+            assert!(
+                cmd.program.exists(),
+                "執行前檔案已下載並驗證：{:?}",
+                cmd.program
+            );
+            self.runs.fetch_add(1, Ordering::SeqCst);
+            if self.install {
+                self.software.lock().unwrap().push(app("Fake App"));
+            }
+            Ok(RunResult::Exited(self.code))
+        }
+    }
+
+    fn work(a: &Agent<Fake>, e: &Env, assignments: Vec<protocol::deploy::Assignment>) -> Work {
+        Work {
+            assignments,
+            server_url: e.url(),
+            root_pem: e.root_pem(),
+            identity_pem: a.state().identity_pem(),
+        }
+    }
+
+    async fn assignments(c: &ServerClient) -> Vec<protocol::deploy::Assignment> {
+        c.checkin(&CheckinRequest {
+            schema_version: SCHEMA_VERSION,
+            agent_version: "t".into(),
+            boot_time: chrono::Utc::now(),
+            logged_on_user: None,
+            ip_addresses: vec![],
+            section_hashes: Default::default(),
+            section_errors: Default::default(),
+        })
+        .await
+        .unwrap()
+        .deployments
+    }
+
+    async fn status(e: &Env, d: i64) -> Option<(String, String, i32)> {
+        sqlx::query_as(
+            "SELECT status, message, attempts FROM deployment_status WHERE deployment_id = $1",
+        )
+        .bind(d)
+        .fetch_optional(&e.pool)
+        .await
+        .unwrap()
+    }
+
+    async fn setup(
+        e: &Env,
+        code: i32,
+        install: bool,
+    ) -> (Agent<Fake>, Worker<Fake, FakeRunner>, FakeRunner, Work, i64) {
+        let fake = Fake::new();
+        let (a, c) = enrolled(e, fake.clone()).await;
+        let d = deployment(e, b"MZ installer", "/S").await;
+        let runner = FakeRunner {
+            code,
+            install,
+            software: fake.software.clone(),
+            runs: Arc::new(AtomicUsize::new(0)),
+        };
+        let w = work(&a, e, assignments(&c).await);
+        let worker = Worker::new(e.dir.path(), Arc::new(fake), runner.clone());
+        (a, worker, runner, w, d)
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn worker_installs_and_reports(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let (_a, mut worker, runner, w, d) = setup(&e, 0, true).await;
+        worker.pass(&w).await;
+        assert_eq!(status(&e, d).await.unwrap().0, "succeeded");
+        assert_eq!(runner.runs.load(Ordering::SeqCst), 1);
+        let left: Vec<_> = std::fs::read_dir(e.dir.path().join("packages"))
+            .unwrap()
+            .filter_map(|x| x.ok())
+            .filter(|x| x.path().extension().is_some_and(|ext| ext == "exe"))
+            .collect();
+        assert!(left.is_empty(), "安裝後刪除安裝檔");
+        // 已安裝且已回報：不再執行、不再回報
+        worker.pass(&w).await;
+        assert_eq!(runner.runs.load(Ordering::SeqCst), 1);
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn success_without_detection_is_failure(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let (_a, mut worker, _runner, w, d) = setup(&e, 0, false).await;
+        worker.pass(&w).await;
+        let (st, msg, attempts) = status(&e, d).await.unwrap();
+        assert_eq!((st.as_str(), attempts), ("failed", 1));
+        assert!(msg.contains("偵測不到"), "{msg}");
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn installer_busy_is_not_an_attempt(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let (_a, mut worker, runner, w, d) = setup(&e, 1618, false).await;
+        worker.pass(&w).await;
+        assert!(status(&e, d).await.is_none(), "1618 不回報");
+        worker.pass(&w).await;
+        assert_eq!(runner.runs.load(Ordering::SeqCst), 2, "下次再試");
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn failures_retry_daily_at_most_three_times(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let (_a, mut worker, runner, w, d) = setup(&e, 1603, false).await;
+        let t0 = chrono::Utc::now();
+        worker.pass_at(&w, t0).await;
+        worker.pass_at(&w, t0 + chrono::Duration::hours(1)).await;
+        assert_eq!(runner.runs.load(Ordering::SeqCst), 1, "24 小時內不重試");
+        worker.pass_at(&w, t0 + chrono::Duration::hours(25)).await;
+        worker.pass_at(&w, t0 + chrono::Duration::hours(50)).await;
+        worker.pass_at(&w, t0 + chrono::Duration::hours(75)).await;
+        assert_eq!(runner.runs.load(Ordering::SeqCst), 3, "最多 3 次");
+        let (st, msg, attempts) = status(&e, d).await.unwrap();
+        assert_eq!((st.as_str(), attempts), ("failed", 3));
+        assert!(msg.contains("1603"), "{msg}");
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn already_installed_reports_compliant_once(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let (_a, mut worker, runner, w, d) = setup(&e, 0, true).await;
+        runner.software.lock().unwrap().push(app("Fake App"));
+        worker.pass(&w).await;
+        assert_eq!(status(&e, d).await.unwrap().0, "compliant");
+        assert_eq!(runner.runs.load(Ordering::SeqCst), 0);
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn agent_hands_assignments_to_worker(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let (tx, rx) = tokio::sync::watch::channel(None);
+        let mut a = Agent::new(e.dir.path(), Fake::new())
+            .unwrap()
+            .with_deploy(tx);
+        a.run_cycle().await;
+        assert!(
+            rx.borrow()
+                .as_ref()
+                .is_some_and(|w| w.assignments.is_empty())
+        );
+        deployment(&e, b"x", "").await;
+        a.run_cycle().await;
+        assert_eq!(rx.borrow().as_ref().unwrap().assignments.len(), 1);
+    }
 }
