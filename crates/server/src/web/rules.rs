@@ -61,6 +61,8 @@ pub struct ParamFields {
     pub pw_max_lockout: String,
     /// 每行一個
     pub admins_allowed: String,
+    /// 太久沒更新／待重開機太久的天數
+    pub max_days: String,
 }
 
 pub fn parse_form(raw: &[u8]) -> RuleForm {
@@ -102,6 +104,7 @@ pub fn parse_form(raw: &[u8]) -> RuleForm {
             "p_pw_max_age" => f.p.pw_max_age = v,
             "p_pw_max_lockout" => f.p.pw_max_lockout = v,
             "p_admins_allowed" => f.p.admins_allowed = v,
+            "p_max_days" => f.p.max_days = v,
             _ => {}
         }
     }
@@ -189,6 +192,8 @@ pub fn form_to_input(f: &RuleForm) -> Result<RuleInput, String> {
             "max_age_days": num("最長使用天數", &p.pw_max_age)?,
             "max_lockout_threshold": num("鎖定門檻", &p.pw_max_lockout)?,
         }),
+        "patch_age" | "reboot_pending" => json!({ "max_days": num("天數", &p.max_days)? }),
+        "update_policy" => json!({}),
         "local_admins" => {
             let allowed: Vec<&str> = p
                 .admins_allowed
@@ -252,6 +257,7 @@ pub fn params_to_form(kind: &str, v: &Value) -> ParamFields {
         pw_min_length: s("min_length"),
         pw_max_age: s("max_age_days"),
         pw_max_lockout: s("max_lockout_threshold"),
+        max_days: s("max_days"),
         admins_allowed: v["allowed"]
             .as_array()
             .map(|a| {
@@ -867,6 +873,9 @@ mod tests {
             ),
             ("firewall", json!({"profiles": ["domain", "public"]})),
             ("bitlocker", json!({"scope": "all_fixed"})),
+            ("patch_age", json!({"max_days": 30})),
+            ("reboot_pending", json!({"max_days": 7})),
+            ("update_policy", json!({})),
             (
                 "defender",
                 json!({"realtime": true, "max_signature_age_days": 7}),

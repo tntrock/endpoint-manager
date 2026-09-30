@@ -69,6 +69,14 @@
     <p><label>密碼最長使用天數（至多，永不過期算不符合）<input name="p_pw_max_age" value="{{ p.pw_max_age }}" inputmode="numeric" placeholder="90"></label></p>
     <p><label>帳號鎖定門檻（至多，且不能為 0）<input name="p_pw_max_lockout" value="{{ p.pw_max_lockout }}" inputmode="numeric" placeholder="10"></label></p>
     <p class="muted">只約束本機帳號；網域帳號由網域原則決定。至少填一項。</p>
+  {% else if kind == "patch_age" %}
+    <p><label>超過幾天沒有安裝任何更新就算違規（1–365）<input name="p_max_days" value="{{ p.max_days }}" inputmode="numeric" placeholder="45" required></label></p>
+    <p class="muted">依 Agent 回報的最後安裝日期判斷，約每 24 小時更新一次。</p>
+  {% else if kind == "reboot_pending" %}
+    <p><label>待重開機超過幾天就算違規（1–90）<input name="p_max_days" value="{{ p.max_days }}" inputmode="numeric" placeholder="7" required></label></p>
+    <p class="muted">依 Agent 回報的待重開機起始時間判斷，約每 24 小時更新一次。</p>
+  {% else if kind == "update_policy" %}
+    <p class="muted">裝置的更新原則被改動（例如 GPO 覆蓋）或套用失敗時算違規；不受管的裝置算符合。</p>
   {% else if kind == "local_admins" %}
     <p><label>允許的 Administrators 成員<br>
        <textarea name="p_admins_allowed" rows="8" cols="60">{{ p.admins_allowed }}</textarea></label></p>

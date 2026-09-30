@@ -399,3 +399,64 @@ async fn concurrent_group_claims_name_the_winner(pool: PgPool) {
         admin::delete_policy(&s.pool, won, "admin").await.unwrap();
     }
 }
+
+/// Agent 回報狀態後立即重新評估：更新原則衝突、太久沒更新
+#[sqlx::test(migrations = false)]
+async fn status_upload_drives_compliance(pool: PgPool) {
+    use endpoint_server::compliance::admin::{RuleInput, create_rule};
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(1).await;
+    let a = s.enroll_ok(&tok, None, None).await;
+    let rule = |kind: &str, params: serde_json::Value| RuleInput {
+        name: kind.into(),
+        description: String::new(),
+        kind: kind.into(),
+        severity: "high".into(),
+        enabled: true,
+        params,
+        include: vec![],
+        exclude: vec![],
+        template_key: None,
+    };
+    let conflict = create_rule(
+        &s.pool,
+        &rule("update_policy", serde_json::json!({})),
+        "admin",
+    )
+    .await
+    .unwrap();
+    let age = create_rule(
+        &s.pool,
+        &rule("patch_age", serde_json::json!({"max_days": 30})),
+        "admin",
+    )
+    .await
+    .unwrap();
+    let today = chrono::Utc::now().date_naive();
+    let mut b = status_body("conflict");
+    b["detail"] = "DeferQualityUpdates".into();
+    b["last_patch_date"] = (today - chrono::Duration::days(60)).to_string().into();
+    assert_eq!(put_status(&s, Some(&a), &b).await, 204);
+    let violating = |id: i64| {
+        let pool = s.pool.clone();
+        let dev = a.device_id;
+        async move {
+            let st: Option<String> = sqlx::query_scalar(
+                "SELECT status FROM device_violations WHERE device_id = $1 AND rule_id = $2",
+            )
+            .bind(dev)
+            .bind(id)
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
+            st
+        }
+    };
+    assert_eq!(violating(conflict).await.as_deref(), Some("violating"));
+    assert_eq!(violating(age).await.as_deref(), Some("violating"));
+    let mut b = status_body("applied");
+    b["last_patch_date"] = today.to_string().into();
+    assert_eq!(put_status(&s, Some(&a), &b).await, 204);
+    assert_eq!(violating(conflict).await, None);
+    assert_eq!(violating(age).await, None);
+}

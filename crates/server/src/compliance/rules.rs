@@ -7,7 +7,7 @@ use super::matcher::Glob;
 
 pub const MAX_PATTERN_LEN: usize = 256;
 
-pub const KINDS: [&str; 12] = [
+pub const KINDS: [&str; 15] = [
     "forbidden_software",
     "required_software",
     "software_allowlist",
@@ -20,6 +20,9 @@ pub const KINDS: [&str; 12] = [
     "defender",
     "password_policy",
     "local_admins",
+    "patch_age",
+    "reboot_pending",
+    "update_policy",
 ];
 
 pub fn kind_label(kind: &str) -> &'static str {
@@ -36,6 +39,9 @@ pub fn kind_label(kind: &str) -> &'static str {
         "defender" => "Defender",
         "password_policy" => "密碼原則",
         "local_admins" => "本機管理員",
+        "patch_age" => "太久沒更新",
+        "reboot_pending" => "待重開機太久",
+        "update_policy" => "更新原則衝突",
         _ => "未知類型",
     }
 }
@@ -136,6 +142,13 @@ pub enum Params {
     LocalAdmins {
         allowed: Vec<String>,
     },
+    PatchAge {
+        max_days: u32,
+    },
+    RebootPending {
+        max_days: u32,
+    },
+    UpdatePolicy,
 }
 
 /// 登錄檔值的比對方式
@@ -269,7 +282,24 @@ pub enum Check {
     LocalAdmins {
         allowed: Vec<Glob>,
     },
+    PatchAge {
+        max_days: u32,
+    },
+    RebootPending {
+        max_days: u32,
+    },
+    UpdatePolicy,
 }
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawDays {
+    max_days: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawEmpty {}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -571,6 +601,26 @@ impl Params {
                 }
                 Ok(Params::LocalAdmins { allowed })
             }
+            "patch_age" | "reboot_pending" => {
+                let r: RawDays = from(v)?;
+                let max = if kind == "patch_age" { 365 } else { 90 };
+                if !(1..=max).contains(&r.max_days) {
+                    return Err(format!("天數必須是 1–{max}"));
+                }
+                Ok(if kind == "patch_age" {
+                    Params::PatchAge {
+                        max_days: r.max_days,
+                    }
+                } else {
+                    Params::RebootPending {
+                        max_days: r.max_days,
+                    }
+                })
+            }
+            "update_policy" => {
+                let _: RawEmpty = from(v)?;
+                Ok(Params::UpdatePolicy)
+            }
             _ => Err(format!("未知的規則類型：{kind}")),
         }
     }
@@ -600,6 +650,9 @@ impl Params {
             Params::Defender { .. } => "defender",
             Params::PasswordPolicy { .. } => "password_policy",
             Params::LocalAdmins { .. } => "local_admins",
+            Params::PatchAge { .. } => "patch_age",
+            Params::RebootPending { .. } => "reboot_pending",
+            Params::UpdatePolicy => "update_policy",
         }
     }
 
@@ -729,6 +782,10 @@ impl Params {
             Params::LocalAdmins { allowed } => {
                 m.insert("allowed".into(), json!(allowed));
             }
+            Params::PatchAge { max_days } | Params::RebootPending { max_days } => {
+                m.insert("max_days".into(), json!(max_days));
+            }
+            Params::UpdatePolicy => {}
         }
         Value::Object(m)
     }
@@ -822,6 +879,13 @@ impl Params {
             Params::LocalAdmins { allowed } => Check::LocalAdmins {
                 allowed: allowed.iter().map(|a| Glob::new(a)).collect(),
             },
+            Params::PatchAge { max_days } => Check::PatchAge {
+                max_days: *max_days,
+            },
+            Params::RebootPending { max_days } => Check::RebootPending {
+                max_days: *max_days,
+            },
+            Params::UpdatePolicy => Check::UpdatePolicy,
         }
     }
 }
@@ -979,6 +1043,31 @@ mod tests {
             "password_policy",
             "local_admins",
         ] {
+            assert!(KINDS.contains(&k), "{k}");
+            assert_ne!(kind_label(k), "未知類型", "{k}");
+        }
+    }
+
+    #[test]
+    fn update_params() {
+        for (kind, v, ok) in [
+            ("patch_age", json!({"max_days": 0}), false),
+            ("patch_age", json!({"max_days": 1}), true),
+            ("patch_age", json!({"max_days": 365}), true),
+            ("patch_age", json!({"max_days": 366}), false),
+            ("patch_age", json!({}), false),
+            ("reboot_pending", json!({"max_days": 90}), true),
+            ("reboot_pending", json!({"max_days": 91}), false),
+            ("update_policy", json!({}), true),
+        ] {
+            let r = Params::parse(kind, &v);
+            assert_eq!(r.is_ok(), ok, "{kind} {v}");
+            if let Ok(p) = r {
+                assert_eq!(p.kind(), kind);
+                assert_eq!(Params::parse(kind, &p.to_json()).unwrap(), p, "往返");
+            }
+        }
+        for k in ["patch_age", "reboot_pending", "update_policy"] {
             assert!(KINDS.contains(&k), "{k}");
             assert_ne!(kind_label(k), "未知類型", "{k}");
         }
