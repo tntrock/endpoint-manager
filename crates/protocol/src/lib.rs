@@ -3,6 +3,7 @@
 pub mod deploy;
 pub mod matcher;
 pub mod regpath;
+pub mod update;
 
 use std::collections::BTreeMap;
 
@@ -129,6 +130,12 @@ pub struct CheckinResponse {
     /// 指派清單的雜湊；沒有代表伺服器不支援派送，Agent 不做任何派送
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deployments_hash: Option<String>,
+    /// 這台該套用的 Windows Update 原則；None 表示不受管
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_policy: Option<update::UpdatePolicy>,
+    /// 原則的雜湊；沒有代表伺服器不支援，Agent 完全不動 WU 設定
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_policy_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

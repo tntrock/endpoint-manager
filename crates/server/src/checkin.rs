@@ -85,6 +85,8 @@ pub async fn checkin(
         registry_queries_hash: Some(rules.registry_hash.clone()),
         deployments_hash: Some(protocol::deploy::assignments_hash(&deployments)),
         deployments,
+        update_policy: None,
+        update_policy_hash: Some(protocol::update::update_policy_hash(None)),
     }))
 }
 
