@@ -11,6 +11,11 @@ pub enum AppError {
     PayloadTooLarge,
     #[error("too many requests")]
     TooManyRequests,
+    #[error("not found")]
+    NotFound,
+    /// 伺服器忙碌（例如同時下載數用完），附 Retry-After
+    #[error("busy")]
+    Busy,
     #[error("database: {0}")]
     Db(#[from] sqlx::Error),
     #[error("internal: {0}")]
@@ -69,6 +74,8 @@ impl IntoResponse for AppError {
             AppError::BadRequest(m) => (StatusCode::BAD_REQUEST, m).into_response(),
             AppError::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE.into_response(),
             AppError::TooManyRequests => with_retry_after(StatusCode::TOO_MANY_REQUESTS),
+            AppError::NotFound => StatusCode::NOT_FOUND.into_response(),
+            AppError::Busy => with_retry_after(StatusCode::SERVICE_UNAVAILABLE),
             AppError::Db(e) if db_unavailable(&e) => {
                 tracing::error!(error = %e, "database unavailable");
                 with_retry_after(StatusCode::SERVICE_UNAVAILABLE)

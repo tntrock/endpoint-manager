@@ -7,6 +7,7 @@ pub mod checkin;
 pub mod compliance;
 pub mod config;
 pub mod db;
+pub mod deploy;
 pub mod devices;
 pub mod diff;
 pub mod enroll;
@@ -35,6 +36,8 @@ use sqlx::PgPool;
 
 pub const MAX_BODY_BYTES: usize = 5 * 1024 * 1024;
 pub const ENROLL_PER_IP_PER_MINUTE: u32 = 60;
+/// 同時下載套件的預設上限（`EM_DOWNLOAD_CONCURRENCY`）
+pub const DOWNLOAD_CONCURRENCY: usize = 50;
 /// 管理網頁登入：每個 IP 每分鐘最多嘗試次數
 pub const LOGIN_PER_IP_PER_MINUTE: u32 = 30;
 
@@ -56,6 +59,12 @@ pub struct AppState {
     pub rules: Arc<compliance::RuleCache>,
     /// 通知用的機密與網址
     pub notify: Arc<notify::NotifySecrets>,
+    /// 派送指派快取
+    pub deploy: Arc<deploy::assign::DeployCache>,
+    /// 套件檔案目錄
+    pub package_dir: std::path::PathBuf,
+    /// 同時下載套件的上限
+    pub downloads: Arc<tokio::sync::Semaphore>,
 }
 
 impl AppState {
@@ -78,7 +87,16 @@ impl AppState {
             server_names: Arc::new(vec![]),
             rules: Arc::new(compliance::RuleCache::new()),
             notify: Arc::new(notify::NotifySecrets::default()),
+            deploy: Arc::new(deploy::assign::DeployCache::default()),
+            package_dir: "packages".into(),
+            downloads: Arc::new(tokio::sync::Semaphore::new(DOWNLOAD_CONCURRENCY)),
         }
+    }
+
+    pub fn with_packages(mut self, dir: std::path::PathBuf, concurrency: usize) -> Self {
+        self.package_dir = dir;
+        self.downloads = Arc::new(tokio::sync::Semaphore::new(concurrency.max(1)));
+        self
     }
 
     pub fn with_installer(
@@ -128,6 +146,8 @@ pub fn agent_router(state: AppState) -> Router {
         .route("/v1/checkin", post(checkin::checkin))
         .route("/v1/inventory/{section}", put(inventory::upload))
         .route("/v1/renew", post(renew::renew))
+        .route("/v1/packages/{id}/content", get(deploy::api::download))
+        .route("/v1/deployments/{id}/result", post(deploy::api::result))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
 }
@@ -140,6 +160,7 @@ pub async fn serve(cfg: config::Config) -> anyhow::Result<()> {
         .await?;
     db::migrate(&pool).await?;
     partitions::maintain_partitions(&pool, chrono::Utc::now()).await?;
+    deploy::store::cleanup_temp(&cfg.package_dir).await;
 
     let server_names = ca::server_names(&cfg.ca_dir)?;
     let public_url = if cfg.agent_public_url.is_empty() {
@@ -153,7 +174,8 @@ pub async fn serve(cfg: config::Config) -> anyhow::Result<()> {
         .with_installer(cfg.agent_msi.clone(), public_url, server_names)
         .with_notify(notify::NotifySecrets {
             webhook_secret: cfg.webhook_secret.clone(),
-        });
+        })
+        .with_packages(cfg.package_dir.clone(), cfg.download_concurrency);
     let tls_cfg = tls::server_config(&cfg.ca_dir)?;
 
     let hb = state.heartbeat.clone();

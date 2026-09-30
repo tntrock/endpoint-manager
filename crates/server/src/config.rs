@@ -21,6 +21,10 @@ pub struct Config {
     pub agent_public_url: String,
     /// 合規通知的 Webhook 簽章密鑰（只從環境變數讀）
     pub webhook_secret: Option<String>,
+    /// 派送套件檔案目錄（`EM_PACKAGE_DIR`，預設 `packages`）
+    pub package_dir: PathBuf,
+    /// 同時下載套件的上限（`EM_DOWNLOAD_CONCURRENCY`，預設 50）
+    pub download_concurrency: usize,
 }
 
 impl Config {
@@ -64,6 +68,18 @@ impl Config {
                 .map(PathBuf::from),
             agent_public_url: get("EM_AGENT_PUBLIC_URL").unwrap_or_default(),
             webhook_secret: get("EM_WEBHOOK_SECRET").filter(|s| !s.is_empty()),
+            package_dir: get("EM_PACKAGE_DIR")
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "packages".into())
+                .into(),
+            download_concurrency: {
+                let n: usize = match get("EM_DOWNLOAD_CONCURRENCY") {
+                    Some(v) => v.parse().context("EM_DOWNLOAD_CONCURRENCY")?,
+                    None => crate::DOWNLOAD_CONCURRENCY,
+                };
+                anyhow::ensure!(n >= 1, "EM_DOWNLOAD_CONCURRENCY must be >= 1");
+                n
+            },
         })
     }
 }

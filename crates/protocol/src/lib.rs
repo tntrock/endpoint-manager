@@ -1,5 +1,7 @@
 //! Agent 與伺服器之間的共用訊息格式。
 
+pub mod deploy;
+pub mod matcher;
 pub mod regpath;
 
 use std::collections::BTreeMap;
@@ -121,6 +123,12 @@ pub struct CheckinResponse {
     /// 查詢清單的雜湊；有這個欄位表示伺服器支援 security／registry 區段
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub registry_queries_hash: Option<String>,
+    /// 這台該執行的派送（期望狀態）
+    #[serde(default)]
+    pub deployments: Vec<deploy::Assignment>,
+    /// 指派清單的雜湊；沒有代表伺服器不支援派送，Agent 不做任何派送
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployments_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

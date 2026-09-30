@@ -64,6 +64,18 @@ pub async fn checkin(
 
     let settings = load_settings(&st.pool).await?;
     let rules = st.rules.get_throttled(&st.pool).await?;
+    // 只有使用中的裝置會收到派送
+    let (group_id, status): (Option<i64>, String) =
+        sqlx::query_as("SELECT group_id, status FROM devices WHERE id = $1")
+            .bind(device.device_id)
+            .fetch_one(&st.pool)
+            .await?;
+    let deploy = st.deploy.get_throttled(&st.pool).await?;
+    let deployments = if status == "active" {
+        deploy.assignments_for(group_id)
+    } else {
+        vec![]
+    };
     Ok(Json(CheckinResponse {
         next_checkin_seconds: settings.checkin_interval_secs,
         request_sections: sections_to_request(&stored, &req.section_hashes),
@@ -71,6 +83,8 @@ pub async fn checkin(
         renew_certificate: device.cert_not_after - Utc::now() < Duration::days(RENEW_BEFORE_DAYS),
         registry_queries: rules.registry_queries.clone(),
         registry_queries_hash: Some(rules.registry_hash.clone()),
+        deployments_hash: Some(protocol::deploy::assignments_hash(&deployments)),
+        deployments,
     }))
 }
 
