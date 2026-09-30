@@ -12,6 +12,7 @@ pub mod devices;
 pub mod groups;
 pub mod login;
 pub mod notify;
+pub mod packages;
 pub mod password;
 pub mod registry;
 pub mod rules;
@@ -121,6 +122,16 @@ pub fn web_router(state: AppState) -> Router {
         .route("/devices", get(devices::list))
         .route("/software", get(software::search))
         .route("/registry", get(registry::query))
+        .route("/packages", get(packages::list))
+        .route(
+            "/packages/upload",
+            get(packages::upload_page).put(packages::upload),
+        )
+        .route(
+            "/packages/{id}",
+            get(packages::edit_form).post(packages::update),
+        )
+        .route("/packages/{id}/delete", post(packages::delete))
         .route("/registry/devices", get(registry::devices))
         .route("/compliance", get(compliance::overview))
         .route("/compliance/violations", get(compliance::violations))
@@ -174,6 +185,15 @@ pub fn web_router(state: AppState) -> Router {
             get(|| async {
                 asset(
                     include_str!("../../static/htmx.min.js"),
+                    "text/javascript; charset=utf-8",
+                )
+            }),
+        )
+        .route(
+            "/static/upload.js",
+            get(|| async {
+                asset(
+                    include_str!("../../static/upload.js"),
                     "text/javascript; charset=utf-8",
                 )
             }),

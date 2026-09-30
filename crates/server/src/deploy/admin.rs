@@ -130,6 +130,25 @@ async fn lock_file(conn: &mut PgConnection, sha256: &str) -> Result<(), sqlx::Er
     Ok(())
 }
 
+/// 上傳後沒建立成套件（驗證失敗）：沒有其他套件使用這個檔案時刪除
+pub async fn discard_file(pool: &PgPool, dir: &Path, sha256: &str) -> anyhow::Result<()> {
+    let mut tx = pool.begin().await?;
+    lock_file(&mut tx, sha256).await?;
+    let used: i64 = sqlx::query_scalar("SELECT count(*) FROM packages WHERE sha256 = $1")
+        .bind(sha256)
+        .fetch_one(&mut *tx)
+        .await?;
+    if used == 0 {
+        match tokio::fs::remove_file(file_path(dir, sha256)).await {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
 pub async fn create_package(
     pool: &PgPool,
     dir: &Path,
