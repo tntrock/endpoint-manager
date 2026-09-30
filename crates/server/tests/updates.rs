@@ -374,3 +374,28 @@ async fn invalid_status_is_rejected(pool: PgPool) {
         .unwrap();
     assert_eq!(n, 0);
 }
+
+/// 兩位管理員同時把同一個群組加進不同原則：後完成的一方要看到原則名稱，也不能死結
+#[sqlx::test(migrations = false)]
+async fn concurrent_group_claims_name_the_winner(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let g = s.group_id("台北").await;
+    let h = s.group_id("高雄").await;
+    for round in 0..15 {
+        let (a, b) = (format!("A{round}"), format!("B{round}"));
+        let (ia, ib) = (input(&a, vec![g, h]), input(&b, vec![h, g]));
+        let (ra, rb) = tokio::join!(
+            admin::create_policy(&s.pool, &ia, "admin"),
+            admin::create_policy(&s.pool, &ib, "admin"),
+        );
+        let (won, lost, err) = match (ra, rb) {
+            (Ok(id), Err(e)) => (id, &b, e),
+            (Err(e), Ok(id)) => (id, &a, e),
+            other => panic!("剛好一個要成功：{other:?}"),
+        };
+        let winner = if lost == &a { &b } else { &a };
+        let e = format!("{err:#}");
+        assert!(e.contains(winner.as_str()), "round {round}: {e}");
+        admin::delete_policy(&s.pool, won, "admin").await.unwrap();
+    }
+}

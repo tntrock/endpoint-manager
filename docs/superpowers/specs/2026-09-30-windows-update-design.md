@@ -83,9 +83,10 @@
 - `settings` 的格式由 Rust 型別 `PolicySettings` 定義，包含：
   - `quality_defer_days`、`feature_defer_days`
   - `quality_pause_start`、`feature_pause_start`（DATE 字串）
-  - `quality_deadline`、`quality_grace`、`feature_deadline`、`feature_grace`、`no_auto_reboot`
-  - `active_start`、`active_end`
-  - 全部是 `Option`。
+  - `quality_deadline`、`feature_deadline`：`Option<Deadline { days, grace }>`
+  - `no_auto_reboot`：bool
+  - `active_hours`：`Option<ActiveHours { start, end }>`
+  - 其餘都是 `Option`。
 
 **`update_policy_groups`：**
 - 欄位：`group_id`（PK，FK ON DELETE RESTRICT）、`policy_id`（FK ON DELETE CASCADE）。
@@ -112,7 +113,7 @@
 - **快取**：`UpdatePolicyCache` 比照 `DeployCache`，每 5 秒檢查一次 `generation`，把「群組 → 原則」載入記憶體。報到時直接用裝置的群組查表，不額外查資料庫。
 - **下發**：`CheckinResponse` 新增兩個欄位：
   - `update_policy: Option<UpdatePolicy>`
-  - `update_policy_hash: Option<String>`：必定有值；原則為 None 時是空清單的雜湊。舊 Agent 會忽略這兩個欄位。
+  - `update_policy_hash: Option<String>`：必定有值；原則為 None 時是 `null` 的雜湊（和「沒有任何值的原則」不同）。舊 Agent 會忽略這兩個欄位。
 
 ### 3.3 `PUT /v1/update-status`
 

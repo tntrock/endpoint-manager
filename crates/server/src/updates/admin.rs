@@ -70,6 +70,13 @@ async fn lock_policy(conn: &mut PgConnection, id: i64) -> anyhow::Result<(String
 
 /// 寫入原則的群組；群組已屬於其他原則時回錯誤（寫出是哪個原則）
 async fn set_groups(conn: &mut PgConnection, id: i64, groups: &[i64]) -> anyhow::Result<()> {
+    // 依 id 順序鎖住群組列：同時加入同一群組的另一個交易會等這邊完成後再檢查
+    // （錯誤訊息才能寫出原則名稱），固定順序也避免死結。groups 已排序。
+    // 用 NO KEY UPDATE：不擋裝置、金鑰寫入時外鍵檢查的 KEY SHARE 鎖。
+    sqlx::query("SELECT id FROM device_groups WHERE id = ANY($1) ORDER BY id FOR NO KEY UPDATE")
+        .bind(groups)
+        .execute(&mut *conn)
+        .await?;
     let taken: Option<(String, String)> = sqlx::query_as(
         "SELECT g.name, p.name FROM update_policy_groups x \
          JOIN device_groups g ON g.id = x.group_id JOIN update_policies p ON p.id = x.policy_id \
