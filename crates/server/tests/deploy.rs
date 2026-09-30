@@ -126,6 +126,10 @@ async fn package_validation_and_delete_rules(pool: PgPool) {
             ..pkg_input("exe")
         },
         PackageInput {
+            name: "a\u{7}b".into(),
+            ..pkg_input("exe")
+        },
+        PackageInput {
             install_args: "/S\n/X".into(),
             ..pkg_input("exe")
         },
@@ -292,6 +296,19 @@ async fn deployment_stage_transitions(pool: PgPool) {
         .await
         .unwrap();
     assert!(g >= 8, "{g}");
+    for bad in [
+        "UPDATE deployments SET stage = 'paused', paused_from = NULL WHERE id = $1",
+        "UPDATE deployments SET stage = 'all', paused_from = 'pilot' WHERE id = $1",
+    ] {
+        assert!(
+            sqlx::query(bad)
+                .bind(direct)
+                .execute(&s.pool)
+                .await
+                .is_err(),
+            "paused_from 必須和 paused 階段一致：{bad}"
+        );
+    }
 }
 
 #[sqlx::test(migrations = false)]
@@ -311,6 +328,10 @@ async fn deployment_input_validation(pool: PgPool) {
     for bad in [
         DeploymentInput {
             name: " ".into(),
+            ..dep_input(exe, None)
+        },
+        DeploymentInput {
+            name: "a\tb".into(),
             ..dep_input(exe, None)
         },
         DeploymentInput {
