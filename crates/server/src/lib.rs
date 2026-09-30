@@ -23,6 +23,7 @@ pub mod ratelimit;
 pub mod renew;
 pub mod tls;
 pub mod tokens;
+pub mod updates;
 pub mod web;
 
 use std::sync::Arc;
