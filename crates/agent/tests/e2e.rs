@@ -34,7 +34,8 @@ async fn env(pool: PgPool, token_uses: i32) -> Env {
     partitions::maintain_partitions(&pool, chrono::Utc::now())
         .await
         .unwrap();
-    let state = AppState::new(pool.clone(), ca::Ca::load(pki.path()).unwrap());
+    let state = AppState::new(pool.clone(), ca::Ca::load(pki.path()).unwrap())
+        .with_packages(pki.path().join("packages"), 4);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(tls::serve_mtls(
@@ -583,4 +584,151 @@ async fn config_sections_start_after_server_confirms_support(pool: PgPool) {
         s.contains(&"security".to_string()) && s.contains(&"registry".to_string()),
         "{s:?}"
     );
+}
+
+mod deploy {
+    use super::*;
+    use endpoint_agent::client::DownloadError;
+    use endpoint_server::deploy::{admin, store};
+    use protocol::deploy::{DeployResult, DeployStatus, PackageSpec};
+
+    pub async fn enrolled(e: &Env, fake: Fake) -> (Agent<Fake>, ServerClient) {
+        let mut a = Agent::new(e.dir.path(), fake).unwrap();
+        a.run_cycle().await;
+        assert!(a.state().is_enrolled());
+        let c = ServerClient::new(&e.url(), &e.root_pem(), a.state().identity_pem()).unwrap();
+        (a, c)
+    }
+
+    /// 建立 EXE 套件與派送（全部裝置），回傳派送 id
+    pub async fn deployment(e: &Env, data: &[u8], args: &str) -> i64 {
+        let chunk: Result<bytes::Bytes, std::io::Error> = Ok(bytes::Bytes::copy_from_slice(data));
+        let st = store::save(
+            &e.state.package_dir,
+            futures_util::stream::iter(vec![chunk]),
+        )
+        .await
+        .unwrap();
+        let pkg = admin::create_package(
+            &e.pool,
+            &e.state.package_dir,
+            &st,
+            "setup.exe",
+            None,
+            &admin::PackageInput {
+                name: "Fake App".into(),
+                version: "1.0".into(),
+                kind: "exe".into(),
+                install_args: args.into(),
+                uninstall_args: String::new(),
+                success_codes: vec![],
+                detect_name: "Fake App*".into(),
+                detect_publisher: String::new(),
+                detect_min_version: String::new(),
+            },
+            "admin",
+        )
+        .await
+        .unwrap();
+        let d = admin::create_deployment(
+            &e.pool,
+            &admin::DeploymentInput {
+                name: "Fake".into(),
+                package_id: pkg,
+                action: "install".into(),
+                include: vec![],
+                exclude: vec![],
+                pilot_group_id: None,
+                max_failure_pct: 50,
+                min_samples: 100,
+            },
+            "admin",
+        )
+        .await
+        .unwrap();
+        e.state.deploy.invalidate();
+        d
+    }
+
+    async fn spec(c: &ServerClient) -> PackageSpec {
+        let r = c
+            .checkin(&CheckinRequest {
+                schema_version: SCHEMA_VERSION,
+                agent_version: "t".into(),
+                boot_time: chrono::Utc::now(),
+                logged_on_user: None,
+                ip_addresses: vec![],
+                section_hashes: Default::default(),
+                section_errors: Default::default(),
+            })
+            .await
+            .unwrap();
+        r.deployments[0].package.clone()
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn download_verifies_hash_and_report_is_stored(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let (a, c) = enrolled(&e, Fake::new()).await;
+        let data = b"MZ fake installer ".repeat(10_000);
+        let d = deployment(&e, &data, "/S").await;
+        let spec = spec(&c).await;
+        let out = tempfile::tempdir().unwrap();
+        let dest = out.path().join("pkg.exe");
+        c.download(&spec, &dest).await.unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), data);
+
+        let wrong = PackageSpec {
+            sha256: "00".repeat(32),
+            ..spec.clone()
+        };
+        let bad = out.path().join("bad.exe");
+        assert!(matches!(
+            c.download(&wrong, &bad).await,
+            Err(DownloadError::Mismatch)
+        ));
+        let short = PackageSpec {
+            size: 10,
+            ..spec.clone()
+        };
+        assert!(matches!(
+            c.download(&short, &bad).await,
+            Err(DownloadError::Mismatch)
+        ));
+        assert_eq!(
+            std::fs::read_dir(out.path()).unwrap().count(),
+            1,
+            "不符時不留檔"
+        );
+        let gone = PackageSpec {
+            id: 9999,
+            ..spec.clone()
+        };
+        assert!(matches!(
+            c.download(&gone, &bad).await,
+            Err(DownloadError::NotFound)
+        ));
+
+        c.report(
+            d,
+            &DeployResult {
+                revision: 1,
+                status: DeployStatus::Succeeded,
+                exit_code: Some(0),
+                message: String::new(),
+                attempts: 1,
+            },
+        )
+        .await
+        .unwrap();
+        let status: String = sqlx::query_scalar(
+            "SELECT status FROM deployment_status WHERE deployment_id = $1 AND device_id = $2",
+        )
+        .bind(d)
+        .bind(a.state().device_id.unwrap())
+        .fetch_one(&e.pool)
+        .await
+        .unwrap();
+        assert_eq!(status, "succeeded");
+    }
 }

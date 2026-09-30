@@ -37,9 +37,10 @@ impl DeployState {
     }
 
     pub fn save(&self, dir: &Path) -> std::io::Result<()> {
-        let tmp = dir.join(format!("{STATE_FILE}.tmp"));
-        std::fs::write(&tmp, serde_json::to_vec(self).expect("serializable"))?;
-        std::fs::rename(&tmp, dir.join(STATE_FILE))
+        crate::state::write_atomic(
+            &dir.join(STATE_FILE),
+            &serde_json::to_vec(self).expect("serializable"),
+        )
     }
 
     /// 取得（必要時建立）某派送的狀態；revision 不同時重設（管理員按了「重試失敗」）
