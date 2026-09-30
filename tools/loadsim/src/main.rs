@@ -7,7 +7,9 @@ const USAGE: &str = "usage:
   loadsim enroll    --server URL --root root.pem --token TOKEN --count N [--concurrency 50] --out devices.json
   loadsim heartbeat --server URL --root root.pem --devices devices.json [--rate 500] [--secs 60] [--max-p99-ms 200]
   loadsim upload    --server URL --root root.pem --devices devices.json [--items 150] [--concurrency 100] [--max-secs 600]
-  loadsim config    --server URL --root root.pem --devices devices.json [--concurrency 100] [--max-secs 900]";
+  loadsim config    --server URL --root root.pem --devices devices.json [--concurrency 100] [--max-secs 900]
+  loadsim deploy    --server URL --root root.pem --devices devices.json [--concurrency 50] [--max-secs 3600]
+  loadsim make-package --out FILE [--size-mb 10]";
 
 fn arg(args: &[String], name: &str) -> Option<String> {
     let i = args.iter().position(|a| a == name)?;
@@ -49,6 +51,17 @@ async fn main() -> anyhow::Result<()> {
     let Some(cmd) = args.first().cloned() else {
         bail!("{USAGE}")
     };
+    if cmd == "make-package" {
+        use sha2::Digest;
+        let bytes = loadsim::package_bytes(num(&args, "--size-mb", 10usize)? * 1024 * 1024);
+        std::fs::write(need(&args, "--out")?, &bytes)?;
+        println!(
+            "sha256 {} size {}",
+            hex::encode(sha2::Sha256::digest(&bytes)),
+            bytes.len()
+        );
+        return Ok(());
+    }
     let t = Target {
         server: need(&args, "--server")?,
         root_pem: std::fs::read_to_string(need(&args, "--root")?).context("reading --root")?,
@@ -121,6 +134,16 @@ async fn main() -> anyhow::Result<()> {
                     r.errors,
                     r.elapsed
                 );
+            }
+        }
+        "deploy" => {
+            let (r, retries, unassigned) =
+                loadsim::deploy(&t, &load()?, num(&args, "--concurrency", 50)?).await;
+            print(&r);
+            println!("busy retries {retries} unassigned {unassigned}");
+            let max = Duration::from_secs(num(&args, "--max-secs", 3600)?);
+            if r.errors > 0 || r.elapsed > max {
+                bail!("FAIL: errors {} / elapsed {:?}", r.errors, r.elapsed);
             }
         }
         _ => bail!("{USAGE}"),

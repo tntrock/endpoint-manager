@@ -1334,14 +1334,18 @@ name = "loadsim"
 version = "0.3.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "chrono",
  "endpoint-agent",
  "endpoint-server",
+ "futures-util",
+ "hex",
  "protocol",
  "rcgen",
  "rustls",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "sqlx",
  "tempfile",
  "tokio",

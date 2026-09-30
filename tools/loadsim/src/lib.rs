@@ -282,6 +282,79 @@ pub async fn config(t: &Target, devices: &[Device], concurrency: usize) -> (Repo
     (report, unverified.load(Ordering::Relaxed))
 }
 
+/// 負載測試用的套件內容（決定性，任何人重跑都得到同一個雜湊）
+pub fn package_bytes(size: usize) -> Vec<u8> {
+    (0..size).map(|i| (i % 251) as u8).collect()
+}
+
+/// 每台：報到取得指派 → 下載並驗證第一個套件（503 依 Retry-After 重試）→ 回報每個指派
+/// （第一個 succeeded，其餘 compliant）。回傳報告、503 重試次數、沒有指派的台數。
+pub async fn deploy(t: &Target, devices: &[Device], concurrency: usize) -> (Report, usize, usize) {
+    use endpoint_agent::client::DownloadError;
+    use protocol::deploy::{DeployResult, DeployStatus};
+    let sem = Arc::new(Semaphore::new(concurrency));
+    let retries = Arc::new(AtomicUsize::new(0));
+    let unassigned = Arc::new(AtomicUsize::new(0));
+    let start = Instant::now();
+    let mut set = JoinSet::new();
+    for d in devices {
+        let permit = sem.clone().acquire_owned().await.expect("semaphore open");
+        let (t, d, retries, unassigned) =
+            (t.clone(), d.clone(), retries.clone(), unassigned.clone());
+        set.spawn(async move {
+            let _permit = permit;
+            let c = client(&t, Some(&d)).ok()?;
+            let s = Instant::now();
+            let resp = c.checkin(&checkin_req(BTreeMap::new())).await.ok()?;
+            let Some(first) = resp.deployments.first() else {
+                unassigned.fetch_add(1, Ordering::Relaxed);
+                return None;
+            };
+            let mut tries = 0;
+            loop {
+                match c.verify_package(&first.package).await {
+                    Ok(()) => break,
+                    Err(DownloadError::Retry(after)) if tries < 100 => {
+                        tries += 1;
+                        retries.fetch_add(1, Ordering::Relaxed);
+                        tokio::time::sleep(after.unwrap_or(Duration::from_secs(10))).await;
+                    }
+                    Err(e) => {
+                        eprintln!("download {}: {e}", d.device_id);
+                        return None;
+                    }
+                }
+            }
+            for (i, a) in resp.deployments.iter().enumerate() {
+                let status = if i == 0 {
+                    DeployStatus::Succeeded
+                } else {
+                    DeployStatus::Compliant
+                };
+                c.report(
+                    a.deployment_id,
+                    &DeployResult {
+                        revision: a.revision,
+                        status,
+                        exit_code: Some(0),
+                        message: String::new(),
+                        attempts: 1,
+                    },
+                )
+                .await
+                .ok()?;
+            }
+            Some(s.elapsed())
+        });
+    }
+    let report = collect(set, start).await;
+    (
+        report,
+        retries.load(Ordering::Relaxed),
+        unassigned.load(Ordering::Relaxed),
+    )
+}
+
 async fn collect(mut set: JoinSet<Option<Duration>>, start: Instant) -> Report {
     let (mut lat, mut errors) = (Vec::new(), 0);
     while let Some(r) = set.join_next().await {
