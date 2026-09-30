@@ -38,5 +38,9 @@ pub async fn status(
     .bind(s.last_patch_date)
     .execute(&st.pool)
     .await?;
+    // 三種 Windows Update 規則依這份狀態判定：立即重新評估（失敗不影響回報本身）
+    if let Err(e) = crate::compliance::refresh_after_upload(&st, device.device_id).await {
+        tracing::error!(error = %e, device_id = %device.device_id, "compliance refresh failed");
+    }
     Ok(StatusCode::NO_CONTENT)
 }

@@ -145,6 +145,22 @@ Webhook 只接受 `https://`，不跟隨重新導向。簽章密鑰只放環境�
   - `EM_DOWNLOAD_CONCURRENCY`：同時下載的上限（預設 50）；超過時回 503，Agent 稍後再試。
 - 派送需要 Agent 0.4.0 以上；舊版 Agent 會忽略派送。
 
+## Windows Update 控制
+
+管理網頁的「更新原則」頁（`/updates`）依群組設定 Windows Update for Business 原則，Agent 寫入 `HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate` 並回報結果。更新本身仍由 Windows Update（或 WSUS）提供，本系統負責控制與稽核。
+
+- **原則**（平台管理員）：
+  - 可設定品質／功能更新延後天數、期限與寬限期、寬限期結束前不自動重開機、使用中時段。沒填的項目不寫入。
+  - **一個群組只能屬於一個原則**；沒有原則的群組，Agent 完全不改動 Windows Update 設定。
+  - **暫停**：在原則頁按「暫停品質更新／功能更新」，開始日為今天；Windows 在 35 天後自動恢復，網頁顯示「暫停已過期」。
+- **與 GPO 的關係**：受管群組的電腦不要再用 GPO 管 Windows Update。Agent 發現自己寫入的值被改掉（例如 GPO 套用）時回報「衝突」並停止覆寫，直到原則修改後才重新寫入。
+- **移出範圍**：原則刪除或裝置換到沒有原則的群組時，Agent 只刪除自己寫過而且沒被改過的值。
+- **期限的值名稱**：Windows 11 24H2 起的 ADMX 改用 `SetComplianceDeadlineForQU`／`ConfigureDeadlineNoAutoRebootForQualityUpdates`，較舊的 Windows 只認 `SetComplianceDeadline`／`ConfigureDeadlineNoAutoReboot`，Agent 會新舊一起寫入。請在 Windows 10 22H2／Windows 11 23H2 的「設定 > Windows Update > 進階選項 > 已設定的更新原則」確認有生效。
+- **稽核**：
+  - 原則詳情依狀態（已套用／衝突／錯誤／尚未回報）列出裝置；「更新概況」（`/updates/overview`）顯示各組建的 UBR 分布與待重開機最久的電腦；裝置頁有「更新」分頁。
+  - 合規規則新增「太久沒更新」（`patch_age`）、「待重開機太久」（`reboot_pending`）、「更新原則衝突」（`update_policy`）。這三種依 Agent 回報的狀態判定，Agent 狀態有變或每 24 小時回報一次，所以連線中的電腦跨過門檻後**最晚約一天**才出現違規。**離線的電腦不會隨時間重新評估**，會維持最後一次的結果（和 Defender 病毒碼天數相同）；長期離線的電腦請用裝置清單的「最後報到」找出來。0.5.0 以前的 Agent 在這三種規則顯示「未知：Agent 尚未回報更新狀態」。
+- 需要伺服器與 Agent 都升到 0.5.0 以上：先升級伺服器，再升級 Agent；舊版 Agent 會忽略更新原則。
+
 ## 部署伺服器（Docker Compose）
 
 在 Linux 伺服器上：

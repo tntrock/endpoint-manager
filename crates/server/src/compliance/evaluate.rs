@@ -40,8 +40,20 @@ pub struct DeviceFacts {
     pub registry: Option<HashMap<(String, String), RegistryValue>>,
     pub services: Option<Vec<ServiceFact>>,
     pub agent_version: Option<String>,
+    /// Agent 回報的 Windows Update 狀態（None：從未回報）
+    pub update_status: Option<UpdateFact>,
     /// 評估時的「現在」（病毒碼天數用）：由呼叫端提供，評估本身維持純函式
     pub now: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct UpdateFact {
+    /// applied／conflict／error／unmanaged
+    pub state: String,
+    pub detail: String,
+    pub reboot_pending: bool,
+    pub reboot_pending_since: Option<DateTime<Utc>>,
+    pub last_patch_date: Option<chrono::NaiveDate>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -87,6 +99,11 @@ pub struct Outcome {
     pub rule_id: i64,
     pub status: Status,
     pub detail: Value,
+}
+
+/// 更新規則：Agent 沒有回報更新狀態（0.5.0 以前的 Agent 不支援）
+fn no_update_status() -> Option<(Status, Value)> {
+    Some((Status::Unknown, json!({"reason": "no_update_status"})))
 }
 
 fn no_data() -> Option<(Status, Value)> {
@@ -222,6 +239,46 @@ fn registry_check(
 
 fn check_one(c: &Check, f: &DeviceFacts) -> Option<(Status, Value)> {
     match c {
+        Check::PatchAge { max_days } => {
+            let Some(u) = &f.update_status else {
+                return no_update_status();
+            };
+            let Some(last) = u.last_patch_date else {
+                return Some((Status::Unknown, json!({"reason": "no_patch_date"})));
+            };
+            let days = (f.now.date_naive() - last).num_days();
+            (days > i64::from(*max_days)).then(|| {
+                (
+                    Status::Violating,
+                    json!({"last_patch_date": last.to_string(), "days": days}),
+                )
+            })
+        }
+        Check::RebootPending { max_days } => {
+            let Some(u) = &f.update_status else {
+                return no_update_status();
+            };
+            // 沒有起始時間無法判斷天數：不算違規
+            let since = u.reboot_pending_since.filter(|_| u.reboot_pending)?;
+            let days = (f.now - since).num_days();
+            (days > i64::from(*max_days)).then(|| {
+                (
+                    Status::Violating,
+                    json!({"reboot_pending_since": since.to_rfc3339(), "days": days}),
+                )
+            })
+        }
+        Check::UpdatePolicy => {
+            let Some(u) = &f.update_status else {
+                return no_update_status();
+            };
+            matches!(u.state.as_str(), "conflict" | "error").then(|| {
+                (
+                    Status::Violating,
+                    json!({"update_state": u.state, "update_detail": u.detail}),
+                )
+            })
+        }
         Check::RegistryValue {
             path,
             name,
@@ -570,7 +627,26 @@ pub fn summarize(d: &Value) -> String {
         Some("no_system_volume") => return "找不到系統磁碟".into(),
         Some("not_installed") => return format!("服務 {} 未安裝", s("service")),
         Some("absent") => return format!("{} 未設定", s("registry")),
+        Some("no_patch_date") => return "沒有可判讀的更新安裝日期".into(),
+        Some("no_update_status") => {
+            return "Agent 尚未回報更新狀態（需要 Agent 0.5.0 以上）".into();
+        }
         _ => {}
+    }
+    let days = d["days"].as_i64().unwrap_or_default();
+    if d.get("last_patch_date").is_some() {
+        return format!("最後裝更新：{}（{days} 天前）", s("last_patch_date"));
+    }
+    if d.get("reboot_pending_since").is_some() {
+        return format!("待重開機已 {days} 天");
+    }
+    if let Some(state) = d["update_state"].as_str() {
+        let what = if state == "conflict" {
+            "原則被改動"
+        } else {
+            "原則套用失敗"
+        };
+        return format!("{what}：{}", s("update_detail"));
     }
     let list = |k: &str| {
         d[k].as_array()
@@ -740,6 +816,7 @@ mod tests {
             registry: None,
             services: None,
             agent_version: Some("0.3.0".into()),
+            update_status: None,
             now: Utc::now(),
         }
     }
@@ -1168,6 +1245,108 @@ mod tests {
             assert_eq!(o.rule_id, 7);
             (o.status, o.detail)
         })
+    }
+
+    fn upd(state: &str) -> UpdateFact {
+        UpdateFact {
+            state: state.into(),
+            detail: String::new(),
+            reboot_pending: false,
+            reboot_pending_since: None,
+            last_patch_date: None,
+        }
+    }
+
+    /// 舊版 Agent 沒有回報更新狀態：不能說成「尚未收到盤點資料」
+    #[test]
+    fn update_rules_without_status_say_agent_has_not_reported() {
+        let f = facts(vec![]);
+        for (kind, p) in [
+            ("patch_age", json!({"max_days": 30})),
+            ("reboot_pending", json!({"max_days": 7})),
+            ("update_policy", json!({})),
+        ] {
+            let (st, d) = one(&f, kind, p).unwrap();
+            assert_eq!(st, Status::Unknown);
+            assert_eq!(d["reason"], "no_update_status", "{kind}");
+            assert!(summarize(&d).contains("0.5.0"), "{}", summarize(&d));
+        }
+    }
+
+    #[test]
+    fn patch_age() {
+        let mut f = facts(vec![]);
+        let p = json!({"max_days": 30});
+        assert_eq!(one(&f, "patch_age", p.clone()).unwrap().0, Status::Unknown);
+        f.update_status = Some(upd("applied"));
+        let (st, d) = one(&f, "patch_age", p.clone()).unwrap();
+        assert_eq!(
+            (st, d["reason"].as_str()),
+            (Status::Unknown, Some("no_patch_date"))
+        );
+        let today = f.now.date_naive();
+        f.update_status.as_mut().unwrap().last_patch_date =
+            Some(today - chrono::Duration::days(30));
+        assert_eq!(one(&f, "patch_age", p.clone()), None, "剛好 30 天不算");
+        f.update_status.as_mut().unwrap().last_patch_date =
+            Some(today - chrono::Duration::days(31));
+        let (st, d) = one(&f, "patch_age", p).unwrap();
+        assert_eq!((st, d["days"].as_i64()), (Status::Violating, Some(31)));
+        assert!(summarize(&d).contains("31 天前"), "{}", summarize(&d));
+    }
+
+    #[test]
+    fn reboot_pending() {
+        let mut f = facts(vec![]);
+        let p = json!({"max_days": 7});
+        assert_eq!(
+            one(&f, "reboot_pending", p.clone()).unwrap().0,
+            Status::Unknown
+        );
+        f.update_status = Some(upd("applied"));
+        assert_eq!(one(&f, "reboot_pending", p.clone()), None);
+        let u = f.update_status.as_mut().unwrap();
+        u.reboot_pending = true;
+        assert_eq!(
+            one(&f, "reboot_pending", p.clone()),
+            None,
+            "沒有起始時間不判違規"
+        );
+        f.update_status.as_mut().unwrap().reboot_pending_since =
+            Some(f.now - chrono::Duration::days(6));
+        assert_eq!(one(&f, "reboot_pending", p.clone()), None);
+        f.update_status.as_mut().unwrap().reboot_pending_since =
+            Some(f.now - chrono::Duration::days(8));
+        let (st, d) = one(&f, "reboot_pending", p).unwrap();
+        assert_eq!((st, d["days"].as_i64()), (Status::Violating, Some(8)));
+        assert!(
+            summarize(&d).contains("待重開機已 8 天"),
+            "{}",
+            summarize(&d)
+        );
+    }
+
+    #[test]
+    fn update_policy_state() {
+        let mut f = facts(vec![]);
+        assert_eq!(
+            one(&f, "update_policy", json!({})).unwrap().0,
+            Status::Unknown
+        );
+        for ok in ["applied", "unmanaged"] {
+            f.update_status = Some(upd(ok));
+            assert_eq!(one(&f, "update_policy", json!({})), None, "{ok}");
+        }
+        let mut u = upd("conflict");
+        u.detail = "DeferQualityUpdates".into();
+        f.update_status = Some(u);
+        let (st, d) = one(&f, "update_policy", json!({})).unwrap();
+        assert_eq!(st, Status::Violating);
+        assert!(summarize(&d).contains("原則被改動：DeferQualityUpdates"));
+        f.update_status = Some(upd("error"));
+        let (st, d) = one(&f, "update_policy", json!({})).unwrap();
+        assert_eq!(st, Status::Violating);
+        assert!(summarize(&d).contains("原則套用失敗"));
     }
 
     #[test]

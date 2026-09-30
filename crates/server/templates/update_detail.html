@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>更新原則：{{ name }}</h1>
+<p><a href="/updates">← 更新原則</a></p>
+<table>
+  <tr><th>群組</th><td>{{ groups }}</td></tr>
+  <tr><th>設定</th><td>{% for l in settings %}{{ l }}<br>{% endfor %}</td></tr>
+  <tr><th>版本</th><td>{{ revision }}</td></tr>
+</table>
+{% if nav.platform %}
+<div class="actions">
+  <form method="get" action="/updates/{{ id }}/edit"><button>編輯</button></form>
+  {% if quality_paused %}<form method="post" action="/updates/{{ id }}/resume-quality"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button>恢復品質更新</button></form>
+  {% else %}<form method="post" action="/updates/{{ id }}/pause-quality"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button>暫停品質更新</button></form>{% endif %}
+  {% if feature_paused %}<form method="post" action="/updates/{{ id }}/resume-feature"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button>恢復功能更新</button></form>
+  {% else %}<form method="post" action="/updates/{{ id }}/pause-feature"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button>暫停功能更新</button></form>{% endif %}
+  <form method="post" action="/updates/{{ id }}/delete" onsubmit="return confirm('刪除後，這些群組的電腦會移除 Agent 寫入的 Windows Update 設定。確定刪除？')"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="danger">刪除原則</button></form>
+</div>
+{% endif %}
+<p>{% for f in filters %}{% if f.active %}<strong>{{ f.label }}</strong>{% else %}<a href="{{ f.url }}">{{ f.label }}</a>{% endif %}　{% endfor %}</p>
+<table>
+  <tr><th>主機名稱</th><th>狀態</th><th>說明</th><th>回報時間</th></tr>
+  {% for d in devices %}
+  <tr><td><a href="/devices/{{ d.id }}">{{ d.hostname }}</a> <span class="muted">{{ d.id }}</span></td><td>{{ d.state }}</td><td>{{ d.detail }}</td><td>{{ d.updated }}</td></tr>
+  {% endfor %}
+</table>
+<p>{% if let Some(u) = prev %}<a href="{{ u }}">← 上一頁</a>{% endif %}　{% if let Some(u) = next %}<a href="{{ u }}">下一頁 →</a>{% endif %}</p>
+{% if !nav.platform %}<p class="muted">只顯示你管理範圍內的裝置。</p>{% endif %}
+{% endblock %}

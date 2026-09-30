@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>更新原則</h1>
+<p>{% if nav.platform %}<a href="/updates/new">建立原則</a>　{% endif %}<a href="/updates/overview">更新概況</a></p>
+<table>
+  <tr><th>名稱</th><th>群組</th><th>暫停</th><th>對象</th><th>已套用</th><th>衝突</th><th>錯誤</th><th>尚未回報</th></tr>
+  {% for r in rows %}
+  <tr>
+    <td><a href="/updates/{{ r.id }}">{{ r.name }}</a></td>
+    <td>{{ r.groups }}</td>
+    <td>{% for p in r.pauses %}{{ p }}<br>{% endfor %}</td>
+    <td>{{ r.counts.targeted }}</td>
+    <td>{{ r.counts.applied }}</td>
+    <td>{% if r.counts.conflict > 0 %}<span class="error">{{ r.counts.conflict }}</span>{% else %}0{% endif %}</td>
+    <td>{% if r.counts.error > 0 %}<span class="error">{{ r.counts.error }}</span>{% else %}0{% endif %}</td>
+    <td>{{ r.counts.pending() }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% if rows.is_empty() %}<p class="muted">還沒有更新原則。沒有原則的群組，Agent 不會改動 Windows Update 設定。</p>{% endif %}
+{% if !nav.platform %}<p class="muted">台數只計算你管理範圍內的裝置。</p>{% endif %}
+{% endblock %}

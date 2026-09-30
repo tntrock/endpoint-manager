@@ -6,7 +6,9 @@ use serde_json::Value;
 use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
-use super::evaluate::{DeviceFacts, Outcome, ServiceFact, SoftwareFact, evaluate, registry_key};
+use super::evaluate::{
+    DeviceFacts, Outcome, ServiceFact, SoftwareFact, UpdateFact, evaluate, registry_key,
+};
 use super::rules::{Params, Rule, RuleSet, Severity};
 
 type RuleRow = (i64, String, String, String, String, Vec<i64>, Vec<i64>);
@@ -63,10 +65,19 @@ struct ConfigFacts {
     security: HashMap<Uuid, protocol::SecurityInfo>,
     registry: HashMap<Uuid, HashMap<(String, String), protocol::RegistryValue>>,
     services: HashMap<Uuid, Vec<ServiceFact>>,
+    updates: HashMap<Uuid, UpdateFact>,
 }
 
 type SecurityDbRow = (Uuid, String, String, String, String, String);
 type RegistryDbRow = (Uuid, String, String, String, String, String);
+type UpdateDbRow = (
+    Uuid,
+    String,
+    String,
+    bool,
+    Option<chrono::DateTime<chrono::Utc>>,
+    Option<chrono::NaiveDate>,
+);
 
 async fn load_config(conn: &mut PgConnection, ids: &[Uuid]) -> Result<ConfigFacts, sqlx::Error> {
     let mut out = ConfigFacts::default();
@@ -113,6 +124,24 @@ async fn load_config(conn: &mut PgConnection, ids: &[Uuid]) -> Result<ConfigFact
             start_mode,
             state,
         });
+    }
+    let rows: Vec<UpdateDbRow> = sqlx::query_as(
+        "SELECT device_id, state, detail, reboot_pending, reboot_pending_since, last_patch_date          FROM update_policy_status WHERE device_id = ANY($1)",
+    )
+    .bind(ids)
+    .fetch_all(&mut *conn)
+    .await?;
+    for (id, state, detail, reboot_pending, reboot_pending_since, last_patch_date) in rows {
+        out.updates.insert(
+            id,
+            UpdateFact {
+                state,
+                detail,
+                reboot_pending,
+                reboot_pending_since,
+                last_patch_date,
+            },
+        );
     }
     Ok(out)
 }
@@ -185,6 +214,7 @@ pub async fn load_facts(
         registry: has("registry").then(|| cfg.registry.remove(&id).unwrap_or_default()),
         services: has("services").then(|| cfg.services.remove(&id).unwrap_or_default()),
         agent_version,
+        update_status: cfg.updates.remove(&id),
         now: chrono::Utc::now(),
     }))
 }
@@ -447,6 +477,7 @@ pub async fn load_facts_bulk(
                 registry: has(id, "registry").then(|| cfg.registry.remove(&id).unwrap_or_default()),
                 services: has(id, "services").then(|| cfg.services.remove(&id).unwrap_or_default()),
                 agent_version,
+                update_status: cfg.updates.remove(&id),
                 now: chrono::Utc::now(),
             };
             (id, facts)

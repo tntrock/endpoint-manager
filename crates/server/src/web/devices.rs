@@ -500,6 +500,7 @@ pub async fn detail(
             ("compliance", "合規"),
             ("security", "安全設定"),
             ("deployments", "派送"),
+            ("updates", "更新"),
             ("software", "軟體"),
             ("patches", "修補（KB）"),
             ("services", "服務"),
@@ -520,6 +521,9 @@ pub async fn tab(
     }
     if tab == "deployments" {
         return super::deployments::device_tab(&st, &s, id).await;
+    }
+    if tab == "updates" {
+        return super::updates::device_tab(&st, &s, id).await;
     }
     if tab == "security" {
         return super::compliance::security_tab(&st, &s, id).await;

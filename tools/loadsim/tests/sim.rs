@@ -132,4 +132,19 @@ async fn enroll_heartbeat_upload(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(reported, 5 * 2);
+
+    // 更新原則：5 個群組各一個原則，所有裝置都受管；每台報到後回報一次狀態
+    sqlx::raw_sql(include_str!("../updates_setup.sql"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(5500)).await;
+    let (up, unmanaged) = loadsim::updates(&t, &devices, 5).await;
+    assert_eq!((up.ok, up.errors, unmanaged), (5, 0, 0));
+    let applied: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM update_policy_status WHERE state = 'applied'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(applied, 5);
 }

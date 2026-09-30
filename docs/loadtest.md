@@ -108,6 +108,18 @@
 
 下載期間的報到延遲變差：332 秒內傳輸約 300 GB（TLS），loadsim 與伺服器在同一台電腦搶 CPU。實際部署時伺服器與端點不在同一台，而且分點快取（之後的子專案）會分擔下載；需要時可以調低 `EM_DOWNLOAD_CONCURRENCY`，犧牲派送速度換取報到延遲。
 
+## Windows Update 控制（第五期，2026-09-30）
+
+30,000 台（每台 150 筆軟體），5 個群組各一個更新原則（品質更新延後 7 天、期限 3／寬限 2、使用中時段 8–18），所有裝置平均分到這 5 個群組；合規規則為 `rules.sql` 的 50 條。`loadsim updates`（並行 60）讓每台報到取得原則，再以 `PUT /v1/update-status` 回報一次狀態。
+
+| 項目 | 標準 | 結果 | |
+|---|---|---|---|
+| 有 5 個原則時，心跳 500 次／秒，持續 120 秒 | p99 < 100ms | p50 5.0ms、**p99 17.8ms**、0 錯誤 | ✅ |
+| 30,000 台報到並上傳狀態 | 沒有 5xx，全部寫入 | **46.6 秒**（644 台／秒），0 錯誤；`update_policy_status` = 30,000 筆；伺服器日誌沒有 ERROR | ✅ |
+| 加入 3 條更新規則（`patch_age`、`reboot_pending`、`update_policy`）前後的全量重算 | 增加不超過 10% | 50 條 **58.0 秒** → 53 條 **57.9 秒**（沒有增加） | ✅ |
+
+每次上傳狀態都會重新評估這台（和盤點上傳相同）；`loadsim updates` 量到的每台耗時（報到＋上傳狀態，含評估）p99 為 114ms，僅供參考。三種新規則只讀 `update_policy_status` 一列，重算成本可忽略。
+
 ## 測試環境與限制
 
 - Intel Core i5-12400（6 核 12 緒）、24GB、Windows 11 Home。
@@ -165,4 +177,15 @@ cp pkg.bin packages/<sha256>                                  # 伺服器的 EM_
 docker exec -i em-postgres psql -U postgres -d em_load -v sha=<sha256> -v size=<大小> < ../../tools/loadsim/deploy_setup.sql
 ./loadsim heartbeat --server https://127.0.0.1:18443 --root pki/root.pem --devices devices.json --rate 500 --secs 60 --max-p99-ms 100
 ./loadsim deploy    --server https://127.0.0.1:18443 --root pki/root.pem --devices devices.json --concurrency 60
+```
+
+Windows Update 部分：在完成 `upload` 與 `rules.sql` 的重算後執行下面的指令：
+
+```bash
+docker exec -i em-postgres psql -U postgres -d em_load -v ON_ERROR_STOP=1 < ../../tools/loadsim/updates_setup.sql
+./loadsim heartbeat --server https://127.0.0.1:18443 --root pki/root.pem --devices devices.json --rate 500 --secs 120 --max-p99-ms 100
+./loadsim updates   --server https://127.0.0.1:18443 --root pki/root.pem --devices devices.json --concurrency 60
+# 重算比較：先只 bump generation 量基準，再加入 3 條更新規則量一次
+docker exec em-postgres psql -U postgres -d em_load -c "UPDATE compliance_state SET generation = generation + 1"
+grep -a "compliance recompute finished" server.log
 ```

@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>更新概況</h1>
+<p><a href="/updates">← 更新原則</a></p>
+<h2>各組建的 UBR 分布</h2>
+<p class="muted">同一個組建裡 UBR 比多數裝置低的，通常是落後的電腦；可以用合規規則「最低組建號」（組建＋最低 UBR）追蹤。</p>
+<table>
+  <tr><th>組建</th><th>UBR</th><th>台數</th></tr>
+  {% for b in builds %}<tr><td>{{ b.0 }}</td><td>{{ b.1 }}</td><td>{{ b.2 }}</td></tr>{% endfor %}
+</table>
+<h2>待重開機最久的電腦</h2>
+{% if reboots.is_empty() %}<p class="muted">沒有待重開機的電腦（或 Agent 尚未回報）。</p>{% else %}
+<table>
+  <tr><th>主機名稱</th><th>待重開機起始</th><th>天數</th></tr>
+  {% for r in reboots %}<tr><td><a href="/devices/{{ r.id }}">{{ r.hostname }}</a> <span class="muted">{{ r.id }}</span></td><td>{{ r.since }}</td><td>{{ r.days }} 天</td></tr>{% endfor %}
+</table>
+{% endif %}
+{% if !nav.platform %}<p class="muted">只計算你管理範圍內的裝置。</p>{% endif %}
+{% endblock %}
