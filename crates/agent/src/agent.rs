@@ -18,6 +18,7 @@ use crate::backoff::{Backoff, jitter, with_jitter};
 use crate::client::{ClientError, ServerClient};
 use crate::collector::{Collector, Heartbeat};
 use crate::config::AgentConfig;
+use crate::deploy::worker::Work;
 use crate::sanitize::{clean, sanitize};
 use crate::schedule::{DEFAULT_INTERVALS, Schedule};
 use crate::state::AgentState;
@@ -83,6 +84,8 @@ pub struct Agent<C: Collector> {
     registry_hash: Option<String>,
     /// 上一次「伺服器不認識新區段」的訊息：只記錄一次
     unsupported_error: Option<String>,
+    /// 派送的背景工作：None 表示伺服器不支援派送
+    deploy_tx: Option<watch::Sender<Option<Work>>>,
 }
 
 /// 錯誤訊息和上次不同才需要記錄（避免每分鐘重複寫入事件檢視器）。
@@ -140,7 +143,14 @@ impl<C: Collector> Agent<C> {
             registry_queries: vec![],
             registry_hash: None,
             unsupported_error: None,
+            deploy_tx: None,
         })
+    }
+
+    /// 把每次報到得到的派送指派交給背景 worker
+    pub fn with_deploy(mut self, tx: watch::Sender<Option<Work>>) -> Self {
+        self.deploy_tx = Some(tx);
+        self
     }
 
     /// 測試用：縮短 collector 逾時。
@@ -373,6 +383,22 @@ impl<C: Collector> Agent<C> {
         self.backoff.reset();
         self.backing_off = false;
         self.intervals = resp.collection_intervals.clone();
+        if let Some(tx) = &self.deploy_tx {
+            // 伺服器沒有 deployments_hash（舊版）：停止派送。只在指派變動時喚醒 worker，
+            // 連線資訊（憑證可能已更新）則每次都更新
+            let work = resp.deployments_hash.as_ref().map(|_| Work {
+                assignments: resp.deployments.clone(),
+                server_url: self.config.server_url.clone(),
+                root_pem: self.root_pem.clone(),
+                identity_pem: self.state.identity_pem(),
+            });
+            tx.send_if_modified(|cur| {
+                let changed =
+                    cur.as_ref().map(|w| &w.assignments) != work.as_ref().map(|w| &w.assignments);
+                *cur = work;
+                changed
+            });
+        }
         // 每次報到都依回應決定：換到舊版伺服器時回應沒有這個欄位，就停止回報新區段
         if resp.registry_queries_hash.is_none() && self.server_supports_config {
             self.drop_config_sections();

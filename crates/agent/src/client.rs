@@ -1,17 +1,61 @@
 //! 與伺服器通訊：只信任 root.pem、HTTP/1.1、上傳一律 gzip。
 
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use flate2::Compression;
 use flate2::write::GzEncoder;
+use protocol::deploy::{DeployResult, PackageSpec};
 use protocol::{
     CheckinRequest, CheckinResponse, EnrollRequest, EnrollResponse, InventoryUpload, RenewRequest,
     RenewResponse,
 };
 use reqwest::{StatusCode, header};
+use sha2::{Digest, Sha256};
+use tokio::io::AsyncWriteExt;
 
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+/// 下載套件時兩次收到資料之間最長可以閒置多久（大檔案在慢速線路上總時間可以很長）
+pub const DOWNLOAD_IDLE: Duration = Duration::from_secs(2 * 60);
+/// 下載的總時間上限（只為了不讓連線永遠掛著）
+pub const DOWNLOAD_MAX: Duration = Duration::from_secs(24 * 60 * 60);
+
+#[derive(Debug, thiserror::Error)]
+pub enum DownloadError {
+    #[error("server busy or unreachable")]
+    Retry(Option<Duration>),
+    #[error("unauthorized")]
+    Unauthorized,
+    #[error("伺服器上找不到套件檔案（或這台已不在派送範圍內）")]
+    NotFound,
+    #[error("下載的檔案大小或 SHA-256 與伺服器提供的不符")]
+    Mismatch,
+    #[error("寫入套件檔案失敗：{0}")]
+    Io(#[from] std::io::Error),
+}
+
+/// 下載中的暫存檔：中途失敗或不符時刪除
+struct Partial {
+    path: PathBuf,
+    keep: bool,
+}
+
+impl Drop for Partial {
+    fn drop(&mut self) {
+        if !self.keep {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+fn retry_after_of(resp: &reqwest::Response) -> Option<Duration> {
+    resp.headers()
+        .get(header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .map(retry_after)
+}
 
 /// 伺服器給的 Retry-After 夾在這個範圍：0 會讓 Agent 空轉，極大值會讓它失聯。
 pub const RETRY_AFTER_MIN: Duration = Duration::from_secs(10);
@@ -72,12 +116,7 @@ impl ServerClient {
         if status.is_success() {
             return Ok(resp);
         }
-        let retry_after = resp
-            .headers()
-            .get(header::RETRY_AFTER)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.trim().parse::<u64>().ok())
-            .map(retry_after);
+        let retry_after = retry_after_of(&resp);
         Err(match status {
             StatusCode::UNAUTHORIZED => ClientError::Unauthorized,
             StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE => {
@@ -116,6 +155,69 @@ impl ServerClient {
             .await?
             .json()
             .await?)
+    }
+
+    /// 下載套件到 dest：邊寫邊算雜湊，大小或 SHA-256 不符時刪檔並回 Mismatch。
+    pub async fn download(&self, pkg: &PackageSpec, dest: &Path) -> Result<(), DownloadError> {
+        let url = self.url(&format!("/v1/packages/{}/content", pkg.id));
+        let send = self.http.get(url).timeout(DOWNLOAD_MAX).send();
+        let mut resp = match tokio::time::timeout(DOWNLOAD_IDLE, send).await {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) => {
+                tracing::warn!(error = ?e, "package download failed");
+                return Err(DownloadError::Retry(None));
+            }
+            Err(_) => {
+                tracing::warn!("package download: no response");
+                return Err(DownloadError::Retry(None));
+            }
+        };
+        match resp.status() {
+            StatusCode::OK => {}
+            StatusCode::NOT_FOUND => return Err(DownloadError::NotFound),
+            StatusCode::UNAUTHORIZED => return Err(DownloadError::Unauthorized),
+            _ => return Err(DownloadError::Retry(retry_after_of(&resp))),
+        }
+        let part = Partial {
+            path: dest.with_extension("part"),
+            keep: false,
+        };
+        let mut f = tokio::fs::File::create(&part.path).await?;
+        let mut hasher = Sha256::new();
+        let mut size: u64 = 0;
+        loop {
+            let chunk = match tokio::time::timeout(DOWNLOAD_IDLE, resp.chunk()).await {
+                Ok(Ok(Some(c))) => c,
+                Ok(Ok(None)) => break,
+                Ok(Err(e)) => {
+                    tracing::warn!(error = ?e, "package download interrupted");
+                    return Err(DownloadError::Retry(None));
+                }
+                Err(_) => {
+                    tracing::warn!("package download stalled");
+                    return Err(DownloadError::Retry(None));
+                }
+            };
+            size += chunk.len() as u64;
+            if size > pkg.size {
+                return Err(DownloadError::Mismatch);
+            }
+            hasher.update(&chunk);
+            f.write_all(&chunk).await?;
+        }
+        f.flush().await?;
+        drop(f);
+        if size != pkg.size || !hex::encode(hasher.finalize()).eq_ignore_ascii_case(&pkg.sha256) {
+            return Err(DownloadError::Mismatch);
+        }
+        tokio::fs::rename(&part.path, dest).await?;
+        Ok(())
+    }
+
+    pub async fn report(&self, deployment_id: i64, r: &DeployResult) -> Result<(), ClientError> {
+        let url = self.url(&format!("/v1/deployments/{deployment_id}/result"));
+        self.send(self.http.post(url).json(r)).await?;
+        Ok(())
     }
 
     pub async fn upload(&self, up: &InventoryUpload) -> Result<(), ClientError> {

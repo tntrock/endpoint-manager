@@ -34,7 +34,8 @@ async fn env(pool: PgPool, token_uses: i32) -> Env {
     partitions::maintain_partitions(&pool, chrono::Utc::now())
         .await
         .unwrap();
-    let state = AppState::new(pool.clone(), ca::Ca::load(pki.path()).unwrap());
+    let state = AppState::new(pool.clone(), ca::Ca::load(pki.path()).unwrap())
+        .with_packages(pki.path().join("packages"), 4);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(tls::serve_mtls(
@@ -583,4 +584,420 @@ async fn config_sections_start_after_server_confirms_support(pool: PgPool) {
         s.contains(&"security".to_string()) && s.contains(&"registry".to_string()),
         "{s:?}"
     );
+}
+
+mod deploy {
+    use super::*;
+    use endpoint_agent::client::DownloadError;
+    use endpoint_server::deploy::{admin, store};
+    use protocol::deploy::{DeployResult, DeployStatus, PackageSpec};
+
+    pub async fn enrolled(e: &Env, fake: Fake) -> (Agent<Fake>, ServerClient) {
+        let mut a = Agent::new(e.dir.path(), fake).unwrap();
+        a.run_cycle().await;
+        assert!(a.state().is_enrolled());
+        let c = ServerClient::new(&e.url(), &e.root_pem(), a.state().identity_pem()).unwrap();
+        (a, c)
+    }
+
+    /// 建立 EXE 套件與派送（全部裝置），回傳派送 id
+    pub async fn deployment(e: &Env, data: &[u8], args: &str) -> i64 {
+        let chunk: Result<bytes::Bytes, std::io::Error> = Ok(bytes::Bytes::copy_from_slice(data));
+        let st = store::save(
+            &e.state.package_dir,
+            futures_util::stream::iter(vec![chunk]),
+        )
+        .await
+        .unwrap();
+        let pkg = admin::create_package(
+            &e.pool,
+            &e.state.package_dir,
+            &st,
+            "setup.exe",
+            None,
+            &admin::PackageInput {
+                name: "Fake App".into(),
+                version: "1.0".into(),
+                kind: "exe".into(),
+                install_args: args.into(),
+                uninstall_args: String::new(),
+                success_codes: vec![],
+                detect_name: "Fake App*".into(),
+                detect_publisher: String::new(),
+                detect_min_version: String::new(),
+            },
+            "admin",
+        )
+        .await
+        .unwrap();
+        let d = admin::create_deployment(
+            &e.pool,
+            &admin::DeploymentInput {
+                name: "Fake".into(),
+                package_id: pkg,
+                action: "install".into(),
+                include: vec![],
+                exclude: vec![],
+                pilot_group_id: None,
+                max_failure_pct: 50,
+                min_samples: 100,
+            },
+            "admin",
+        )
+        .await
+        .unwrap();
+        e.state.deploy.invalidate();
+        d
+    }
+
+    async fn spec(c: &ServerClient) -> PackageSpec {
+        let r = c
+            .checkin(&CheckinRequest {
+                schema_version: SCHEMA_VERSION,
+                agent_version: "t".into(),
+                boot_time: chrono::Utc::now(),
+                logged_on_user: None,
+                ip_addresses: vec![],
+                section_hashes: Default::default(),
+                section_errors: Default::default(),
+            })
+            .await
+            .unwrap();
+        r.deployments[0].package.clone()
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn download_verifies_hash_and_report_is_stored(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let (a, c) = enrolled(&e, Fake::new()).await;
+        let data = b"MZ fake installer ".repeat(10_000);
+        let d = deployment(&e, &data, "/S").await;
+        let spec = spec(&c).await;
+        let out = tempfile::tempdir().unwrap();
+        let dest = out.path().join("pkg.exe");
+        c.download(&spec, &dest).await.unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), data);
+
+        let wrong = PackageSpec {
+            sha256: "00".repeat(32),
+            ..spec.clone()
+        };
+        let bad = out.path().join("bad.exe");
+        assert!(matches!(
+            c.download(&wrong, &bad).await,
+            Err(DownloadError::Mismatch)
+        ));
+        let short = PackageSpec {
+            size: 10,
+            ..spec.clone()
+        };
+        assert!(matches!(
+            c.download(&short, &bad).await,
+            Err(DownloadError::Mismatch)
+        ));
+        assert_eq!(
+            std::fs::read_dir(out.path()).unwrap().count(),
+            1,
+            "不符時不留檔"
+        );
+        let gone = PackageSpec {
+            id: 9999,
+            ..spec.clone()
+        };
+        assert!(matches!(
+            c.download(&gone, &bad).await,
+            Err(DownloadError::NotFound)
+        ));
+
+        c.report(
+            d,
+            &DeployResult {
+                revision: 1,
+                status: DeployStatus::Succeeded,
+                exit_code: Some(0),
+                message: String::new(),
+                attempts: 1,
+            },
+        )
+        .await
+        .unwrap();
+        let status: String = sqlx::query_scalar(
+            "SELECT status FROM deployment_status WHERE deployment_id = $1 AND device_id = $2",
+        )
+        .bind(d)
+        .bind(a.state().device_id.unwrap())
+        .fetch_one(&e.pool)
+        .await
+        .unwrap();
+        assert_eq!(status, "succeeded");
+    }
+
+    use endpoint_agent::deploy::logic::Cmd;
+    use endpoint_agent::deploy::worker::{RunResult, Runner, Work, Worker};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// 假的執行器：記錄呼叫次數，回傳固定結束碼；install=true 時把軟體加進假清單（模擬安裝成功）
+    #[derive(Clone)]
+    struct FakeRunner {
+        code: i32,
+        install: bool,
+        software: Arc<Mutex<Vec<SoftwareItem>>>,
+        runs: Arc<AtomicUsize>,
+    }
+
+    impl Runner for FakeRunner {
+        async fn run(&self, cmd: &Cmd, _timeout: Duration) -> std::io::Result<RunResult> {
+            assert!(
+                cmd.program.exists(),
+                "執行前檔案已下載並驗證：{:?}",
+                cmd.program
+            );
+            self.runs.fetch_add(1, Ordering::SeqCst);
+            if self.install {
+                self.software.lock().unwrap().push(app("Fake App"));
+            }
+            Ok(RunResult::Exited(self.code))
+        }
+    }
+
+    fn work(a: &Agent<Fake>, e: &Env, assignments: Vec<protocol::deploy::Assignment>) -> Work {
+        Work {
+            assignments,
+            server_url: e.url(),
+            root_pem: e.root_pem(),
+            identity_pem: a.state().identity_pem(),
+        }
+    }
+
+    async fn assignments(c: &ServerClient) -> Vec<protocol::deploy::Assignment> {
+        c.checkin(&CheckinRequest {
+            schema_version: SCHEMA_VERSION,
+            agent_version: "t".into(),
+            boot_time: chrono::Utc::now(),
+            logged_on_user: None,
+            ip_addresses: vec![],
+            section_hashes: Default::default(),
+            section_errors: Default::default(),
+        })
+        .await
+        .unwrap()
+        .deployments
+    }
+
+    async fn status(e: &Env, d: i64) -> Option<(String, String, i32)> {
+        sqlx::query_as(
+            "SELECT status, message, attempts FROM deployment_status WHERE deployment_id = $1",
+        )
+        .bind(d)
+        .fetch_optional(&e.pool)
+        .await
+        .unwrap()
+    }
+
+    async fn setup(
+        e: &Env,
+        code: i32,
+        install: bool,
+    ) -> (Agent<Fake>, Worker<Fake, FakeRunner>, FakeRunner, Work, i64) {
+        let fake = Fake::new();
+        let (a, c) = enrolled(e, fake.clone()).await;
+        let d = deployment(e, b"MZ installer", "/S").await;
+        let runner = FakeRunner {
+            code,
+            install,
+            software: fake.software.clone(),
+            runs: Arc::new(AtomicUsize::new(0)),
+        };
+        let w = work(&a, e, assignments(&c).await);
+        let worker = Worker::new(e.dir.path(), Arc::new(fake), runner.clone());
+        (a, worker, runner, w, d)
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn worker_installs_and_reports(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let (_a, mut worker, runner, w, d) = setup(&e, 0, true).await;
+        worker.pass(&w).await;
+        assert_eq!(status(&e, d).await.unwrap().0, "succeeded");
+        assert_eq!(runner.runs.load(Ordering::SeqCst), 1);
+        let left: Vec<_> = std::fs::read_dir(e.dir.path().join("packages"))
+            .unwrap()
+            .filter_map(|x| x.ok())
+            .filter(|x| x.path().extension().is_some_and(|ext| ext == "exe"))
+            .collect();
+        assert!(left.is_empty(), "安裝後刪除安裝檔");
+        // 已安裝且已回報：不再執行、不再回報
+        worker.pass(&w).await;
+        assert_eq!(runner.runs.load(Ordering::SeqCst), 1);
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn success_without_detection_is_failure(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let (_a, mut worker, _runner, w, d) = setup(&e, 0, false).await;
+        worker.pass(&w).await;
+        let (st, msg, attempts) = status(&e, d).await.unwrap();
+        assert_eq!((st.as_str(), attempts), ("failed", 1));
+        assert!(msg.contains("偵測不到"), "{msg}");
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn installer_busy_is_not_an_attempt(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let (_a, mut worker, runner, w, d) = setup(&e, 1618, false).await;
+        worker.pass(&w).await;
+        assert!(status(&e, d).await.is_none(), "1618 不回報");
+        worker.pass(&w).await;
+        assert_eq!(runner.runs.load(Ordering::SeqCst), 2, "下次再試");
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn failures_retry_daily_at_most_three_times(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let (_a, mut worker, runner, w, d) = setup(&e, 1603, false).await;
+        let t0 = chrono::Utc::now();
+        worker.pass_at(&w, t0).await;
+        worker.pass_at(&w, t0 + chrono::Duration::hours(1)).await;
+        assert_eq!(runner.runs.load(Ordering::SeqCst), 1, "24 小時內不重試");
+        worker.pass_at(&w, t0 + chrono::Duration::hours(25)).await;
+        worker.pass_at(&w, t0 + chrono::Duration::hours(50)).await;
+        worker.pass_at(&w, t0 + chrono::Duration::hours(75)).await;
+        assert_eq!(runner.runs.load(Ordering::SeqCst), 3, "最多 3 次");
+        let (st, msg, attempts) = status(&e, d).await.unwrap();
+        assert_eq!((st.as_str(), attempts), ("failed", 3));
+        assert!(msg.contains("1603"), "{msg}");
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn already_installed_reports_compliant_once(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let (_a, mut worker, runner, w, d) = setup(&e, 0, true).await;
+        runner.software.lock().unwrap().push(app("Fake App"));
+        worker.pass(&w).await;
+        assert_eq!(status(&e, d).await.unwrap().0, "compliant");
+        assert_eq!(runner.runs.load(Ordering::SeqCst), 0);
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn agent_hands_assignments_to_worker(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let (tx, rx) = tokio::sync::watch::channel(None);
+        let mut a = Agent::new(e.dir.path(), Fake::new())
+            .unwrap()
+            .with_deploy(tx);
+        a.run_cycle().await;
+        assert!(
+            rx.borrow()
+                .as_ref()
+                .is_some_and(|w| w.assignments.is_empty())
+        );
+        deployment(&e, b"x", "").await;
+        a.run_cycle().await;
+        assert_eq!(rx.borrow().as_ref().unwrap().assignments.len(), 1);
+    }
+
+    /// 永遠不結束的執行器：模擬安裝中 Agent 被停止或電腦重新開機
+    struct Hang;
+
+    impl Runner for Hang {
+        async fn run(&self, _cmd: &Cmd, _timeout: Duration) -> std::io::Result<RunResult> {
+            std::future::pending().await
+        }
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn interrupted_install_counts_as_attempt(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let (_a, _worker, runner, w, d) = setup(&e, 0, true).await;
+        let fake = Fake {
+            software: runner.software.clone(),
+            ..Fake::new()
+        };
+        let mut hang = Worker::new(e.dir.path(), Arc::new(fake.clone()), Hang);
+        let r = tokio::time::timeout(Duration::from_millis(500), hang.pass(&w)).await;
+        assert!(r.is_err(), "安裝卡住時 pass 被中斷");
+        drop(hang);
+        // 重新啟動：上次中斷算一次失敗，24 小時內不再執行
+        let mut worker = Worker::new(e.dir.path(), Arc::new(fake), runner.clone());
+        worker.pass(&w).await;
+        assert_eq!(
+            runner.runs.load(Ordering::SeqCst),
+            0,
+            "不立刻重試（避免重開機迴圈）"
+        );
+        let (st, msg, attempts) = status(&e, d).await.unwrap();
+        assert_eq!((st.as_str(), attempts), ("failed", 1));
+        assert!(msg.contains("中斷"), "{msg}");
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn paused_assignment_keeps_attempt_history(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let (_a, mut worker, runner, w, _d) = setup(&e, 1603, false).await;
+        let t0 = chrono::Utc::now();
+        worker.pass_at(&w, t0).await;
+        // 暫停期間指派消失，繼續後同一 revision 仍在 24 小時等待中
+        let empty = Work {
+            assignments: vec![],
+            ..w.clone()
+        };
+        worker
+            .pass_at(&empty, t0 + chrono::Duration::hours(1))
+            .await;
+        worker.pass_at(&w, t0 + chrono::Duration::hours(2)).await;
+        assert_eq!(
+            runner.runs.load(Ordering::SeqCst),
+            1,
+            "暫停不能重設嘗試次數"
+        );
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn busy_installer_keeps_verified_file(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let (_a, mut worker, runner, w, _d) = setup(&e, 1618, false).await;
+        worker.pass(&w).await;
+        let exes = || {
+            std::fs::read_dir(e.dir.path().join("packages"))
+                .unwrap()
+                .filter_map(|x| x.ok())
+                .filter(|x| x.path().extension().is_some_and(|ext| ext == "exe"))
+                .count()
+        };
+        assert_eq!(exes(), 1, "1618 時保留已驗證的安裝檔");
+        // 伺服器下載名額用完：仍能用本機已驗證的檔案執行
+        let _held = e
+            .state
+            .downloads
+            .clone()
+            .acquire_many_owned(4)
+            .await
+            .unwrap();
+        worker.pass(&w).await;
+        assert_eq!(runner.runs.load(Ordering::SeqCst), 2);
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn download_busy_waits_for_retry_after(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let (_a, mut worker, runner, w, d) = setup(&e, 0, true).await;
+        let _held = e
+            .state
+            .downloads
+            .clone()
+            .acquire_many_owned(4)
+            .await
+            .unwrap();
+        let now = chrono::Utc::now();
+        let next = worker
+            .pass_at(&w, now)
+            .await
+            .expect("依 Retry-After 排下次");
+        assert!(
+            next > now && next <= now + chrono::Duration::seconds(60 + 120),
+            "{next} vs {now}"
+        );
+        assert_eq!(runner.runs.load(Ordering::SeqCst), 0);
+        assert!(status(&e, d).await.is_none(), "忙碌不算嘗試、不回報");
+    }
 }

@@ -5,6 +5,7 @@ pub mod backoff;
 pub mod client;
 pub mod collector;
 pub mod config;
+pub mod deploy;
 pub mod regvalue;
 pub mod sanitize;
 pub mod schedule;
