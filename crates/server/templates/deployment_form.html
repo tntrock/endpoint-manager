@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>建立派送</h1>
+<p><a href="/deployments">← 派送</a></p>
+{% if let Some(e) = error %}<p class="error">{{ e }}</p>{% endif %}
+{% if packages.is_empty() %}<p class="error">還沒有套件，請先<a href="/packages/upload">上傳套件</a>。</p>{% endif %}
+<form method="post" action="/deployments">
+  <input type="hidden" name="csrf" value="{{ nav.csrf }}">
+  <p><label>名稱 <input name="name" value="{{ name }}" required maxlength="100" size="40"></label></p>
+  <p><label>套件 <select name="package_id">{% for o in packages %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}</select></label></p>
+  <p>動作：
+    <label><input type="radio" name="action" value="install" {% if action != "uninstall" %}checked{% endif %}> 安裝（沒裝或版本太舊就安裝）</label>
+    <label><input type="radio" name="action" value="uninstall" {% if action == "uninstall" %}checked{% endif %}> 移除（偵測到就移除）</label></p>
+  <fieldset><legend>範圍（都不勾＝全部裝置；排除優先）</legend>
+    <p>只派送給：{% for g in include %}<label><input type="checkbox" name="include" value="{{ g.value }}" {% if g.selected %}checked{% endif %}> {{ g.label }}</label> {% endfor %}</p>
+    <p>排除：{% for g in exclude %}<label><input type="checkbox" name="exclude" value="{{ g.value }}" {% if g.selected %}checked{% endif %}> {{ g.label }}</label> {% endfor %}</p>
+  </fieldset>
+  <fieldset><legend>分階段發布</legend>
+    <p><label>試點群組 <select name="pilot_group_id">{% for o in groups %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}</select></label></p>
+    <p class="muted">有設定時先只派送給試點群組，確認沒問題後在派送頁按「擴大到全部」。</p>
+    <p><label>失敗率超過 <input name="max_failure_pct" type="number" min="1" max="100" value="{{ max_failure_pct }}" required>%</label>
+       <label>（至少 <input name="min_samples" type="number" min="1" max="10000" value="{{ min_samples }}" required> 台有結果後）自動暫停</label></p>
+  </fieldset>
+  <p><button>建立</button></p>
+</form>
+{% endblock %}

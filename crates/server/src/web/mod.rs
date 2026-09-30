@@ -8,6 +8,7 @@ pub mod audit;
 pub mod auth;
 pub mod compliance;
 pub mod dashboard;
+pub mod deployments;
 pub mod devices;
 pub mod groups;
 pub mod login;
@@ -122,6 +123,13 @@ pub fn web_router(state: AppState) -> Router {
         .route("/devices", get(devices::list))
         .route("/software", get(software::search))
         .route("/registry", get(registry::query))
+        .route(
+            "/deployments",
+            get(deployments::list).post(deployments::create),
+        )
+        .route("/deployments/new", get(deployments::new_form))
+        .route("/deployments/{id}", get(deployments::detail))
+        .route("/deployments/{id}/{action}", post(deployments::act))
         .route("/packages", get(packages::list))
         .route(
             "/packages/upload",
