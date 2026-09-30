@@ -401,3 +401,179 @@ async fn cancel_rules(pool: PgPool) {
     .unwrap();
     assert_eq!(n, 2);
 }
+
+async fn checkin(s: &TestServer, a: &common::TestAgent) -> protocol::CheckinResponse {
+    s.client(Some(a))
+        .post(s.url("/v1/checkin"))
+        .json(&protocol::CheckinRequest {
+            schema_version: protocol::SCHEMA_VERSION,
+            agent_version: "0.6.0".into(),
+            boot_time: chrono::Utc::now(),
+            logged_on_user: None,
+            ip_addresses: vec![],
+            section_hashes: Default::default(),
+            section_errors: Default::default(),
+        })
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap()
+}
+
+async fn report(s: &TestServer, a: &common::TestAgent, id: i64, body: serde_json::Value) -> u16 {
+    s.client(Some(a))
+        .post(s.url(&format!("/v1/commands/{id}/result")))
+        .json(&body)
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .as_u16()
+}
+
+async fn target_state(pool: &PgPool, id: i64) -> (String, Option<i32>, String) {
+    sqlx::query_as("SELECT status, exit_code, output FROM command_targets WHERE id = $1")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[sqlx::test(migrations = false)]
+async fn checkin_delivers_and_resends(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let f = fleet(&s).await;
+    let a = &f.tp_dev[0];
+    let admin = platform("admin");
+    assert!(checkin(&s, a).await.commands.is_empty());
+    for _ in 0..12 {
+        runs::create_run(
+            &s.pool,
+            &run("collect", Target::Device(a.device_id)),
+            &admin,
+        )
+        .await
+        .unwrap();
+    }
+    let r = checkin(&s, a).await;
+    let ids: Vec<i64> = r.commands.iter().map(|c| c.id).collect();
+    assert_eq!(ids.len(), 10);
+    assert!(ids.windows(2).all(|w| w[0] < w[1]), "由舊到新");
+    let sent: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM command_targets WHERE device_id = $1 AND status = 'sent'",
+    )
+    .bind(a.device_id)
+    .fetch_one(&s.pool)
+    .await
+    .unwrap();
+    assert_eq!(sent, 10);
+    let again: Vec<i64> = checkin(&s, a).await.commands.iter().map(|c| c.id).collect();
+    assert_eq!(again, ids, "收到結果前重送");
+
+    // 腳本：下發建立當時的內容
+    let bob = platform("bob");
+    let sid = scripts::create_script(&s.pool, &input("Write-Output hi"), &admin)
+        .await
+        .unwrap();
+    scripts::approve_script(&s.pool, sid, &bob).await.unwrap();
+    let b = &f.tp_dev[1];
+    runs::create_run(
+        &s.pool,
+        &RunInput {
+            script_id: Some(sid),
+            ..run("script", Target::Device(b.device_id))
+        },
+        &admin,
+    )
+    .await
+    .unwrap();
+    let c = &checkin(&s, b).await.commands[0];
+    assert_eq!(c.action, protocol::command::CommandAction::Script);
+    let spec = c.script.as_ref().unwrap();
+    assert_eq!(
+        (
+            spec.content.as_str(),
+            spec.sha256.clone(),
+            spec.timeout_minutes
+        ),
+        ("Write-Output hi", sha("Write-Output hi"), 30)
+    );
+
+    // 取消、過期、停用的裝置
+    let d = &f.tp_dev[2];
+    let (canceled, _) =
+        runs::create_run(&s.pool, &run("apply", Target::Device(d.device_id)), &admin)
+            .await
+            .unwrap();
+    runs::cancel_run(&s.pool, canceled, &admin).await.unwrap();
+    assert!(checkin(&s, d).await.commands.is_empty());
+    let (old, _) = runs::create_run(&s.pool, &run("apply", Target::Device(d.device_id)), &admin)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE command_runs SET expires_at = now() - interval '1 minute' WHERE id = $1")
+        .bind(old)
+        .execute(&s.pool)
+        .await
+        .unwrap();
+    assert!(checkin(&s, d).await.commands.is_empty());
+    assert_eq!(
+        endpoint_server::commands::worker::expire(&s.pool)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(targets(&s.pool, old).await, vec!["expired"]);
+    runs::create_run(
+        &s.pool,
+        &run("apply", Target::Device(f.ks_dev.device_id)),
+        &admin,
+    )
+    .await
+    .unwrap();
+    sqlx::query("UPDATE devices SET status = 'retired' WHERE id = $1")
+        .bind(f.ks_dev.device_id)
+        .execute(&s.pool)
+        .await
+        .unwrap();
+    assert!(checkin(&s, &f.ks_dev).await.commands.is_empty());
+}
+
+#[sqlx::test(migrations = false)]
+async fn results_are_recorded_once(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let f = fleet(&s).await;
+    let (a, b) = (&f.tp_dev[0], &f.tp_dev[1]);
+    let admin = platform("admin");
+    runs::create_run(&s.pool, &run("collect", Target::Group(f.tp)), &admin)
+        .await
+        .unwrap();
+    let id = checkin(&s, a).await.commands[0].id;
+    let ok =
+        serde_json::json!({"status": "succeeded", "exit_code": 0, "output": "line1\nbeep\u{7}"});
+    assert_eq!(report(&s, a, id, ok).await, 204);
+    assert_eq!(
+        target_state(&s.pool, id).await,
+        ("succeeded".into(), Some(0), "line1\nbeep".into())
+    );
+    let fail = serde_json::json!({"status": "failed", "exit_code": 1, "output": "x"});
+    assert_eq!(report(&s, a, id, fail.clone()).await, 204);
+    assert_eq!(target_state(&s.pool, id).await.0, "succeeded", "不覆寫");
+    assert_eq!(report(&s, b, id, fail.clone()).await, 404, "別台的指令");
+    let big = serde_json::json!({"status": "failed", "output": "a".repeat(65537)});
+    let bid = checkin(&s, b).await.commands[0].id;
+    assert_eq!(report(&s, b, bid, big).await, 400);
+    // 取消後才回報：忽略
+    let (run2, _) = runs::create_run(&s.pool, &run("apply", Target::Device(b.device_id)), &admin)
+        .await
+        .unwrap();
+    let t2: i64 = sqlx::query_scalar("SELECT id FROM command_targets WHERE run_id = $1")
+        .bind(run2)
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    runs::cancel_run(&s.pool, run2, &admin).await.unwrap();
+    assert_eq!(report(&s, b, t2, fail).await, 204);
+    assert_eq!(target_state(&s.pool, t2).await.0, "canceled");
+}

@@ -154,6 +154,7 @@ pub fn agent_router(state: AppState) -> Router {
         .route("/v1/packages/{id}/content", get(deploy::api::download))
         .route("/v1/deployments/{id}/result", post(deploy::api::result))
         .route("/v1/update-status", put(updates::api::status))
+        .route("/v1/commands/{id}/result", post(commands::api::result))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
 }
@@ -206,6 +207,7 @@ pub async fn serve(cfg: config::Config) -> anyhow::Result<()> {
         }
     });
     compliance::worker::spawn(pool.clone(), state.display_offset);
+    commands::worker::spawn(pool.clone());
     notify::worker::spawn(pool.clone(), state.notify.clone());
 
     let listener = tokio::net::TcpListener::bind(cfg.agent_listen).await?;

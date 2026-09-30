@@ -1,7 +1,9 @@
 //! 第六期：遠端指令。
 
+pub mod api;
 pub mod runs;
 pub mod scripts;
+pub mod worker;
 
 /// 執行管理動作的人：權限檢查只需要這些（網頁端從 Session 轉換）
 #[derive(Debug, Clone)]
