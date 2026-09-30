@@ -188,3 +188,216 @@ async fn single_person_mode(pool: PgPool) {
     .unwrap();
     assert!(scripts::require_second_approver(&s.pool).await.unwrap());
 }
+
+use endpoint_server::commands::runs::{self, RunInput, Target};
+
+fn run(action: &str, target: Target) -> RunInput {
+    RunInput {
+        action: action.into(),
+        target,
+        delay_minutes: None,
+        script_id: None,
+        expires_hours: 24,
+    }
+}
+
+async fn targets(pool: &PgPool, run: i64) -> Vec<String> {
+    sqlx::query_scalar("SELECT status FROM command_targets WHERE run_id = $1 ORDER BY id")
+        .bind(run)
+        .fetch_all(pool)
+        .await
+        .unwrap()
+}
+
+struct Fleet {
+    tp: i64,
+    ks: i64,
+    tp_dev: Vec<common::TestAgent>,
+    ks_dev: common::TestAgent,
+}
+
+async fn fleet(s: &TestServer) -> Fleet {
+    let tok = s.create_group_token("台北", 3).await;
+    let mut tp_dev = vec![];
+    for _ in 0..3 {
+        tp_dev.push(s.enroll_ok(&tok, None, None).await);
+    }
+    let ks_dev = s
+        .enroll_ok(&s.create_group_token("高雄", 1).await, None, None)
+        .await;
+    Fleet {
+        tp: s.group_id("台北").await,
+        ks: s.group_id("高雄").await,
+        tp_dev,
+        ks_dev,
+    }
+}
+
+#[sqlx::test(migrations = false)]
+async fn create_runs_with_scope_and_validation(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let f = fleet(&s).await;
+    let admin = platform("admin");
+    let (id, n) = runs::create_run(&s.pool, &run("collect", Target::Group(f.tp)), &admin)
+        .await
+        .unwrap();
+    assert_eq!(n, 3);
+    assert_eq!(targets(&s.pool, id).await, vec!["pending"; 3]);
+    let (id, n) = runs::create_run(
+        &s.pool,
+        &run("reboot", Target::Device(f.ks_dev.device_id)),
+        &admin,
+    )
+    .await
+    .unwrap();
+    assert_eq!(n, 1);
+    let (delay, label): (Option<i32>, String) =
+        sqlx::query_as("SELECT delay_minutes, target_label FROM command_runs WHERE id = $1")
+            .bind(id)
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+    assert_eq!(delay, Some(10));
+    assert!(label.starts_with("裝置 "), "{label}");
+    for bad in [
+        RunInput {
+            delay_minutes: Some(61),
+            ..run("reboot", Target::Group(f.tp))
+        },
+        RunInput {
+            expires_hours: 0,
+            ..run("collect", Target::Group(f.tp))
+        },
+        RunInput {
+            expires_hours: 721,
+            ..run("collect", Target::Group(f.tp))
+        },
+        run("format", Target::Group(f.tp)),
+        run("collect", Target::Device(uuid::Uuid::new_v4())),
+    ] {
+        assert!(runs::create_run(&s.pool, &bad, &admin).await.is_err());
+    }
+    // 群組內沒有使用中的裝置：不留下 run
+    let empty = s.group_id("空的").await;
+    let before: i64 = sqlx::query_scalar("SELECT count(*) FROM command_runs")
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    let e = err(
+        runs::create_run(&s.pool, &run("collect", Target::Group(empty)), &admin)
+            .await
+            .unwrap_err(),
+    );
+    assert!(e.contains("沒有使用中的裝置"), "{e}");
+    let after: i64 = sqlx::query_scalar("SELECT count(*) FROM command_runs")
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    assert_eq!(before, after);
+
+    // 群組管理員（只管台北）
+    let gary = Actor {
+        username: "gary".into(),
+        platform: false,
+        groups: vec![f.tp],
+    };
+    for t in [Target::Group(f.ks), Target::Device(f.ks_dev.device_id)] {
+        let e = err(runs::create_run(&s.pool, &run("collect", t), &gary)
+            .await
+            .unwrap_err());
+        assert!(e.contains("管理範圍"), "{e}");
+    }
+    let sid = scripts::create_script(&s.pool, &input("dir"), &admin)
+        .await
+        .unwrap();
+    let e = err(runs::create_run(
+        &s.pool,
+        &RunInput {
+            script_id: Some(sid),
+            ..run("script", Target::Group(f.tp))
+        },
+        &gary,
+    )
+    .await
+    .unwrap_err());
+    assert!(e.contains("平台管理員"), "{e}");
+    runs::create_run(
+        &s.pool,
+        &run("collect", Target::Device(f.tp_dev[0].device_id)),
+        &gary,
+    )
+    .await
+    .unwrap();
+}
+
+#[sqlx::test(migrations = false)]
+async fn script_runs_snapshot_content(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let f = fleet(&s).await;
+    let (alice, bob) = (platform("alice"), platform("bob"));
+    let sid = scripts::create_script(&s.pool, &input("Write-Output v1"), &alice)
+        .await
+        .unwrap();
+    let script_run = |sid| RunInput {
+        script_id: Some(sid),
+        ..run("script", Target::Group(f.tp))
+    };
+    let e = err(runs::create_run(&s.pool, &script_run(sid), &alice)
+        .await
+        .unwrap_err());
+    assert!(e.contains("核准"), "{e}");
+    scripts::approve_script(&s.pool, sid, &bob).await.unwrap();
+    let (id, _) = runs::create_run(&s.pool, &script_run(sid), &alice)
+        .await
+        .unwrap();
+    scripts::update_script(&s.pool, sid, &input("Write-Output v2"), &alice)
+        .await
+        .unwrap();
+    let (content, hash): (String, String) =
+        sqlx::query_as("SELECT script_content, script_sha256 FROM command_runs WHERE id = $1")
+            .bind(id)
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        (content.as_str(), hash),
+        ("Write-Output v1", sha("Write-Output v1"))
+    );
+    let e = err(scripts::delete_script(&s.pool, sid, &alice)
+        .await
+        .unwrap_err());
+    assert!(e.contains("只能停用"), "{e}");
+}
+
+#[sqlx::test(migrations = false)]
+async fn cancel_rules(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let f = fleet(&s).await;
+    let gary = Actor {
+        username: "gary".into(),
+        platform: false,
+        groups: vec![f.tp],
+    };
+    let other = Actor {
+        username: "olga".into(),
+        platform: false,
+        groups: vec![f.tp],
+    };
+    let (id, _) = runs::create_run(&s.pool, &run("collect", Target::Group(f.tp)), &gary)
+        .await
+        .unwrap();
+    assert!(runs::cancel_run(&s.pool, id, &other).await.is_err());
+    runs::cancel_run(&s.pool, id, &gary).await.unwrap();
+    assert_eq!(targets(&s.pool, id).await, vec!["canceled"; 3]);
+    let e = err(runs::cancel_run(&s.pool, id, &platform("admin"))
+        .await
+        .unwrap_err());
+    assert!(e.contains("已取消"), "{e}");
+    let n: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE action IN ('command_create', 'command_cancel')",
+    )
+    .fetch_one(&s.pool)
+    .await
+    .unwrap();
+    assert_eq!(n, 2);
+}
