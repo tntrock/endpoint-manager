@@ -270,3 +270,107 @@ async fn checkin_delivers_policy_by_group(pool: PgPool) {
     let r = checkin(&s, &tp).await;
     assert!(r.update_policy.is_none() && r.update_policy_hash.is_some());
 }
+
+fn status_body(state: &str) -> serde_json::Value {
+    serde_json::json!({
+        "policy_id": 7, "revision": 2, "state": state, "detail": "",
+        "reboot_pending": true, "reboot_pending_since": "2026-09-29T01:00:00Z",
+        "last_patch_date": "2026-09-10"
+    })
+}
+
+async fn put_status(
+    s: &TestServer,
+    a: Option<&common::TestAgent>,
+    body: &serde_json::Value,
+) -> u16 {
+    s.client(a)
+        .put(s.url("/v1/update-status"))
+        .json(body)
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .as_u16()
+}
+
+#[sqlx::test(migrations = false)]
+async fn status_is_stored_per_device(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(2).await;
+    let a = s.enroll_ok(&tok, None, None).await;
+    let b = s.enroll_ok(&tok, None, None).await;
+    assert_eq!(put_status(&s, Some(&a), &status_body("applied")).await, 204);
+    let row: (
+        Option<i64>,
+        Option<i32>,
+        String,
+        bool,
+        Option<chrono::NaiveDate>,
+    ) = sqlx::query_as(
+        "SELECT policy_id, revision, state, reboot_pending, last_patch_date \
+         FROM update_policy_status WHERE device_id = $1",
+    )
+    .bind(a.device_id)
+    .fetch_one(&s.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        row,
+        (
+            Some(7),
+            Some(2),
+            "applied".into(),
+            true,
+            NaiveDate::from_ymd_opt(2026, 9, 10)
+        )
+    );
+    let mut c = status_body("conflict");
+    c["detail"] = "DeferQualityUpdatesPeriodInDays\u{7}".into();
+    assert_eq!(put_status(&s, Some(&a), &c).await, 204);
+    let (state, detail): (String, String) =
+        sqlx::query_as("SELECT state, detail FROM update_policy_status WHERE device_id = $1")
+            .bind(a.device_id)
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        (state.as_str(), detail.as_str()),
+        ("conflict", "DeferQualityUpdatesPeriodInDays"),
+        "控制字元被移除"
+    );
+    assert_eq!(
+        put_status(&s, Some(&b), &status_body("unmanaged")).await,
+        204
+    );
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM update_policy_status")
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 2, "每台各一列");
+}
+
+#[sqlx::test(migrations = false)]
+async fn invalid_status_is_rejected(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(1).await;
+    let a = s.enroll_ok(&tok, None, None).await;
+    let future = (chrono::Utc::now() + chrono::Duration::days(3)).date_naive();
+    let mut bad = vec![];
+    let mut b = status_body("applied");
+    b["last_patch_date"] = future.to_string().into();
+    bad.push(b);
+    let mut b = status_body("applied");
+    b["detail"] = "x".repeat(501).into();
+    bad.push(b);
+    bad.push(status_body("weird"));
+    for b in &bad {
+        assert_eq!(put_status(&s, Some(&a), b).await, 400, "{b}");
+    }
+    assert_eq!(put_status(&s, None, &status_body("applied")).await, 401);
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM update_policy_status")
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 0);
+}
