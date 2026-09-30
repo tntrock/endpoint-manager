@@ -20,7 +20,16 @@ pub struct Entry {
     /// 還沒送出的結果（伺服器暫時連不上）：下一輪先補送
     #[serde(default)]
     pub unreported: Option<DeployResult>,
+    /// 正在執行安裝程式（執行前寫入）：啟動時仍為 true 代表上次被中斷
+    #[serde(default)]
+    pub in_progress: bool,
+    /// 最後一次出現在指派清單的時間：暫停期間指派會消失，不能立刻清掉紀錄
+    #[serde(default)]
+    pub last_seen: Option<DateTime<Utc>>,
 }
+
+/// 多久沒出現在指派清單才清掉紀錄
+pub const FORGET_AFTER_DAYS: i64 = 30;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DeployState {
@@ -58,9 +67,17 @@ impl DeployState {
         e
     }
 
-    /// 不再被指派的派送不用記
-    pub fn prune(&mut self, active: &[i64]) {
-        self.entries.retain(|id, _| active.contains(id));
+    /// 記下這次出現的派送；超過 FORGET_AFTER_DAYS 沒出現的才清掉
+    /// （暫停中的派送不會下發，繼續後仍要沿用嘗試次數與已回報的狀態）
+    pub fn prune(&mut self, active: &[i64], now: DateTime<Utc>) {
+        for id in active {
+            if let Some(e) = self.entries.get_mut(id) {
+                e.last_seen = Some(now);
+            }
+        }
+        let cutoff = now - chrono::Duration::days(FORGET_AFTER_DAYS);
+        self.entries
+            .retain(|id, e| active.contains(id) || e.last_seen.is_some_and(|t| t > cutoff));
     }
 }
 
@@ -84,8 +101,15 @@ mod tests {
         // revision 改變時重設
         let e = back.entry_for(5, 2);
         assert_eq!((e.revision, e.attempts, e.reported), (2, 0, None));
-        back.prune(&[5]);
-        assert!(!back.entries.contains_key(&6));
+        let now = chrono::Utc::now();
+        back.prune(&[5, 6], now);
+        back.prune(&[5], now + chrono::Duration::days(1));
+        assert!(
+            back.entries.contains_key(&6),
+            "暫時沒出現（例如暫停）要保留"
+        );
+        back.prune(&[5], now + chrono::Duration::days(31));
+        assert!(!back.entries.contains_key(&6), "30 天沒出現才清掉");
         std::fs::write(dir.path().join(STATE_FILE), b"{broken").unwrap();
         assert!(
             DeployState::load(dir.path()).entries.is_empty(),

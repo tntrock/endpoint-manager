@@ -16,8 +16,10 @@ use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
-/// 下載套件的逾時（大檔案、慢速連線）
-pub const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// 下載套件時兩次收到資料之間最長可以閒置多久（大檔案在慢速線路上總時間可以很長）
+pub const DOWNLOAD_IDLE: Duration = Duration::from_secs(2 * 60);
+/// 下載的總時間上限（只為了不讓連線永遠掛著）
+pub const DOWNLOAD_MAX: Duration = Duration::from_secs(24 * 60 * 60);
 
 #[derive(Debug, thiserror::Error)]
 pub enum DownloadError {
@@ -158,10 +160,15 @@ impl ServerClient {
     /// 下載套件到 dest：邊寫邊算雜湊，大小或 SHA-256 不符時刪檔並回 Mismatch。
     pub async fn download(&self, pkg: &PackageSpec, dest: &Path) -> Result<(), DownloadError> {
         let url = self.url(&format!("/v1/packages/{}/content", pkg.id));
-        let mut resp = match self.http.get(url).timeout(DOWNLOAD_TIMEOUT).send().await {
-            Ok(r) => r,
-            Err(e) => {
+        let send = self.http.get(url).timeout(DOWNLOAD_MAX).send();
+        let mut resp = match tokio::time::timeout(DOWNLOAD_IDLE, send).await {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) => {
                 tracing::warn!(error = ?e, "package download failed");
+                return Err(DownloadError::Retry(None));
+            }
+            Err(_) => {
+                tracing::warn!("package download: no response");
                 return Err(DownloadError::Retry(None));
             }
         };
@@ -179,11 +186,15 @@ impl ServerClient {
         let mut hasher = Sha256::new();
         let mut size: u64 = 0;
         loop {
-            let chunk = match resp.chunk().await {
-                Ok(Some(c)) => c,
-                Ok(None) => break,
-                Err(e) => {
+            let chunk = match tokio::time::timeout(DOWNLOAD_IDLE, resp.chunk()).await {
+                Ok(Ok(Some(c))) => c,
+                Ok(Ok(None)) => break,
+                Ok(Err(e)) => {
                     tracing::warn!(error = ?e, "package download interrupted");
+                    return Err(DownloadError::Retry(None));
+                }
+                Err(_) => {
+                    tracing::warn!("package download stalled");
                     return Err(DownloadError::Retry(None));
                 }
             };

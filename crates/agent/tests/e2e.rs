@@ -895,4 +895,109 @@ mod deploy {
         a.run_cycle().await;
         assert_eq!(rx.borrow().as_ref().unwrap().assignments.len(), 1);
     }
+
+    /// 永遠不結束的執行器：模擬安裝中 Agent 被停止或電腦重新開機
+    struct Hang;
+
+    impl Runner for Hang {
+        async fn run(&self, _cmd: &Cmd, _timeout: Duration) -> std::io::Result<RunResult> {
+            std::future::pending().await
+        }
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn interrupted_install_counts_as_attempt(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let (_a, _worker, runner, w, d) = setup(&e, 0, true).await;
+        let fake = Fake {
+            software: runner.software.clone(),
+            ..Fake::new()
+        };
+        let mut hang = Worker::new(e.dir.path(), Arc::new(fake.clone()), Hang);
+        let r = tokio::time::timeout(Duration::from_millis(500), hang.pass(&w)).await;
+        assert!(r.is_err(), "安裝卡住時 pass 被中斷");
+        drop(hang);
+        // 重新啟動：上次中斷算一次失敗，24 小時內不再執行
+        let mut worker = Worker::new(e.dir.path(), Arc::new(fake), runner.clone());
+        worker.pass(&w).await;
+        assert_eq!(
+            runner.runs.load(Ordering::SeqCst),
+            0,
+            "不立刻重試（避免重開機迴圈）"
+        );
+        let (st, msg, attempts) = status(&e, d).await.unwrap();
+        assert_eq!((st.as_str(), attempts), ("failed", 1));
+        assert!(msg.contains("中斷"), "{msg}");
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn paused_assignment_keeps_attempt_history(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let (_a, mut worker, runner, w, _d) = setup(&e, 1603, false).await;
+        let t0 = chrono::Utc::now();
+        worker.pass_at(&w, t0).await;
+        // 暫停期間指派消失，繼續後同一 revision 仍在 24 小時等待中
+        let empty = Work {
+            assignments: vec![],
+            ..w.clone()
+        };
+        worker
+            .pass_at(&empty, t0 + chrono::Duration::hours(1))
+            .await;
+        worker.pass_at(&w, t0 + chrono::Duration::hours(2)).await;
+        assert_eq!(
+            runner.runs.load(Ordering::SeqCst),
+            1,
+            "暫停不能重設嘗試次數"
+        );
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn busy_installer_keeps_verified_file(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let (_a, mut worker, runner, w, _d) = setup(&e, 1618, false).await;
+        worker.pass(&w).await;
+        let exes = || {
+            std::fs::read_dir(e.dir.path().join("packages"))
+                .unwrap()
+                .filter_map(|x| x.ok())
+                .filter(|x| x.path().extension().is_some_and(|ext| ext == "exe"))
+                .count()
+        };
+        assert_eq!(exes(), 1, "1618 時保留已驗證的安裝檔");
+        // 伺服器下載名額用完：仍能用本機已驗證的檔案執行
+        let _held = e
+            .state
+            .downloads
+            .clone()
+            .acquire_many_owned(4)
+            .await
+            .unwrap();
+        worker.pass(&w).await;
+        assert_eq!(runner.runs.load(Ordering::SeqCst), 2);
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn download_busy_waits_for_retry_after(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let (_a, mut worker, runner, w, d) = setup(&e, 0, true).await;
+        let _held = e
+            .state
+            .downloads
+            .clone()
+            .acquire_many_owned(4)
+            .await
+            .unwrap();
+        let now = chrono::Utc::now();
+        let next = worker
+            .pass_at(&w, now)
+            .await
+            .expect("依 Retry-After 排下次");
+        assert!(
+            next > now && next <= now + chrono::Duration::seconds(60 + 120),
+            "{next} vs {now}"
+        );
+        assert_eq!(runner.runs.load(Ordering::SeqCst), 0);
+        assert!(status(&e, d).await.is_none(), "忙碌不算嘗試、不回報");
+    }
 }
