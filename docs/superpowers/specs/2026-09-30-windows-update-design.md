@@ -45,7 +45,7 @@
 所有值都寫在 `HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate`。
 
 - 每個項目都選填。沒設定的項目，Agent 不寫入，也會刪除自己以前寫過的對應值（見 §4.3）。
-- 值名稱依 `WindowsUpdate.admx`，實作前必須在 CI Windows runner 的 `C:\Windows\PolicyDefinitions\WindowsUpdate.admx` 逐一核對（計畫 16 第一個任務）。核對結果和下表不同時，以 ADMX 為準並更新本表。（2026-09-30 已核對：品質更新期限用新版 ADMX 的 `SetComplianceDeadlineForQU`／`ConfigureDeadlineNoAutoRebootForQualityUpdates`，舊版名稱 `SetComplianceDeadline`／`ConfigureDeadlineNoAutoReboot` 不再出現在 ADMX。）
+- 值名稱依 `WindowsUpdate.admx`，實作前必須在 CI Windows runner 的 `C:\Windows\PolicyDefinitions\WindowsUpdate.admx` 逐一核對（計畫 16 第一個任務）。核對結果和下表不同時，以 ADMX 為準並更新本表。（2026-09-30 已核對：品質更新期限用新版 ADMX 的 `SetComplianceDeadlineForQU`／`ConfigureDeadlineNoAutoRebootForQualityUpdates`，舊版名稱 `SetComplianceDeadline`／`ConfigureDeadlineNoAutoReboot` 不再出現在新版 ADMX。24H2 以前的 Windows 只認舊名稱，所以有任一期限時也寫入 `SetComplianceDeadline`=1，勾選不自動重開機時也寫入 `ConfigureDeadlineNoAutoReboot`=1，新舊並存。）
 
 | 項目 | 設定範圍 | 寫入的值 |
 |---|---|---|

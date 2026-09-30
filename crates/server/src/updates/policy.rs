@@ -98,6 +98,13 @@ impl PolicySettings {
                 });
             }
         }
+        // 24H2 以前的 Windows 用舊名稱（一個原則同時控制品質與功能更新期限）：新舊並存
+        if self.quality_deadline.is_some() || self.feature_deadline.is_some() {
+            v.push(dword("SetComplianceDeadline", 1));
+            if self.no_auto_reboot {
+                v.push(dword("ConfigureDeadlineNoAutoReboot", 1));
+            }
+        }
         if let Some(d) = self.quality_deadline {
             v.push(dword("SetComplianceDeadlineForQU", 1));
             v.push(dword("ConfigureDeadlineForQualityUpdates", d.days));
@@ -210,6 +217,9 @@ mod tests {
             ("ConfigureDeadlineGracePeriodForFeatureUpdates", 5),
             ("ConfigureDeadlineNoAutoRebootForQualityUpdates", 1),
             ("ConfigureDeadlineNoAutoRebootForFeatureUpdates", 1),
+            // 24H2 以前的 Windows 只認舊名稱：新舊並存
+            ("SetComplianceDeadline", 1),
+            ("ConfigureDeadlineNoAutoReboot", 1),
         ] {
             assert_eq!(get(&s, n), Some(PolicyData::Dword(v)), "{n}");
         }

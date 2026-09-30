@@ -18,6 +18,8 @@ pub struct UpdateState {
     /// 上次成功送出的狀態雜湊與時間
     pub sent_hash: Option<String>,
     pub sent_at: Option<DateTime<Utc>>,
+    /// 上次成功收集到的最後裝更新日期（WMI 失敗時沿用）
+    pub last_patch_date: Option<chrono::NaiveDate>,
 }
 
 impl UpdateState {

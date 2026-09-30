@@ -386,7 +386,7 @@ fn admx_declares_every_policy_value() {
     };
     let missing: Vec<&str> = protocol::update::VALUE_NAMES
         .into_iter()
-        .filter(|n| tag(n).is_none())
+        .filter(|n| tag(n).is_none() && !protocol::update::LEGACY_VALUE_NAMES.contains(n))
         .collect();
     assert!(missing.is_empty(), "ADMX 沒有這些值：{missing:?}");
     assert_eq!(tag("PauseQualityUpdatesStartTime").as_deref(), Some("text"));

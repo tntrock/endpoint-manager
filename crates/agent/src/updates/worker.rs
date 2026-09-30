@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -35,6 +36,9 @@ pub struct UpdateWorker<C: Collector, H: WuHost> {
     collector: Arc<C>,
     host: Arc<H>,
     state: UpdateState,
+    patch_timeout: Duration,
+    /// 上一次的 patches 收集還卡在 WMI：不再多開一條執行緒
+    patch_inflight: Arc<AtomicBool>,
 }
 
 /// 登錄檔操作的結果：(狀態, 說明)
@@ -49,6 +53,20 @@ impl<C: Collector, H: WuHost> UpdateWorker<C, H> {
             collector,
             host,
             state: UpdateState::load(dir),
+            patch_timeout: crate::agent::COLLECT_TIMEOUT,
+            patch_inflight: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// 測試用：縮短等待 WMI 的時間
+    pub fn with_patch_timeout(mut self, d: Duration) -> Self {
+        self.patch_timeout = d;
+        self
+    }
+
+    fn save(&self) {
+        if let Err(e) = self.state.save(&self.dir) {
+            tracing::error!(error = %e, "update policy: saving state failed");
         }
     }
 
@@ -74,7 +92,12 @@ impl<C: Collector, H: WuHost> UpdateWorker<C, H> {
         .await;
         let reboot = match applied {
             Ok((a, reboot)) => {
-                self.state.applied = a;
+                // 寫完登錄檔立刻存檔：之後等 WMI 或回報時被中斷（服務停止、重開機），
+                // 下次仍記得自己寫過哪些值
+                if a != self.state.applied {
+                    self.state.applied = a;
+                    self.save();
+                }
                 reboot
             }
             Err(e) => {
@@ -100,7 +123,7 @@ impl<C: Collector, H: WuHost> UpdateWorker<C, H> {
                 .collect(),
             reboot_pending: reboot,
             reboot_pending_since: self.state.reboot_pending_since,
-            last_patch_date: self.last_patch_date().await,
+            last_patch_date: self.last_patch_date(now).await,
         };
         let hash = hex::encode(Sha256::digest(
             serde_json::to_vec(&status).expect("serializable"),
@@ -119,24 +142,42 @@ impl<C: Collector, H: WuHost> UpdateWorker<C, H> {
                 Err(e) => tracing::warn!(error = %format!("{e:#}"), "update policy: no client"),
             }
         }
-        if self.state != before
-            && let Err(e) = self.state.save(&self.dir)
-        {
-            tracing::error!(error = %e, "update policy: saving state failed");
+        if self.state != before {
+            self.save();
         }
     }
 
-    async fn last_patch_date(&self) -> Option<chrono::NaiveDate> {
-        let c = self.collector.clone();
-        match tokio::task::spawn_blocking(move || c.collect(Section::Patches)).await {
-            Ok(Ok(InventoryPayload::Patches(items))) => last_patch_date(&items),
-            Ok(Ok(_)) => None,
-            Ok(Err(e)) => {
-                tracing::warn!(error = %format!("{e:#}"), "update policy: cannot read patches");
-                None
-            }
-            Err(_) => None,
+    /// WMI 可能卡住：逾時或失敗時沿用上次的日期（不在「未知」與正常之間跳動，也不重送）。
+    /// 上一次還卡著時不再收集，避免每小時多疊一條卡住的執行緒。
+    async fn last_patch_date(&mut self, now: DateTime<Utc>) -> Option<chrono::NaiveDate> {
+        let last = self.state.last_patch_date;
+        if self.patch_inflight.swap(true, Ordering::SeqCst) {
+            return last;
         }
+        let c = self.collector.clone();
+        let inflight = self.patch_inflight.clone();
+        let task = tokio::task::spawn_blocking(move || {
+            let r = c.collect(Section::Patches);
+            inflight.store(false, Ordering::SeqCst);
+            r
+        });
+        // 伺服器拒收晚於現在 1 天的日期：垃圾或未來的 InstalledOn 不算
+        let not_after = (now + chrono::Duration::days(1)).date_naive();
+        let date = match tokio::time::timeout(self.patch_timeout, task).await {
+            Ok(Ok(Ok(InventoryPayload::Patches(items)))) => last_patch_date(&items, not_after),
+            Ok(Ok(Ok(_))) => last,
+            Ok(Ok(Err(e))) => {
+                tracing::warn!(error = %format!("{e:#}"), "update policy: cannot read patches");
+                last
+            }
+            Ok(Err(_)) => last,
+            Err(_) => {
+                tracing::warn!("update policy: patches collection timed out");
+                last
+            }
+        };
+        self.state.last_patch_date = date;
+        date
     }
 }
 

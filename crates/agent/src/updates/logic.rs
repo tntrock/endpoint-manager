@@ -123,10 +123,12 @@ fn parse_installed_on(s: &str) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(s, "%m/%d/%Y").ok()
 }
 
-pub fn last_patch_date(items: &[PatchItem]) -> Option<NaiveDate> {
+/// 最新的安裝日期；晚於 not_after 的（時鐘錯誤或垃圾資料）略過
+pub fn last_patch_date(items: &[PatchItem], not_after: NaiveDate) -> Option<NaiveDate> {
     items
         .iter()
         .filter_map(|p| parse_installed_on(p.installed_on.as_deref()?))
+        .filter(|d| *d <= not_after)
         .max()
 }
 
@@ -284,27 +286,42 @@ mod tests {
         }
     }
 
+    fn far() -> chrono::NaiveDate {
+        chrono::NaiveDate::from_ymd_opt(2030, 1, 1).unwrap()
+    }
+
     #[test]
     fn last_patch_date_formats() {
         let d = |y, m, dd| chrono::NaiveDate::from_ymd_opt(y, m, dd);
         assert_eq!(
-            last_patch_date(&[patch(Some("9/10/2026")), patch(Some("12/1/2025"))]),
+            last_patch_date(&[patch(Some("9/10/2026")), patch(Some("12/1/2025"))], far()),
             d(2026, 9, 10)
         );
         assert_eq!(
-            last_patch_date(&[patch(Some("01d9e4c2a1b2c3d4"))]),
+            last_patch_date(&[patch(Some("01d9e4c2a1b2c3d4"))], far()),
             d(2023, 9, 11),
             "WMI 的 16 位 hex FILETIME"
         );
-        assert_eq!(last_patch_date(&[patch(None), patch(Some(""))]), None);
         assert_eq!(
-            last_patch_date(&[
-                patch(Some("garbage")),
-                patch(Some("13/45/2020")),
-                patch(Some("1/2/2020"))
-            ]),
+            last_patch_date(&[patch(None), patch(Some(""))], far()),
+            None
+        );
+        assert_eq!(
+            last_patch_date(
+                &[
+                    patch(Some("garbage")),
+                    patch(Some("13/45/2020")),
+                    patch(Some("1/2/2020"))
+                ],
+                far()
+            ),
             d(2020, 1, 2)
         );
-        assert_eq!(last_patch_date(&[]), None);
+        assert_eq!(last_patch_date(&[], far()), None);
+        assert_eq!(
+            last_patch_date(&[patch(Some("1/1/2099")), patch(Some("1/2/2020"))], far()),
+            d(2020, 1, 2),
+            "未來日期略過"
+        );
     }
 }
