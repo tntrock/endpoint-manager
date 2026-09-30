@@ -64,9 +64,10 @@
 - 暫停與恢復都會讓 revision 加 1，也都寫稽核紀錄。
 
 **伺服器端的協定型別：**
-- `UpdatePolicy { id, revision, values: Vec<PolicyValue> }`，其中 `PolicyValue { name, data: Dword(u32) | String(String) }`。
+- `UpdatePolicy { id, revision, values: Vec<PolicyValue> }`，其中 `PolicyValue { name, data: PolicyData }`。
+- `PolicyData` 是 `Dword(u32)`／`String(String)`，另有 `#[serde(other)] Unknown`：新版伺服器加了新型別時，舊 Agent 仍能解析。
 - 伺服器負責把表單設定轉成值清單。
-- Agent 只接受 §4.2 白名單內的值名稱。
+- 白名單 `VALUE_NAMES` 放在 protocol，兩端共用。Agent 只接受白名單內的值名稱（§4.2）。
 
 ## 3. 伺服器
 
@@ -76,7 +77,6 @@
 - 基本欄位：
   - `id`
   - `name`：唯一，1–100 字，不能有控制字元。
-  - `priority`：INT，唯一；數字越小越優先。
   - `revision`：INT，從 1 開始。
   - `settings`：JSONB，就是表單的內容。
   - `created_at`、`updated_at`
@@ -88,10 +88,11 @@
   - 全部是 `Option`。
 
 **`update_policy_groups`：**
-- 欄位：`policy_id`、`group_id`、`mode`（`include`／`exclude`）。
-- 至少要有一個 include。群組被原則使用時不能刪除，比照派送。
+- 欄位：`group_id`（PK，FK ON DELETE RESTRICT）、`policy_id`（FK ON DELETE CASCADE）。
+- 一台裝置只屬於一個群組（`devices.group_id`），所以用「一個群組最多屬於一個原則」取代優先順序與排除群組。每台裝置最多對應一個原則，不需要比較優先順序。
+- 原則至少要有一個群組。群組被原則使用時不能刪除，比照派送。
 
-**`update_policy_status`**（由 `update_status` 區段寫入，一台一列）：
+**`update_policy_status`**（由 `PUT /v1/update-status` 寫入，一台一列）：
 - 欄位：
   - `device_id`（PK）
   - `policy_id`（可為 NULL），`revision`
@@ -107,19 +108,27 @@
 
 ### 3.2 指派
 
-- **哪個原則**：裝置套用「include 群組包含它、exclude 群組不包含它」的原則中 `priority` 最小的那一個。沒有符合的就是 `None`。
-- **快取**：`UpdatePolicyCache` 比照 `DeployCache`，每 5 秒檢查一次 `generation`，把全部原則和各自的群組載入記憶體。報到時用裝置的群組在記憶體中比對，不額外查資料庫。
+- **哪個原則**：裝置所屬群組對應的原則。沒有群組、群組沒有原則，或裝置不是使用中狀態時為 `None`。
+- **快取**：`UpdatePolicyCache` 比照 `DeployCache`，每 5 秒檢查一次 `generation`，把「群組 → 原則」載入記憶體。報到時直接用裝置的群組查表，不額外查資料庫。
 - **下發**：`CheckinResponse` 新增兩個欄位：
   - `update_policy: Option<UpdatePolicy>`
   - `update_policy_hash: Option<String>`：必定有值；原則為 None 時是空清單的雜湊。舊 Agent 會忽略這兩個欄位。
 
-### 3.3 `update_status` 上傳
+### 3.3 `PUT /v1/update-status`
 
-- 新增盤點區段 `update_status`，比照其他區段：
-  - Agent 計算雜湊，沒變就不上傳。
-  - 伺服器在 `request_sections` 裡要求時才強制上傳。
+- 用獨立的端點，不做成盤點區段。原因：
+  - 盤點區段由 Agent 的收集排程處理，舊伺服器看到不認識的區段會讓報到失敗。
+  - 這份狀態由更新 worker 產生，比照派送的結果回報比較單純。
 - 內容：`UpdateStatus { policy_id, revision, state, detail, reboot_pending, reboot_pending_since, last_patch_date }`。
-- 伺服器驗證：`detail` 截到 500 字；日期不能晚於伺服器現在時間加 1 天。不合法時回 400，比照其他區段。
+- Agent 何時送：
+  - 內容改變時。
+  - 距上次成功送出滿 24 小時時。
+  - 只在報到回應帶有 `update_policy_hash` 時送（伺服器支援才送）。
+- 伺服器驗證以下項目，不合法時回 400：
+  - `detail` 最長 500 字，不能有 NUL。
+  - `state` 不能是未知值。
+  - 日期不能晚於伺服器現在時間加 1 天。
+- 寫入方式：以 `device_id` upsert 到 `update_policy_status`。
 
 ## 4. Agent
 
@@ -191,13 +200,13 @@
 ## 6. 管理網頁
 
 **`/updates`：更新原則清單**
-- 欄位：名稱、優先順序、套用／排除群組、暫停狀態。
+- 欄位：名稱、套用群組、暫停狀態。
 - 各狀態台數：已套用、衝突、錯誤、尚未回報。「尚未回報」的定義是：該原則應套用、但 `update_policy_status` 的 policy_id 或 revision 不相符。
 - 群組管理員只計算自己範圍內的裝置。
 
 **原則表單（新增／編輯）**
 - 只有平台管理員可用。
-- 項目同 §2。優先順序重複時顯示錯誤。
+- 項目同 §2，另選套用群組。群組已屬於其他原則時顯示錯誤（寫出是哪個原則）。
 
 **原則詳情**
 - 設定內容。
@@ -224,8 +233,7 @@
   - 範圍
   - 使用中時段長度
   - 「不自動重開機」需要至少設定一種期限
-  - 至少一個 include 群組
-  - include 和 exclude 不能重疊
+  - 至少一個群組，且群組不能已屬於其他原則
 - 原則已刪除但裝置尚未回報時，網頁顯示「已刪除的原則」。
 - Agent 寫入失敗只影響該台的狀態，不影響報到或其他功能。
 
@@ -234,7 +242,7 @@
 - **protocol**：`UpdatePolicy` 序列化；雜湊穩定性；未知欄位與未知 data 型別的相容性。
 - **伺服器**：
   - 原則 CRUD 與驗證
-  - 優先順序與 include/exclude 指派
+  - 依群組指派；一個群組不能屬於兩個原則
   - 快取在變更後過期
   - `update_status` 上傳與驗證
   - 三種規則的違規與未知
