@@ -146,6 +146,8 @@ pub fn agent_router(state: AppState) -> Router {
         .route("/v1/checkin", post(checkin::checkin))
         .route("/v1/inventory/{section}", put(inventory::upload))
         .route("/v1/renew", post(renew::renew))
+        .route("/v1/packages/{id}/content", get(deploy::api::download))
+        .route("/v1/deployments/{id}/result", post(deploy::api::result))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
 }

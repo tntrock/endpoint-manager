@@ -447,3 +447,181 @@ async fn checkin_assigns_by_scope_and_stage(pool: PgPool) {
         .unwrap();
     assert!(ids(&s, &tp).await.is_empty());
 }
+
+/// 套件放在伺服器的套件目錄（下載 API 讀這裡）
+async fn server_package(s: &TestServer, kind: &str, data: &[u8]) -> i64 {
+    package(s, &s.state.package_dir, kind, data).await
+}
+
+async fn result(
+    s: &TestServer,
+    a: &common::TestAgent,
+    dep: i64,
+    status: protocol::deploy::DeployStatus,
+    revision: i32,
+) -> u16 {
+    s.client(Some(a))
+        .post(s.url(&format!("/v1/deployments/{dep}/result")))
+        .json(&protocol::deploy::DeployResult {
+            revision,
+            status,
+            exit_code: Some(1603),
+            message: "boom".into(),
+            attempts: 1,
+        })
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .as_u16()
+}
+
+#[sqlx::test(migrations = false)]
+async fn download_requires_assignment_and_is_limited(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let data = b"MZ fake installer".repeat(1000);
+    let pkg = server_package(&s, "exe", &data).await;
+    let other = server_package(&s, "exe", b"not assigned").await;
+    let tp = s
+        .enroll_ok(&s.create_group_token("台北", 1).await, None, None)
+        .await;
+    let ks = s
+        .enroll_ok(&s.create_group_token("高雄", 1).await, None, None)
+        .await;
+    let ks_g = s.group_id("高雄").await;
+    admin::create_deployment(
+        &s.pool,
+        &DeploymentInput {
+            exclude: vec![ks_g],
+            ..dep_input(pkg, None)
+        },
+        "admin",
+    )
+    .await
+    .unwrap();
+    s.state.deploy.invalidate();
+    let get = |a: &common::TestAgent, id: i64| {
+        let c = s.client(Some(a));
+        let url = s.url(&format!("/v1/packages/{id}/content"));
+        async move { c.get(url).send().await.unwrap() }
+    };
+    let r = get(&tp, pkg).await;
+    assert_eq!(r.status(), 200);
+    assert_eq!(r.bytes().await.unwrap().as_ref(), data.as_slice());
+    assert_eq!(get(&ks, pkg).await.status(), 404, "被排除的裝置");
+    assert_eq!(get(&tp, other).await.status(), 404, "沒被指派的套件");
+    assert_eq!(get(&tp, 9999).await.status(), 404);
+    // 同時下載數用完時回 503 與 Retry-After；歸還後恢復
+    let held = s
+        .state
+        .downloads
+        .clone()
+        .acquire_many_owned(2)
+        .await
+        .unwrap();
+    let r = get(&tp, pkg).await;
+    assert_eq!(r.status(), 503);
+    assert_eq!(r.headers()["retry-after"], "60");
+    drop(held);
+    assert_eq!(get(&tp, pkg).await.status(), 200);
+    assert_eq!(
+        s.state.downloads.available_permits(),
+        2,
+        "串流結束後歸還許可"
+    );
+    // 檔案被刪掉時回 404
+    let sha: String = sqlx::query_scalar("SELECT sha256 FROM packages WHERE id = $1")
+        .bind(pkg)
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    std::fs::remove_file(store::file_path(&s.state.package_dir, &sha)).unwrap();
+    assert_eq!(get(&tp, pkg).await.status(), 404);
+}
+
+#[sqlx::test(migrations = false)]
+async fn results_are_recorded_and_failures_auto_pause(pool: PgPool) {
+    use protocol::deploy::DeployStatus::*;
+    let s = TestServer::start(pool).await;
+    let pkg = server_package(&s, "exe", b"x").await;
+    let tok = s.create_group_token("台北", 5).await;
+    let mut devs = vec![];
+    for _ in 0..4 {
+        devs.push(s.enroll_ok(&tok, None, None).await);
+    }
+    let outsider = s
+        .enroll_ok(&s.create_group_token("高雄", 1).await, None, None)
+        .await;
+    let tp = s.group_id("台北").await;
+    let d = admin::create_deployment(
+        &s.pool,
+        &DeploymentInput {
+            include: vec![tp],
+            max_failure_pct: 40,
+            min_samples: 3,
+            ..dep_input(pkg, None)
+        },
+        "admin",
+    )
+    .await
+    .unwrap();
+    s.state.deploy.invalidate();
+    assert_eq!(result(&s, &outsider, d, Failed, 1).await, 404, "範圍外");
+    assert_eq!(result(&s, &devs[0], 9999, Failed, 1).await, 404);
+    let bad = s
+        .client(Some(&devs[0]))
+        .post(s.url(&format!("/v1/deployments/{d}/result")))
+        .json(&serde_json::json!({"revision": 1, "status": "failed", "message": "x".repeat(1001)}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad.status(), 400);
+
+    let stage = || async {
+        let v: String = sqlx::query_scalar("SELECT stage FROM deployments WHERE id = $1")
+            .bind(d)
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+        v
+    };
+    // compliant 不算樣本；舊 revision 不算
+    assert_eq!(result(&s, &devs[0], d, Compliant, 1).await, 204);
+    assert_eq!(result(&s, &devs[1], d, Failed, 0).await, 204);
+    assert_eq!(result(&s, &devs[2], d, Failed, 1).await, 204);
+    assert_eq!(stage().await, "all", "樣本不足不暫停");
+    assert_eq!(result(&s, &devs[3], d, Succeeded, 1).await, 204);
+    assert_eq!(stage().await, "all", "1 失敗／2 樣本，還不夠 3 台");
+    // 同一台再回報會覆寫（upsert）
+    assert_eq!(result(&s, &devs[1], d, Failed, 1).await, 204);
+    assert_eq!(stage().await, "paused", "2 失敗／3 樣本 > 40%");
+    let (status, code, msg): (String, Option<i32>, String) = sqlx::query_as(
+        "SELECT status, exit_code, message FROM deployment_status \
+         WHERE deployment_id = $1 AND device_id = $2",
+    )
+    .bind(d)
+    .bind(devs[1].device_id)
+    .fetch_one(&s.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        (status.as_str(), code, msg.as_str()),
+        ("failed", Some(1603), "boom")
+    );
+    let audit: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE action = 'deployment_auto_pause' AND actor = 'system'",
+    )
+    .fetch_one(&s.pool)
+    .await
+    .unwrap();
+    assert_eq!(audit, 1);
+    // 暫停中仍接受回報（已在執行的安裝）
+    s.state.deploy.invalidate();
+    assert_eq!(result(&s, &devs[0], d, Succeeded, 1).await, 204);
+    // 停止後不接受
+    admin::set_stage(&s.pool, d, Transition::Stop, "admin")
+        .await
+        .unwrap();
+    s.state.deploy.invalidate();
+    assert_eq!(result(&s, &devs[0], d, Succeeded, 1).await, 404);
+}
