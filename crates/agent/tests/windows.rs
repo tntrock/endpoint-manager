@@ -361,3 +361,38 @@ fn registry_values_are_read_and_guarded() {
     assert_eq!(v[1].state, RegState::Absent);
     assert!(v[2..].iter().all(|x| x.state == RegState::Denied), "{v:?}");
 }
+
+/// Agent 寫入的 WU 原則值名稱必須和 Windows 的 ADMX 一致（值名稱寫錯 Windows 會直接忽略）。
+/// Windows Home 沒有 PolicyDefinitions：本機略過，CI 必須檢查到。
+#[test]
+fn admx_declares_every_policy_value() {
+    let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+    let path = format!(r"{root}\PolicyDefinitions\WindowsUpdate.admx");
+    let Ok(admx) = std::fs::read_to_string(&path) else {
+        assert!(std::env::var_os("CI").is_none(), "CI 必須有 {path}");
+        eprintln!("略過：沒有 {path}");
+        return;
+    };
+    // 值名稱所在元素的標籤（<text、<decimal、<boolean …；原則本身的 valueName 為 <policy）
+    let tag = |name: &str| -> Option<String> {
+        let at = admx.find(&format!("valueName=\"{name}\""))?;
+        let start = admx[..at].rfind('<')?;
+        Some(
+            admx[start + 1..]
+                .split(|c: char| c.is_whitespace())
+                .next()?
+                .to_string(),
+        )
+    };
+    let missing: Vec<&str> = protocol::update::VALUE_NAMES
+        .into_iter()
+        .filter(|n| tag(n).is_none())
+        .collect();
+    assert!(missing.is_empty(), "ADMX 沒有這些值：{missing:?}");
+    assert_eq!(tag("PauseQualityUpdatesStartTime").as_deref(), Some("text"));
+    assert_eq!(tag("PauseFeatureUpdatesStartTime").as_deref(), Some("text"));
+    assert_eq!(
+        tag("DeferQualityUpdatesPeriodInDays").as_deref(),
+        Some("decimal")
+    );
+}
