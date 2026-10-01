@@ -2,3 +2,4 @@
 
 pub mod logic;
 pub mod state;
+pub mod worker;

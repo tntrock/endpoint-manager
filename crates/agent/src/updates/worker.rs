@@ -237,6 +237,7 @@ pub async fn run_update_worker<C: Collector, H: WuHost>(
     mut worker: UpdateWorker<C, H>,
     mut rx: watch::Receiver<Option<UpdateWork>>,
     mut shutdown: watch::Receiver<bool>,
+    nudge: Arc<tokio::sync::Notify>,
 ) {
     loop {
         let work = rx.borrow_and_update().clone();
@@ -249,6 +250,8 @@ pub async fn run_update_worker<C: Collector, H: WuHost>(
         tokio::select! {
             r = rx.changed() => if r.is_err() { return },
             _ = tokio::time::sleep(RECHECK) => {}
+            // 遠端指令「立即套用」
+            _ = nudge.notified() => {}
             _ = shutdown.changed() => return,
         }
     }

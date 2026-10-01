@@ -1320,3 +1320,278 @@ mod updates {
         assert_eq!(row(&e, s.device).await.0, "unmanaged");
     }
 }
+
+mod commands {
+    use super::*;
+    use endpoint_agent::commands::state::{CommandsState, Entry};
+    use endpoint_agent::commands::worker::{CommandHost, CommandWork, CommandWorker};
+    use endpoint_agent::deploy::worker::{RunOutput, RunResult};
+    use endpoint_server::commands::runs::{self, RunInput, Target};
+    use endpoint_server::commands::{Actor, scripts};
+    use tokio::sync::watch;
+
+    /// 記錄所有呼叫；shutdown 時記下伺服器上的指令狀態（確認先回報再關機）
+    struct FakeHost {
+        calls: Mutex<Vec<String>>,
+        pool: PgPool,
+        status_at_shutdown: Mutex<Option<String>>,
+    }
+
+    impl CommandHost for FakeHost {
+        fn collect_all(&self) {
+            self.calls.lock().unwrap().push("collect".into());
+        }
+        fn apply_now(&self) {
+            self.calls.lock().unwrap().push("apply".into());
+        }
+        async fn shutdown(&self, args: &str) -> std::io::Result<()> {
+            self.calls.lock().unwrap().push(format!("shutdown {args}"));
+            let s: Option<String> =
+                sqlx::query_scalar("SELECT string_agg(status, ',') FROM command_targets")
+                    .fetch_one(&self.pool)
+                    .await
+                    .unwrap();
+            *self.status_at_shutdown.lock().unwrap() = s;
+            Ok(())
+        }
+        async fn run_script(
+            &self,
+            path: &std::path::Path,
+            _timeout: Duration,
+        ) -> std::io::Result<RunOutput> {
+            let content = std::fs::read_to_string(path)?;
+            self.calls.lock().unwrap().push(format!("script {content}"));
+            Ok(RunOutput {
+                result: RunResult::Exited(3),
+                output: "hi".into(),
+            })
+        }
+    }
+
+    struct Setup {
+        a: Agent<Fake>,
+        rx: watch::Receiver<Option<CommandWork>>,
+        host: Arc<FakeHost>,
+        device: uuid::Uuid,
+    }
+
+    fn admin(name: &str) -> Actor {
+        Actor {
+            username: name.into(),
+            platform: true,
+            groups: vec![],
+        }
+    }
+
+    async fn setup(e: &Env) -> Setup {
+        let (tx, rx) = watch::channel(None);
+        let mut a = Agent::new(e.dir.path(), Fake::new())
+            .unwrap()
+            .with_commands(tx);
+        a.run_cycle().await;
+        let device = a.state().device_id.unwrap();
+        let host = Arc::new(FakeHost {
+            calls: Mutex::new(vec![]),
+            pool: e.pool.clone(),
+            status_at_shutdown: Mutex::new(None),
+        });
+        Setup {
+            a,
+            rx,
+            host,
+            device,
+        }
+    }
+
+    async fn command(e: &Env, device: uuid::Uuid, action: &str, script_id: Option<i64>) {
+        runs::create_run(
+            &e.pool,
+            &RunInput {
+                action: action.into(),
+                target: Target::Device(device),
+                delay_minutes: None,
+                script_id,
+                expires_hours: 24,
+            },
+            &admin("admin"),
+        )
+        .await
+        .unwrap();
+    }
+
+    async fn work(s: &mut Setup) -> CommandWork {
+        s.a.run_cycle().await;
+        s.rx.borrow().clone().expect("伺服器有下發指令清單")
+    }
+
+    async fn results(e: &Env) -> Vec<(String, Option<i32>, String)> {
+        sqlx::query_as("SELECT status, exit_code, output FROM command_targets ORDER BY id")
+            .fetch_all(&e.pool)
+            .await
+            .unwrap()
+    }
+
+    fn calls(s: &Setup) -> Vec<String> {
+        s.host.calls.lock().unwrap().clone()
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn collect_and_apply_reach_the_host_and_server(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let mut s = setup(&e).await;
+        command(&e, s.device, "collect", None).await;
+        command(&e, s.device, "apply", None).await;
+        let w = work(&mut s).await;
+        assert_eq!(w.commands.len(), 2);
+        let mut worker = CommandWorker::new(e.dir.path(), s.host.clone());
+        worker.pass(&w).await;
+        assert_eq!(calls(&s), vec!["collect", "apply"]);
+        let r = results(&e).await;
+        assert!(r.iter().all(|x| x.0 == "succeeded"), "{r:?}");
+        // 已回報：伺服器不再下發，再跑一輪也不會再呼叫
+        let w = work(&mut s).await;
+        assert!(w.commands.is_empty());
+        worker.pass(&w).await;
+        assert_eq!(calls(&s).len(), 2);
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn reboot_reports_before_shutdown(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let mut s = setup(&e).await;
+        command(&e, s.device, "reboot", None).await;
+        let w = work(&mut s).await;
+        CommandWorker::new(e.dir.path(), s.host.clone())
+            .pass(&w)
+            .await;
+        let c = calls(&s);
+        assert_eq!(c.len(), 1);
+        assert!(c[0].starts_with("shutdown /r /t 600 "), "{c:?}");
+        assert_eq!(
+            s.host.status_at_shutdown.lock().unwrap().as_deref(),
+            Some("succeeded"),
+            "關機前結果已送到伺服器"
+        );
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn reboot_runs_even_if_report_fails(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let mut s = setup(&e).await;
+        command(&e, s.device, "reboot", None).await;
+        let good = work(&mut s).await;
+        let offline = CommandWork {
+            server_url: "https://127.0.0.1:1".into(),
+            ..good.clone()
+        };
+        let mut worker = CommandWorker::new(e.dir.path(), s.host.clone());
+        worker.pass(&offline).await;
+        assert_eq!(calls(&s).len(), 1, "網路斷也要重開機");
+        let id = good.commands[0].id;
+        assert!(!worker.state().entries[&id].reported);
+        // 開機後（新的 worker 讀狀態檔）補送，不再重開
+        let mut after = CommandWorker::new(e.dir.path(), s.host.clone());
+        after.pass(&good).await;
+        assert_eq!(calls(&s).len(), 1);
+        assert_eq!(results(&e).await[0].0, "succeeded");
+    }
+
+    async fn approved_script(e: &Env, content: &str) -> i64 {
+        let id = scripts::create_script(
+            &e.pool,
+            &scripts::ScriptInput {
+                name: "測試".into(),
+                description: String::new(),
+                content: content.into(),
+                timeout_minutes: 5,
+            },
+            &admin("alice"),
+        )
+        .await
+        .unwrap();
+        let sha: String = sqlx::query_scalar("SELECT sha256 FROM scripts WHERE id = $1")
+            .bind(id)
+            .fetch_one(&e.pool)
+            .await
+            .unwrap();
+        scripts::approve_script(&e.pool, id, &sha, &admin("bob"))
+            .await
+            .unwrap();
+        id
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn script_hash_mismatch_is_not_run(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let mut s = setup(&e).await;
+        let sid = approved_script(&e, "Write-Output ok").await;
+        command(&e, s.device, "script", Some(sid)).await;
+        let mut w = work(&mut s).await;
+        w.commands[0].script.as_mut().unwrap().content = r"Remove-Item C:\".into();
+        CommandWorker::new(e.dir.path(), s.host.clone())
+            .pass(&w)
+            .await;
+        assert!(calls(&s).is_empty());
+        let r = &results(&e).await[0];
+        assert_eq!(r.0, "failed");
+        assert!(r.2.contains("雜湊不符"), "{r:?}");
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn script_runs_and_file_is_removed(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let mut s = setup(&e).await;
+        let sid = approved_script(&e, "Write-Output hi; exit 3").await;
+        command(&e, s.device, "script", Some(sid)).await;
+        let w = work(&mut s).await;
+        CommandWorker::new(e.dir.path(), s.host.clone())
+            .pass(&w)
+            .await;
+        assert_eq!(
+            calls(&s),
+            vec![format!(
+                "script \u{feff}{}Write-Output hi; exit 3",
+                endpoint_agent::commands::logic::SCRIPT_PRELUDE
+            )]
+        );
+        assert_eq!(
+            results(&e).await[0],
+            ("failed".into(), Some(3), "hi".into())
+        );
+        let id = w.commands[0].id;
+        assert!(
+            !e.dir
+                .path()
+                .join("scripts")
+                .join(format!("{id}.ps1"))
+                .exists()
+        );
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn interrupted_command_is_reported_not_rerun(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let mut s = setup(&e).await;
+        command(&e, s.device, "reboot", None).await;
+        let w = work(&mut s).await;
+        let mut st = CommandsState::default();
+        st.entries.insert(
+            w.commands[0].id,
+            Entry {
+                started_at: Some(chrono::Utc::now()),
+                result: None,
+                reported: false,
+            },
+        );
+        st.save(e.dir.path()).unwrap();
+        CommandWorker::new(e.dir.path(), s.host.clone())
+            .pass(&w)
+            .await;
+        assert!(calls(&s).is_empty());
+        let r = &results(&e).await[0];
+        assert_eq!(
+            (r.0.as_str(), r.2.as_str()),
+            ("failed", endpoint_agent::commands::logic::INTERRUPTED)
+        );
+    }
+}

@@ -5,6 +5,9 @@ use sha2::{Digest, Sha256};
 
 pub use super::state::Entry;
 
+/// 腳本檔開頭加上的一行（雜湊驗證之後才加）：PowerShell 5.1 預設以系統字碼頁輸出，
+/// 中文會變亂碼；改成 UTF-8 才能正確收回輸出。錯誤訊息的行號會多 1。
+pub const SCRIPT_PRELUDE: &str = "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\r\n";
 pub const INTERRUPTED: &str = "執行中斷（Agent 停止或電腦重新開機）";
 
 #[derive(Debug, Clone, PartialEq, Eq)]

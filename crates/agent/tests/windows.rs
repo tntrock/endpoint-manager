@@ -446,3 +446,32 @@ fn registry_host_round_trip() {
         .delete_subkey_all(path.rsplit('\\').next().unwrap())
         .unwrap();
 }
+
+/// 不需系統管理員：實際以 PowerShell 執行腳本，收回輸出與結束碼
+#[tokio::test]
+async fn windows_host_runs_powershell_script() {
+    use endpoint_agent::commands::worker::CommandHost;
+    use endpoint_agent::deploy::worker::RunResult;
+    use endpoint_agent::windows::commands::WindowsHost;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("t.ps1");
+    std::fs::write(
+        &path,
+        format!(
+            "\u{feff}{}Write-Output '你好 hi'; exit 3",
+            endpoint_agent::commands::logic::SCRIPT_PRELUDE
+        ),
+    )
+    .unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::channel(4);
+    let host = WindowsHost {
+        triggers: tx,
+        nudges: vec![],
+    };
+    let out = host
+        .run_script(&path, std::time::Duration::from_secs(120))
+        .await
+        .unwrap();
+    assert_eq!(out.result, RunResult::Exited(3));
+    assert!(out.output.contains("你好 hi"), "{}", out.output);
+}

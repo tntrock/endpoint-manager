@@ -1,6 +1,7 @@
 //! Windows 專屬：收集、登錄檔監聽、事件檢視器、服務。
 
 pub mod collect;
+pub mod commands;
 pub mod eventlog;
 pub mod install;
 pub mod registry;
@@ -18,6 +19,7 @@ use windows_sys::Win32::System::Threading::{
 };
 
 use crate::agent::{Agent, run_agent};
+use crate::commands::worker::{CommandWorker, run_command_worker};
 use crate::deploy::worker::{ProcessRunner, Worker, run_worker};
 use crate::updates::worker::{UpdateWorker, run_update_worker};
 
@@ -36,9 +38,15 @@ pub async fn run(dir: &Path, shutdown: watch::Receiver<bool>) -> anyhow::Result<
     lower_priority();
     let (deploy_tx, deploy_rx) = watch::channel(None);
     let (updates_tx, updates_rx) = watch::channel(None);
+    let (commands_tx, commands_rx) = watch::channel(None);
     let agent = Agent::new(dir, collect::WindowsCollector)?
         .with_deploy(deploy_tx)
-        .with_updates(updates_tx);
+        .with_updates(updates_tx)
+        .with_commands(commands_tx);
+    let deploy_nudge = std::sync::Arc::new(tokio::sync::Notify::new());
+    let updates_nudge = std::sync::Arc::new(tokio::sync::Notify::new());
+    // 有界：登錄檔大量變動時多餘的觸發直接丟棄（排程本來就會合併同一區段）
+    let (tx, rx) = mpsc::channel(16);
     tokio::spawn(run_update_worker(
         UpdateWorker::new(
             dir,
@@ -47,6 +55,7 @@ pub async fn run(dir: &Path, shutdown: watch::Receiver<bool>) -> anyhow::Result<
         ),
         updates_rx,
         shutdown.clone(),
+        updates_nudge.clone(),
     ));
     tokio::spawn(run_worker(
         Worker::new(
@@ -56,9 +65,19 @@ pub async fn run(dir: &Path, shutdown: watch::Receiver<bool>) -> anyhow::Result<
         ),
         deploy_rx,
         shutdown.clone(),
+        deploy_nudge.clone(),
     ));
-    // 有界：登錄檔大量變動時多餘的觸發直接丟棄（排程本來就會合併同一區段）
-    let (tx, rx) = mpsc::channel(16);
+    tokio::spawn(run_command_worker(
+        CommandWorker::new(
+            dir,
+            std::sync::Arc::new(commands::WindowsHost {
+                triggers: tx.clone(),
+                nudges: vec![deploy_nudge, updates_nudge],
+            }),
+        ),
+        commands_rx,
+        shutdown.clone(),
+    ));
     regwatch::watch_software(tx.clone());
     regwatch::watch_patches(tx);
     run_agent(agent, shutdown, rx).await;

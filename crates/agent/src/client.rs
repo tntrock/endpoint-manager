@@ -246,6 +246,31 @@ impl ServerClient {
         Ok(())
     }
 
+    /// 回報指令結果；404（伺服器已沒有這筆）也算完成
+    pub async fn command_result(
+        &self,
+        id: i64,
+        r: &protocol::command::CommandResult,
+    ) -> Result<(), ClientError> {
+        let resp = self
+            .http
+            .post(self.url(&format!("/v1/commands/{id}/result")))
+            .json(r)
+            .send()
+            .await?;
+        let status = resp.status();
+        if status.is_success() || status == StatusCode::NOT_FOUND {
+            return Ok(());
+        }
+        Err(match status {
+            StatusCode::UNAUTHORIZED => ClientError::Unauthorized,
+            s if is_payload_rejection(s.as_u16()) => {
+                ClientError::Rejected(s.as_u16(), resp.text().await.unwrap_or_default())
+            }
+            _ => ClientError::Retry(retry_after_of(&resp)),
+        })
+    }
+
     pub async fn upload(&self, up: &InventoryUpload) -> Result<(), ClientError> {
         let json = serde_json::to_vec(up).expect("upload serializes");
         let mut gz = GzEncoder::new(Vec::new(), Compression::default());
