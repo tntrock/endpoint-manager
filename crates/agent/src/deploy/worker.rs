@@ -103,35 +103,104 @@ impl Drop for Job {
 
 impl Runner for ProcessRunner {
     async fn run(&self, cmd: &Cmd, timeout: Duration) -> std::io::Result<RunResult> {
-        let mut c = tokio::process::Command::new(&cmd.program);
-        #[cfg(windows)]
-        {
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            const NORMAL_PRIORITY_CLASS: u32 = 0x0000_0020;
-            // 管理員填的參數原樣傳入（含引號），不再跳脫
-            c.raw_arg(&cmd.args);
-            c.creation_flags(CREATE_NO_WINDOW | NORMAL_PRIORITY_CLASS);
+        Ok(run_process(cmd, timeout, false).await?.result)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunOutput {
+    pub result: RunResult,
+    /// stdout 後接 stderr（lossy UTF-8），最多 MAX_OUTPUT_BYTES（只留最後的部分）
+    pub output: String,
+}
+
+/// 讀到結束，只保留最後 MAX_OUTPUT_BYTES
+async fn read_tail(mut r: impl tokio::io::AsyncRead + Unpin) -> Vec<u8> {
+    use tokio::io::AsyncReadExt;
+    let max = protocol::command::MAX_OUTPUT_BYTES;
+    let mut keep = Vec::new();
+    let mut buf = [0u8; 8192];
+    while let Ok(n) = r.read(&mut buf).await {
+        if n == 0 {
+            break;
         }
-        #[cfg(not(windows))]
-        c.args(cmd.args.split_whitespace());
-        c.stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-        let mut child = c.spawn()?;
-        #[cfg(windows)]
-        let job = Job::attach(&child);
-        match tokio::time::timeout(timeout, child.wait()).await {
-            Ok(status) => Ok(RunResult::Exited(status?.code().unwrap_or(-1))),
-            Err(_) => {
-                #[cfg(windows)]
-                if let Some(j) = &job {
-                    j.terminate();
-                }
-                let _ = child.kill().await;
-                Ok(RunResult::TimedOut)
-            }
+        keep.extend_from_slice(&buf[..n]);
+        if keep.len() > 2 * max {
+            keep.drain(..keep.len() - max);
         }
     }
+    if keep.len() > max {
+        keep.drain(..keep.len() - max);
+    }
+    keep
+}
+
+/// 逾時後等輸出讀完的上限：孫程序繼承了 pipe handle 時不會關，不能一直等
+const DRAIN_WAIT: Duration = Duration::from_secs(5);
+
+/// 執行程式。capture = false 時丟棄輸出（派送用）；true 時收集 stdout 與 stderr。
+pub async fn run_process(
+    cmd: &Cmd,
+    timeout: Duration,
+    capture: bool,
+) -> std::io::Result<RunOutput> {
+    use std::process::Stdio;
+    let mut c = tokio::process::Command::new(&cmd.program);
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        const NORMAL_PRIORITY_CLASS: u32 = 0x0000_0020;
+        // 管理員填的參數原樣傳入（含引號），不再跳脫
+        c.raw_arg(&cmd.args);
+        c.creation_flags(CREATE_NO_WINDOW | NORMAL_PRIORITY_CLASS);
+    }
+    #[cfg(not(windows))]
+    c.args(cmd.args.split_whitespace());
+    let pipe = || {
+        if capture {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        }
+    };
+    c.stdin(Stdio::null()).stdout(pipe()).stderr(pipe());
+    let mut child = c.spawn()?;
+    #[cfg(windows)]
+    let job = Job::attach(&child);
+    let out = child.stdout.take().map(|s| tokio::spawn(read_tail(s)));
+    let err = child.stderr.take().map(|s| tokio::spawn(read_tail(s)));
+    let result = match tokio::time::timeout(timeout, child.wait()).await {
+        Ok(status) => RunResult::Exited(status?.code().unwrap_or(-1)),
+        Err(_) => {
+            #[cfg(windows)]
+            if let Some(j) = &job {
+                j.terminate();
+            }
+            let _ = child.kill().await;
+            RunResult::TimedOut
+        }
+    };
+    let mut parts = vec![];
+    for task in [out, err].into_iter().flatten() {
+        let abort = task.abort_handle();
+        match tokio::time::timeout(DRAIN_WAIT, task).await {
+            Ok(Ok(bytes)) if !bytes.is_empty() => parts.push(bytes),
+            Ok(_) => {}
+            Err(_) => abort.abort(),
+        }
+    }
+    let joined = parts
+        .iter()
+        .map(|b| {
+            String::from_utf8_lossy(b)
+                .trim_end_matches(['\r', '\n'])
+                .to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let output =
+        protocol::command::tail_utf8(&joined, protocol::command::MAX_OUTPUT_BYTES).to_string();
+    Ok(RunOutput { result, output })
 }
 
 pub struct Worker<C: Collector, R: Runner> {
@@ -599,6 +668,55 @@ mod tests {
                 .unwrap(),
             RunResult::TimedOut
         );
+    }
+
+    #[tokio::test]
+    async fn run_process_captures_output_and_exit_code() {
+        let r = run_process(
+            &cmd(r#"/c "echo hello & echo oops 1>&2 & exit 3""#),
+            Duration::from_secs(30),
+            true,
+        )
+        .await
+        .unwrap();
+        assert_eq!(r.result, RunResult::Exited(3));
+        assert!(
+            r.output.contains("hello") && r.output.contains("oops"),
+            "{}",
+            r.output
+        );
+    }
+
+    #[tokio::test]
+    async fn run_process_keeps_tail() {
+        let r = run_process(
+            &cmd(r#"/c "for /l %i in (1,1,20000) do @echo line%i""#),
+            Duration::from_secs(60),
+            true,
+        )
+        .await
+        .unwrap();
+        assert!(
+            r.output.len() <= protocol::command::MAX_OUTPUT_BYTES,
+            "{}",
+            r.output.len()
+        );
+        assert!(r.output.trim_end().ends_with("line20000"));
+    }
+
+    #[tokio::test]
+    async fn run_process_timeout_returns_partial_output() {
+        let start = std::time::Instant::now();
+        let r = run_process(
+            &cmd(r#"/c "echo started & ping -n 30 127.0.0.1 >nul""#),
+            Duration::from_secs(1),
+            true,
+        )
+        .await
+        .unwrap();
+        assert_eq!(r.result, RunResult::TimedOut);
+        assert!(r.output.contains("started"), "{}", r.output);
+        assert!(start.elapsed() < Duration::from_secs(10));
     }
 
     /// 逾時時整個程序樹都結束：背景啟動的孫程序 3 秒後才寫檔，被結束就不會寫
