@@ -25,18 +25,21 @@ type PendingRow = (
 
 /// 這台還沒完成、沒過期、沒取消的指令（由舊到新最多 10 筆）；收到結果前每次都重送。
 /// 沒有指令時只有一次走部分索引的查詢，不寫入。
+/// 鎖住選到的指令列並在同一個交易裡改成已送出：同時被取消的指令，
+/// 取消先完成時重新檢查後排除，不會送出已取消的指令。
 pub async fn pending_for(pool: &PgPool, device: Uuid) -> Result<Vec<Command>, sqlx::Error> {
+    let mut tx = pool.begin().await?;
     let rows: Vec<PendingRow> = sqlx::query_as(
         "SELECT t.id, r.action, r.delay_minutes, r.script_sha256, r.script_content, \
                 r.script_timeout_minutes, t.status \
          FROM command_targets t JOIN command_runs r ON r.id = t.run_id \
          WHERE t.device_id = $1 AND t.status IN ('pending', 'sent') \
            AND r.canceled_at IS NULL AND r.expires_at > now() \
-         ORDER BY t.id LIMIT $2",
+         ORDER BY t.id LIMIT $2 FOR UPDATE OF t",
     )
     .bind(device)
     .bind(MAX_COMMANDS_PER_CHECKIN)
-    .fetch_all(pool)
+    .fetch_all(&mut *tx)
     .await?;
     let fresh: Vec<i64> = rows
         .iter()
@@ -49,9 +52,10 @@ pub async fn pending_for(pool: &PgPool, device: Uuid) -> Result<Vec<Command>, sq
              WHERE id = ANY($1) AND status = 'pending'",
         )
         .bind(&fresh)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
     }
+    tx.commit().await?;
     Ok(rows
         .into_iter()
         .map(|(id, action, delay, sha, content, timeout, _)| {

@@ -99,11 +99,15 @@ async fn two_person_approval(pool: PgPool) {
         (status.as_str(), hash, by),
         ("pending", sha("Remove-Item $env:TEMP\\* -Recurse"), None)
     );
-    let e = err(scripts::approve_script(&s.pool, id, &alice)
-        .await
-        .unwrap_err());
+    let e = err(
+        scripts::approve_script(&s.pool, id, &sha_of(&s.pool, id).await, &alice)
+            .await
+            .unwrap_err(),
+    );
     assert!(e.contains("自己"), "{e}");
-    scripts::approve_script(&s.pool, id, &bob).await.unwrap();
+    scripts::approve_script(&s.pool, id, &sha_of(&s.pool, id).await, &bob)
+        .await
+        .unwrap();
     assert_eq!(script_row(&s.pool, id).await.0, "approved");
 
     // 只改說明：不用重新核准
@@ -125,15 +129,28 @@ async fn two_person_approval(pool: PgPool) {
         .unwrap();
     let (status, hash, by) = script_row(&s.pool, id).await;
     assert_eq!((status.as_str(), hash, by), ("pending", sha("dir"), None));
-    // bob 改內容後，alice 可以核准
+    // bob 也改了內容：上次核准後的修改者（alice、bob）都不能核准，由 carol 核准
     scripts::update_script(&s.pool, id, &input("dir /s"), &bob)
         .await
         .unwrap();
-    assert!(scripts::approve_script(&s.pool, id, &bob).await.is_err());
-    scripts::approve_script(&s.pool, id, &alice).await.unwrap();
-    assert_eq!(script_row(&s.pool, id).await.2.as_deref(), Some("alice"));
+    for who in [&bob, &alice] {
+        assert!(
+            scripts::approve_script(&s.pool, id, &sha_of(&s.pool, id).await, who)
+                .await
+                .is_err()
+        );
+    }
+    let carol = platform("carol");
+    scripts::approve_script(&s.pool, id, &sha_of(&s.pool, id).await, &carol)
+        .await
+        .unwrap();
+    assert_eq!(script_row(&s.pool, id).await.2.as_deref(), Some("carol"));
     // 已核准的不能再核准
-    assert!(scripts::approve_script(&s.pool, id, &bob).await.is_err());
+    assert!(
+        scripts::approve_script(&s.pool, id, &sha_of(&s.pool, id).await, &bob)
+            .await
+            .is_err()
+    );
 
     // 停用：不能改內容；啟用後回到待核准
     scripts::set_disabled(&s.pool, id, true, &alice)
@@ -346,7 +363,9 @@ async fn script_runs_snapshot_content(pool: PgPool) {
         .await
         .unwrap_err());
     assert!(e.contains("核准"), "{e}");
-    scripts::approve_script(&s.pool, sid, &bob).await.unwrap();
+    scripts::approve_script(&s.pool, sid, &sha_of(&s.pool, sid).await, &bob)
+        .await
+        .unwrap();
     let (id, _) = runs::create_run(&s.pool, &script_run(sid), &alice)
         .await
         .unwrap();
@@ -477,7 +496,9 @@ async fn checkin_delivers_and_resends(pool: PgPool) {
     let sid = scripts::create_script(&s.pool, &input("Write-Output hi"), &admin)
         .await
         .unwrap();
-    scripts::approve_script(&s.pool, sid, &bob).await.unwrap();
+    scripts::approve_script(&s.pool, sid, &sha_of(&s.pool, sid).await, &bob)
+        .await
+        .unwrap();
     let b = &f.tp_dev[1];
     runs::create_run(
         &s.pool,
@@ -576,4 +597,150 @@ async fn results_are_recorded_once(pool: PgPool) {
     runs::cancel_run(&s.pool, run2, &admin).await.unwrap();
     assert_eq!(report(&s, b, t2, fail).await, 204);
     assert_eq!(target_state(&s.pool, t2).await.0, "canceled");
+}
+
+// ---- 審查修正 ----
+
+async fn sha_of(pool: &PgPool, id: i64) -> String {
+    sqlx::query_scalar("SELECT sha256 FROM scripts WHERE id = $1")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// 核准者看到的內容在核准前被改掉：不能核准沒看過的版本
+#[sqlx::test(migrations = false)]
+async fn approve_requires_the_reviewed_hash(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let (alice, bob) = (platform("alice"), platform("bob"));
+    let id = scripts::create_script(&s.pool, &input("Write-Output ok"), &alice)
+        .await
+        .unwrap();
+    let seen = sha_of(&s.pool, id).await;
+    scripts::update_script(&s.pool, id, &input(r"Remove-Item C:\ -Recurse"), &alice)
+        .await
+        .unwrap();
+    let e = err(scripts::approve_script(&s.pool, id, &seen, &bob)
+        .await
+        .unwrap_err());
+    assert!(e.contains("內容已變更"), "{e}");
+    assert_eq!(script_row(&s.pool, id).await.0, "pending");
+    let now = sha_of(&s.pool, id).await;
+    scripts::approve_script(&s.pool, id, &now, &bob)
+        .await
+        .unwrap();
+}
+
+/// 別人只改逾時（或改一點點內容）不能讓原作者自己核准
+#[sqlx::test(migrations = false)]
+async fn every_editor_since_approval_is_excluded(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let (alice, bob, carol) = (platform("alice"), platform("bob"), platform("carol"));
+    let id = scripts::create_script(&s.pool, &input("evil"), &alice)
+        .await
+        .unwrap();
+    scripts::update_script(
+        &s.pool,
+        id,
+        &ScriptInput {
+            timeout_minutes: 31,
+            ..input("evil")
+        },
+        &bob,
+    )
+    .await
+    .unwrap();
+    let h = sha_of(&s.pool, id).await;
+    for who in [&alice, &bob] {
+        let e = err(scripts::approve_script(&s.pool, id, &h, who)
+            .await
+            .unwrap_err());
+        assert!(e.contains("自己"), "{e}");
+    }
+    scripts::approve_script(&s.pool, id, &h, &carol)
+        .await
+        .unwrap();
+    // 核准後重新計算：之後的修改者才被排除
+    scripts::update_script(&s.pool, id, &input("fixed"), &carol)
+        .await
+        .unwrap();
+    let h = sha_of(&s.pool, id).await;
+    scripts::approve_script(&s.pool, id, &h, &alice)
+        .await
+        .unwrap();
+}
+
+/// 單人模式下自己核准的腳本，切回雙人模式後不能直接執行，要由另一位重新核准
+#[sqlx::test(migrations = false)]
+async fn self_approved_scripts_need_review_after_mode_switch(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let f = fleet(&s).await;
+    let (alice, bob) = (platform("alice"), platform("bob"));
+    scripts::set_require_second_approver(&s.pool, false, &alice)
+        .await
+        .unwrap();
+    let id = scripts::create_script(&s.pool, &input("dir"), &alice)
+        .await
+        .unwrap();
+    scripts::set_require_second_approver(&s.pool, true, &alice)
+        .await
+        .unwrap();
+    let script_run = RunInput {
+        script_id: Some(id),
+        ..run("script", Target::Group(f.tp))
+    };
+    let e = err(runs::create_run(&s.pool, &script_run, &alice)
+        .await
+        .unwrap_err());
+    assert!(e.contains("核准"), "{e}");
+    let h = sha_of(&s.pool, id).await;
+    assert!(
+        scripts::approve_script(&s.pool, id, &h, &alice)
+            .await
+            .is_err()
+    );
+    scripts::approve_script(&s.pool, id, &h, &bob)
+        .await
+        .unwrap();
+    runs::create_run(&s.pool, &script_run, &alice)
+        .await
+        .unwrap();
+}
+
+/// 取消與報到同時發生：取消先完成時，報到不能送出已取消的指令
+#[sqlx::test(migrations = false)]
+async fn canceled_while_checking_in_is_not_delivered(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let f = fleet(&s).await;
+    let a = &f.tp_dev[0];
+    let (run_id, _) = runs::create_run(
+        &s.pool,
+        &run("reboot", Target::Device(a.device_id)),
+        &platform("admin"),
+    )
+    .await
+    .unwrap();
+    // 模擬取消的交易：已改好狀態但還沒 commit
+    let mut tx = s.pool.begin().await.unwrap();
+    sqlx::query("UPDATE command_targets SET status = 'canceled' WHERE run_id = $1")
+        .bind(run_id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE command_runs SET canceled_at = now() WHERE id = $1")
+        .bind(run_id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let checkin = {
+        let s = &s;
+        async move { checkin(s, a).await }
+    };
+    let commit = async move {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        tx.commit().await.unwrap();
+    };
+    let (r, _) = tokio::join!(checkin, commit);
+    assert!(r.commands.is_empty(), "{:?}", r.commands);
 }

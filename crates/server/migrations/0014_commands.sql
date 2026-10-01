@@ -13,7 +13,9 @@ CREATE TABLE scripts (
     updated_by       TEXT NOT NULL,
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     approved_by      TEXT,
-    approved_at      TIMESTAMPTZ
+    approved_at      TIMESTAMPTZ,
+    -- 上次核准後修改過內容或逾時的所有人：雙人核准時這些人都不能核准
+    editors          TEXT[] NOT NULL DEFAULT '{}'
 );
 
 -- 一次操作；腳本內容在建立時複製，之後修改腳本不影響已下的指令

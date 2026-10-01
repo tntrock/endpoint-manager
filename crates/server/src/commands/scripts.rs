@@ -120,9 +120,10 @@ pub async fn create_script(pool: &PgPool, i: &ScriptInput, actor: &Actor) -> any
     let mut tx = pool.begin().await?;
     let id: i64 = sqlx::query_scalar(
         "INSERT INTO scripts (name, description, content, sha256, timeout_minutes, status, \
-           created_by, updated_by, approved_by, approved_at) \
+           created_by, updated_by, approved_by, approved_at, editors) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $7, \
-           CASE WHEN $6 = 'approved' THEN $7 END, CASE WHEN $6 = 'approved' THEN now() END) \
+           CASE WHEN $6 = 'approved' THEN $7 END, CASE WHEN $6 = 'approved' THEN now() END, \
+           ARRAY[$7]) \
          RETURNING id",
     )
     .bind(&v.name)
@@ -147,19 +148,40 @@ pub async fn create_script(pool: &PgPool, i: &ScriptInput, actor: &Actor) -> any
     Ok(id)
 }
 
-/// 鎖住腳本列，回傳 (名稱, sha256, 逾時, 狀態, 最後修改內容的人)
-async fn lock(
-    conn: &mut PgConnection,
-    id: i64,
-) -> anyhow::Result<(String, String, i32, String, String)> {
-    let row: Option<(String, String, i32, String, String)> = sqlx::query_as(
-        "SELECT name, sha256, timeout_minutes, status, updated_by FROM scripts \
+struct Locked {
+    name: String,
+    sha256: String,
+    timeout: i32,
+    status: String,
+    approved_by: Option<String>,
+    /// 上次核准後修改過內容或逾時的人
+    editors: Vec<String>,
+}
+
+/// 雙人核准下，這份核准是否真的由另一個人檢視（核准者不是任何一位修改者；
+/// 切換模式前自己核准的不算）
+pub fn approval_is_independent(approved_by: Option<&str>, editors: &[String]) -> bool {
+    approved_by.is_some_and(|a| !editors.iter().any(|e| e == a))
+}
+
+async fn lock(conn: &mut PgConnection, id: i64) -> anyhow::Result<Locked> {
+    type Row = (String, String, i32, String, Option<String>, Vec<String>);
+    let row: Option<Row> = sqlx::query_as(
+        "SELECT name, sha256, timeout_minutes, status, approved_by, editors FROM scripts \
          WHERE id = $1 FOR UPDATE",
     )
     .bind(id)
     .fetch_optional(&mut *conn)
     .await?;
-    row.context("腳本不存在")
+    let (name, sha256, timeout, status, approved_by, editors) = row.context("腳本不存在")?;
+    Ok(Locked {
+        name,
+        sha256,
+        timeout,
+        status,
+        approved_by,
+        editors,
+    })
 }
 
 pub async fn update_script(
@@ -172,16 +194,20 @@ pub async fn update_script(
     let v = validate(i)?;
     let second = require_second_approver(pool).await?;
     let mut tx = pool.begin().await?;
-    let (_, old_sha, old_timeout, status, _) = lock(&mut tx, id).await?;
-    let changed = old_sha != v.sha256 || old_timeout != i.timeout_minutes;
+    let old = lock(&mut tx, id).await?;
+    let changed = old.sha256 != v.sha256 || old.timeout != i.timeout_minutes;
     if changed {
-        ensure!(status != "disabled", "腳本已停用，請先啟用");
+        ensure!(old.status != "disabled", "腳本已停用，請先啟用");
         let status = status_after_change(second);
+        // 修改者清單：上次核准後重新開始，之後每位修改者都加進去
         sqlx::query(
             "UPDATE scripts SET name = $2, description = $3, content = $4, sha256 = $5, \
                timeout_minutes = $6, status = $7, updated_by = $8, updated_at = now(), \
                approved_by = CASE WHEN $7 = 'approved' THEN $8 END, \
-               approved_at = CASE WHEN $7 = 'approved' THEN now() END \
+               approved_at = CASE WHEN $7 = 'approved' THEN now() END, \
+               editors = CASE WHEN status = 'approved' OR $7 = 'approved' THEN ARRAY[$8] \
+                              WHEN $8 = ANY(editors) THEN editors \
+                              ELSE array_append(editors, $8) END \
              WHERE id = $1",
         )
         .bind(id)
@@ -217,14 +243,32 @@ pub async fn update_script(
     Ok(())
 }
 
-pub async fn approve_script(pool: &PgPool, id: i64, actor: &Actor) -> anyhow::Result<()> {
+/// `expected_sha256` 是核准者檢視時看到的內容雜湊：內容在那之後被改過就不核准
+pub async fn approve_script(
+    pool: &PgPool,
+    id: i64,
+    expected_sha256: &str,
+    actor: &Actor,
+) -> anyhow::Result<()> {
     platform(actor)?;
     let second = require_second_approver(pool).await?;
     let mut tx = pool.begin().await?;
-    let (name, sha, _, status, updated_by) = lock(&mut tx, id).await?;
-    ensure!(status == "pending", "只有待核准的腳本可以核准");
+    let s = lock(&mut tx, id).await?;
+    let (name, sha) = (s.name.clone(), s.sha256.clone());
     ensure!(
-        !second || updated_by != actor.username,
+        sha == expected_sha256.to_ascii_lowercase(),
+        "腳本內容已變更，請重新檢視後再核准"
+    );
+    // 雙人核准下，自己核准過的（例如單人模式時）可以由另一位重新核准
+    let reapprove = second
+        && s.status == "approved"
+        && !approval_is_independent(s.approved_by.as_deref(), &s.editors);
+    ensure!(
+        s.status == "pending" || reapprove,
+        "只有待核准的腳本可以核准"
+    );
+    ensure!(
+        !second || !s.editors.contains(&actor.username),
         "不能核准自己修改的腳本，請由另一位平台管理員核准"
     );
     sqlx::query(
@@ -256,12 +300,13 @@ pub async fn set_disabled(
     platform(actor)?;
     let second = require_second_approver(pool).await?;
     let mut tx = pool.begin().await?;
-    let (name, sha, _, status, _) = lock(&mut tx, id).await?;
+    let s = lock(&mut tx, id).await?;
+    let (name, sha) = (s.name, s.sha256);
     let new_status = if disabled {
-        ensure!(status != "disabled", "腳本已停用");
+        ensure!(s.status != "disabled", "腳本已停用");
         "disabled"
     } else {
-        ensure!(status == "disabled", "腳本沒有停用");
+        ensure!(s.status == "disabled", "腳本沒有停用");
         status_after_change(second)
     };
     sqlx::query(
@@ -296,7 +341,8 @@ pub async fn set_disabled(
 pub async fn delete_script(pool: &PgPool, id: i64, actor: &Actor) -> anyhow::Result<()> {
     platform(actor)?;
     let mut tx = pool.begin().await?;
-    let (name, sha, _, _, _) = lock(&mut tx, id).await?;
+    let s = lock(&mut tx, id).await?;
+    let (name, sha) = (s.name, s.sha256);
     let used: bool =
         sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM command_runs WHERE script_id = $1)")
             .bind(id)

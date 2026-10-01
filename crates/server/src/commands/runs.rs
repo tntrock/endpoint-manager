@@ -56,19 +56,26 @@ pub async fn create_run(pool: &PgPool, i: &RunInput, actor: &Actor) -> anyhow::R
         action != CommandAction::Script || actor.platform,
         "只有平台管理員能執行腳本"
     );
+    let second = super::scripts::require_second_approver(pool).await?;
     let mut tx = pool.begin().await?;
 
     let script: Option<ScriptSnapshot> = if action == CommandAction::Script {
         let id = i.script_id.context("請選擇腳本")?;
-        let row: Option<(String, String, String, i32)> = sqlx::query_as(
-            "SELECT status, sha256, content, timeout_minutes FROM scripts \
+        type Row = (String, String, String, i32, Option<String>, Vec<String>);
+        let row: Option<Row> = sqlx::query_as(
+            "SELECT status, sha256, content, timeout_minutes, approved_by, editors FROM scripts \
              WHERE id = $1 FOR SHARE",
         )
         .bind(id)
         .fetch_optional(&mut *tx)
         .await?;
-        let (status, sha, content, timeout) = row.context("腳本不存在")?;
+        let (status, sha, content, timeout, approved_by, editors) = row.context("腳本不存在")?;
         ensure!(status == "approved", "腳本尚未核准或已停用");
+        // 雙人核准下，自己核准的（切換模式前）不能執行
+        ensure!(
+            !second || super::scripts::approval_is_independent(approved_by.as_deref(), &editors),
+            "腳本需要另一位平台管理員核准（已開啟雙人核准）"
+        );
         Some((id, sha, content, timeout))
     } else {
         None
