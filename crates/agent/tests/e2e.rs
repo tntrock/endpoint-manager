@@ -1547,13 +1547,7 @@ mod commands {
         CommandWorker::new(e.dir.path(), s.host.clone())
             .pass(&w)
             .await;
-        assert_eq!(
-            calls(&s),
-            vec![format!(
-                "script \u{feff}{}Write-Output hi; exit 3",
-                endpoint_agent::commands::logic::SCRIPT_PRELUDE
-            )]
-        );
+        assert_eq!(calls(&s), vec!["script \u{feff}Write-Output hi; exit 3"]);
         assert_eq!(
             results(&e).await[0],
             ("failed".into(), Some(3), "hi".into())
@@ -1593,5 +1587,23 @@ mod commands {
             (r.0.as_str(), r.2.as_str()),
             ("failed", endpoint_agent::commands::logic::INTERRUPTED)
         );
+    }
+
+    /// 狀態檔寫不進去（磁碟滿、被鎖住）：不能執行，否則中斷後會重跑或重複關機
+    #[sqlx::test(migrations = false)]
+    async fn unsaved_start_is_not_run(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let mut s = setup(&e).await;
+        command(&e, s.device, "reboot", None).await;
+        let w = work(&mut s).await;
+        // 讓 commands.json 無法寫入：同名的資料夾
+        std::fs::create_dir(e.dir.path().join("commands.json")).unwrap();
+        CommandWorker::new(e.dir.path(), s.host.clone())
+            .pass(&w)
+            .await;
+        assert!(calls(&s).is_empty(), "{:?}", calls(&s));
+        let r = &results(&e).await[0];
+        assert_eq!(r.0, "failed");
+        assert!(r.2.contains("狀態檔"), "{r:?}");
     }
 }

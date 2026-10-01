@@ -27,6 +27,18 @@ pub fn powershell() -> PathBuf {
     system32(r"WindowsPowerShell\v1.0\powershell.exe")
 }
 
+/// 以一層 -Command 包住腳本：先把輸出改成 UTF-8（PowerShell 5.1 預設系統字碼頁，中文會變亂碼），
+/// 腳本內容原樣不動（param()、using 必須在檔案開頭）。結束碼沿用腳本的 exit；
+/// 未處理的例外寫到 stderr 並以 1 結束（與 -File 相同）。
+pub fn script_args(path: &Path) -> String {
+    let p = path.display().to_string().replace('\'', "''");
+    format!(
+        "-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \
+         \"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; \
+         try {{ & '{p}'; exit $LASTEXITCODE }} catch {{ Write-Error $_; exit 1 }}\""
+    )
+}
+
 impl CommandHost for WindowsHost {
     fn collect_all(&self) {
         for s in Section::ALL {
@@ -56,10 +68,7 @@ impl CommandHost for WindowsHost {
     async fn run_script(&self, path: &Path, timeout: Duration) -> std::io::Result<RunOutput> {
         let cmd = Cmd {
             program: powershell(),
-            args: format!(
-                "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"{}\"",
-                path.display()
-            ),
+            args: script_args(path),
         };
         run_process(&cmd, timeout, true).await
     }

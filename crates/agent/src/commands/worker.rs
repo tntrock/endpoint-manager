@@ -77,9 +77,13 @@ impl<H: CommandHost> CommandWorker<H> {
         &self.state
     }
 
-    fn save(&self) {
-        if let Err(e) = self.state.save(&self.dir) {
-            tracing::error!(error = %e, "commands: saving state failed");
+    fn save(&self) -> bool {
+        match self.state.save(&self.dir) {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::error!(error = %e, "commands: saving state failed");
+                false
+            }
         }
     }
 
@@ -147,7 +151,15 @@ impl<H: CommandHost> CommandWorker<H> {
                 reported: false,
             },
         );
-        self.save();
+        // 記錄寫不進去就不執行：否則執行中斷後會重跑腳本或重複關機
+        if !self.save() {
+            let r = failed("無法寫入 Agent 狀態檔（磁碟已滿或被鎖住），未執行");
+            if let Some(e) = self.state.entries.get_mut(&c.id) {
+                e.result = Some(r.clone());
+            }
+            self.report(client, c.id, &r).await;
+            return;
+        }
         let r = match c.action {
             CommandAction::Collect => {
                 self.host.collect_all();
@@ -187,12 +199,8 @@ impl<H: CommandHost> CommandWorker<H> {
         let dir = self.dir.join("scripts");
         let path = dir.join(format!("{}.ps1", c.id));
         // UTF-8 含 BOM：Windows PowerShell 5.1 才不會把中文讀成亂碼
-        let write = std::fs::create_dir_all(&dir).and_then(|_| {
-            std::fs::write(
-                &path,
-                format!("\u{feff}{}{}", super::logic::SCRIPT_PRELUDE, spec.content),
-            )
-        });
+        let write = std::fs::create_dir_all(&dir)
+            .and_then(|_| std::fs::write(&path, format!("\u{feff}{}", spec.content)));
         if let Err(e) = write {
             return failed(format!("寫入腳本檔失敗：{e}"));
         }
