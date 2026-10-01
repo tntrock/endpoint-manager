@@ -64,7 +64,7 @@ pub async fn checkin(
 
     let settings = load_settings(&st.pool).await?;
     let rules = st.rules.get_throttled(&st.pool).await?;
-    // 只有使用中的裝置會收到派送與更新原則
+    // 只有使用中的裝置會收到派送、更新原則與遠端指令
     let (group_id, status): (Option<i64>, String) =
         sqlx::query_as("SELECT group_id, status FROM devices WHERE id = $1")
             .bind(device.device_id)
@@ -72,13 +72,14 @@ pub async fn checkin(
             .await?;
     let deploy = st.deploy.get_throttled(&st.pool).await?;
     let updates = st.updates.get_throttled(&st.pool).await?;
-    let (deployments, update_policy) = if status == "active" {
+    let (deployments, update_policy, commands) = if status == "active" {
         (
             deploy.assignments_for(group_id),
             updates.policy_for(group_id),
+            crate::commands::api::pending_for(&st.pool, device.device_id).await?,
         )
     } else {
-        (vec![], None)
+        (vec![], None, vec![])
     };
     Ok(Json(CheckinResponse {
         next_checkin_seconds: settings.checkin_interval_secs,
@@ -91,6 +92,7 @@ pub async fn checkin(
         deployments,
         update_policy_hash: Some(protocol::update::update_policy_hash(update_policy.as_ref())),
         update_policy,
+        commands,
     }))
 }
 
