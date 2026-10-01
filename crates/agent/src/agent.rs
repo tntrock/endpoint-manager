@@ -17,6 +17,7 @@ use tokio::sync::{mpsc, watch};
 use crate::backoff::{Backoff, jitter, with_jitter};
 use crate::client::{ClientError, ServerClient};
 use crate::collector::{Collector, Heartbeat};
+use crate::commands::worker::CommandWork;
 use crate::config::AgentConfig;
 use crate::deploy::worker::Work;
 use crate::sanitize::{clean, sanitize};
@@ -88,6 +89,7 @@ pub struct Agent<C: Collector> {
     /// 派送的背景工作：None 表示伺服器不支援派送
     deploy_tx: Option<watch::Sender<Option<Work>>>,
     updates_tx: Option<watch::Sender<Option<UpdateWork>>>,
+    commands_tx: Option<watch::Sender<Option<CommandWork>>>,
 }
 
 /// 錯誤訊息和上次不同才需要記錄（避免每分鐘重複寫入事件檢視器）。
@@ -147,6 +149,7 @@ impl<C: Collector> Agent<C> {
             unsupported_error: None,
             deploy_tx: None,
             updates_tx: None,
+            commands_tx: None,
         })
     }
 
@@ -158,6 +161,11 @@ impl<C: Collector> Agent<C> {
 
     pub fn with_updates(mut self, tx: watch::Sender<Option<UpdateWork>>) -> Self {
         self.updates_tx = Some(tx);
+        self
+    }
+
+    pub fn with_commands(mut self, tx: watch::Sender<Option<CommandWork>>) -> Self {
+        self.commands_tx = Some(tx);
         self
     }
 
@@ -404,6 +412,21 @@ impl<C: Collector> Agent<C> {
                 let changed =
                     cur.as_ref().map(|w| &w.assignments) != work.as_ref().map(|w| &w.assignments);
                 *cur = work;
+                changed
+            });
+        }
+        if let Some(tx) = &self.commands_tx {
+            // 只在指令清單（id）改變時喚醒 worker；連線資訊每次都更新
+            let work = CommandWork {
+                commands: resp.commands.clone(),
+                server_url: self.config.server_url.clone(),
+                root_pem: self.root_pem.clone(),
+                identity_pem: self.state.identity_pem(),
+            };
+            tx.send_if_modified(|cur| {
+                let ids = |w: &CommandWork| w.commands.iter().map(|c| c.id).collect::<Vec<_>>();
+                let changed = cur.as_ref().map(ids) != Some(ids(&work));
+                *cur = Some(work);
                 changed
             });
         }

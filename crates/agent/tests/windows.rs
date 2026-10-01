@@ -446,3 +446,47 @@ fn registry_host_round_trip() {
         .delete_subkey_all(path.rsplit('\\').next().unwrap())
         .unwrap();
 }
+
+/// 不需系統管理員：實際以 PowerShell 執行腳本，收回輸出與結束碼
+#[tokio::test]
+async fn windows_host_runs_powershell_script() {
+    use endpoint_agent::commands::worker::CommandHost;
+    use endpoint_agent::deploy::worker::RunResult;
+    use endpoint_agent::windows::commands::WindowsHost;
+    let dir = tempfile::tempdir().unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::channel(4);
+    let host = WindowsHost {
+        triggers: tx,
+        nudges: vec![],
+    };
+    let run = |name: &str, body: &str| {
+        let path = dir.path().join(name);
+        // Agent 寫檔方式：UTF-8 含 BOM，內容原樣（不加任何前置行）
+        std::fs::write(&path, format!("\u{feff}{body}")).unwrap();
+        let host = &host;
+        async move {
+            host.run_script(&path, std::time::Duration::from_secs(120))
+                .await
+                .unwrap()
+        }
+    };
+    // 管理員常用的 [CmdletBinding()] param() 開頭要能執行；中文輸出不能是亂碼
+    let out = run(
+        "param.ps1",
+        "[CmdletBinding()]\r\nparam([int]$Code = 3)\r\nWrite-Output '你好 hi'\r\nexit $Code",
+    )
+    .await;
+    assert_eq!(out.result, RunResult::Exited(3), "{}", out.output);
+    assert!(out.output.contains("你好 hi"), "{}", out.output);
+    // 沒有 exit 的腳本是 0；未處理的例外是失敗
+    let out = run("plain.ps1", "Write-Output ok").await;
+    assert_eq!(out.result, RunResult::Exited(0), "{}", out.output);
+    let out = run("throw.ps1", "throw '壞掉了'").await;
+    assert!(
+        matches!(out.result, RunResult::Exited(c) if c != 0),
+        "{:?} {}",
+        out.result,
+        out.output
+    );
+    assert!(out.output.contains("壞掉了"), "{}", out.output);
+}

@@ -4,6 +4,7 @@ pub mod agent;
 pub mod backoff;
 pub mod client;
 pub mod collector;
+pub mod commands;
 pub mod config;
 pub mod deploy;
 pub mod regvalue;
