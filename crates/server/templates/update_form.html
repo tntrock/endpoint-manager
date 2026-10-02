@@ -5,6 +5,7 @@
 {% if let Some(e) = error %}<p class="error">{{ e }}</p>{% endif %}
 <form method="post" action="{% if let Some(i) = id %}/updates/{{ i }}/edit{% else %}/updates{% endif %}">
   <input type="hidden" name="csrf" value="{{ nav.csrf }}">
+  {% if id.is_some() %}<input type="hidden" name="revision" value="{{ f.revision }}">{% endif %}
   <p><label>名稱 <input name="name" value="{{ f.name }}" required maxlength="100" size="40"></label></p>
   <fieldset><legend>套用群組（一個群組只能屬於一個原則）</legend>
     <p>{% for g in groups %}<label><input type="checkbox" name="groups" value="{{ g.value }}" {% if g.selected %}checked{% endif %}> {{ g.label }}</label> {% endfor %}</p>

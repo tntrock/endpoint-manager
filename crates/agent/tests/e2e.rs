@@ -1719,7 +1719,7 @@ mod updates {
         // 原則改版：重新寫入
         let g = e.state.updates.get(&e.pool).await.unwrap();
         let group = *g.by_group.keys().next().unwrap();
-        admin::update_policy(&e.pool, s.policy, &input(14, group), "admin")
+        admin::update_policy(&e.pool, s.policy, &input(14, group), None, "admin")
             .await
             .unwrap();
         e.state.updates.invalidate();

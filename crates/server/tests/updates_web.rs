@@ -141,14 +141,15 @@ async fn create_edit_pause_delete(pool: PgPool) {
     assert_eq!(st, 303);
     assert_eq!(settings(&s, id).await.1.quality_pause_start, None);
 
-    // 暫停過期
-    admin::set_pause(
-        &s.pool,
-        id,
-        admin::PauseKind::Feature,
-        Some(today(&s) - chrono::Duration::days(40)),
-        "admin",
+    // 暫停過期（set_pause 只接受最近 35 天內的日期，直接改資料）
+    sqlx::query(
+        "UPDATE update_policies \
+         SET settings = settings || jsonb_build_object('feature_pause_start', $2::text) \
+         WHERE id = $1",
     )
+    .bind(id)
+    .bind((today(&s) - chrono::Duration::days(40)).to_string())
+    .execute(&s.pool)
     .await
     .unwrap();
     let (_, html) = s.page(&admin, "/updates").await;
@@ -353,4 +354,200 @@ async fn device_tab_shows_policy_and_report(pool: PgPool) {
     );
     let other = s.login_as("olga", Role::GroupAdmin, &["高雄"]).await;
     assert_eq!(s.page(&other, &tab).await.0, 404);
+}
+
+async fn policy_for(s: &TestServer, group: i64) -> i64 {
+    admin::create_policy(
+        &s.pool,
+        &PolicyInput {
+            name: "一般電腦".into(),
+            settings: PolicySettings {
+                quality_defer_days: Some(7),
+                ..Default::default()
+            },
+            groups: vec![group],
+        },
+        "admin",
+    )
+    .await
+    .unwrap()
+}
+
+/// 編輯頁的 revision 隱藏欄位
+fn revision_from(html: &str) -> String {
+    let key = r#"name="revision" value=""#;
+    let i = html.find(key).expect("revision field") + key.len();
+    html[i..].chars().take_while(char::is_ascii_digit).collect()
+}
+
+#[sqlx::test(migrations = false)]
+async fn classification_checks_policy_and_revision(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_group_token("台北", 3).await;
+    let a1 = s.enroll_ok(&tok, None, None).await;
+    let a2 = s.enroll_ok(&tok, None, None).await;
+    let a3 = s.enroll_ok(&tok, None, None).await;
+    let id = policy_for(&s, s.group_id("台北").await).await;
+    admin::set_pause(&s.pool, id, admin::PauseKind::Quality, None, "admin")
+        .await
+        .unwrap(); // revision 2
+    put_status(&s, &a1, status(Some(id), Some(1), "conflict")).await; // 舊 revision 的衝突
+    put_status(&s, &a2, status(Some(id + 1000), Some(1), "error")).await; // 別的原則的錯誤
+    put_status(&s, &a3, status(None, None, "error")).await; // 第一次套用就失敗
+    let admin_c = s.admin_client().await;
+    let (_, html) = s.page(&admin_c, &format!("/updates/{id}")).await;
+    assert!(
+        html.contains("衝突：0") && html.contains("錯誤：1") && html.contains("尚未回報：2"),
+        "{html}"
+    );
+    let (_, html) = s
+        .page(&admin_c, &format!("/updates/{id}?state=error"))
+        .await;
+    assert!(
+        html.contains(&a3.device_id.to_string()) && !html.contains(&a2.device_id.to_string()),
+        "{html}"
+    );
+}
+
+#[sqlx::test(migrations = false)]
+async fn missing_policy_is_404(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tp = s.group_id("台北").await.to_string();
+    let admin_c = s.admin_client().await;
+    let (_, html) = s.page(&admin_c, "/updates").await;
+    let csrf = csrf_from(&html);
+    let (st, _, _) = post(
+        &s,
+        &admin_c,
+        "/updates/999999/edit",
+        &[
+            ("csrf", &csrf),
+            ("name", "x"),
+            ("groups", &tp),
+            ("revision", "1"),
+        ],
+    )
+    .await;
+    assert_eq!(st, 404);
+    for a in ["pause-quality", "resume-feature", "delete"] {
+        let (st, _, _) = post(
+            &s,
+            &admin_c,
+            &format!("/updates/999999/{a}"),
+            &[("csrf", &csrf)],
+        )
+        .await;
+        assert_eq!(st, 404, "{a}");
+    }
+}
+
+#[sqlx::test(migrations = false)]
+async fn retired_device_tab_says_retired(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let a = s
+        .enroll_ok(&s.create_group_token("台北", 1).await, None, None)
+        .await;
+    policy_for(&s, s.group_id("台北").await).await;
+    sqlx::query("UPDATE devices SET status = 'retired' WHERE id = $1")
+        .bind(a.device_id)
+        .execute(&s.pool)
+        .await
+        .unwrap();
+    s.state.updates.invalidate();
+    let admin_c = s.admin_client().await;
+    let (st, html) = s
+        .page(&admin_c, &format!("/devices/{}/tab/updates", a.device_id))
+        .await;
+    assert_eq!(st, 200);
+    assert!(
+        html.contains("已除役") && !html.contains("不受管"),
+        "{html}"
+    );
+}
+
+#[sqlx::test(migrations = false)]
+async fn unparseable_settings_are_shown_and_fixable(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tp = s.group_id("台北").await;
+    let id = policy_for(&s, tp).await;
+    sqlx::query(
+        r#"UPDATE update_policies SET settings = '{"quality_defer_days":"x"}' WHERE id = $1"#,
+    )
+    .bind(id)
+    .execute(&s.pool)
+    .await
+    .unwrap();
+    let admin_c = s.admin_client().await;
+    let (_, html) = s.page(&admin_c, &format!("/updates/{id}")).await;
+    assert!(html.contains("設定無法解析"), "{html}");
+    let (st, html) = s.page(&admin_c, &format!("/updates/{id}/edit")).await;
+    assert_eq!(st, 200);
+    let (csrf, rev, g) = (csrf_from(&html), revision_from(&html), tp.to_string());
+    let (st, _, html) = post(
+        &s,
+        &admin_c,
+        &format!("/updates/{id}/edit"),
+        &[
+            ("csrf", &csrf),
+            ("name", "一般電腦"),
+            ("groups", &g),
+            ("revision", &rev),
+            ("quality_defer_days", "5"),
+        ],
+    )
+    .await;
+    assert_eq!(st, 303, "{html}");
+    assert_eq!(settings(&s, id).await.1.quality_defer_days, Some(5));
+}
+
+#[sqlx::test(migrations = false)]
+async fn stale_form_is_409(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tp = s.group_id("台北").await;
+    let id = policy_for(&s, tp).await;
+    let admin_c = s.admin_client().await;
+    let edit = format!("/updates/{id}/edit");
+    let (_, html) = s.page(&admin_c, &edit).await;
+    let (csrf, old, g) = (csrf_from(&html), revision_from(&html), tp.to_string());
+    // 別人在這之間暫停了品質更新（revision + 1）
+    admin::set_pause(
+        &s.pool,
+        id,
+        admin::PauseKind::Quality,
+        Some(today(&s)),
+        "bob",
+    )
+    .await
+    .unwrap();
+    let form = |rev: &str| {
+        vec![
+            ("csrf", csrf.clone()),
+            ("name", "一般電腦".to_string()),
+            ("groups", g.clone()),
+            ("revision", rev.to_string()),
+            ("quality_defer_days", "9".to_string()),
+        ]
+    };
+    let f = form(&old);
+    let f: Vec<(&str, &str)> = f.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let (st, _, html) = post(&s, &admin_c, &edit, &f).await;
+    assert_eq!(st, 409, "{html}");
+    assert!(html.contains("重新整理"), "{html}");
+    assert_eq!(settings(&s, id).await.1.quality_defer_days, Some(7));
+    let (_, html) = s.page(&admin_c, &edit).await;
+    let f = form(&revision_from(&html));
+    let f: Vec<(&str, &str)> = f.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let (st, _, _) = post(&s, &admin_c, &edit, &f).await;
+    assert_eq!(st, 303);
+    let (_, set) = settings(&s, id).await;
+    assert_eq!(set.quality_defer_days, Some(9));
+    assert!(set.quality_pause_start.is_some(), "暫停保留");
+}
+
+#[sqlx::test(migrations = false)]
+async fn groups_column_names_policies(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let admin_c = s.admin_client().await;
+    let (_, html) = s.page(&admin_c, "/groups").await;
+    assert!(html.contains("規則、派送與原則"), "{html}");
 }

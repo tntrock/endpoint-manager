@@ -1,5 +1,7 @@
 <h3>更新原則</h3>
-{% if let Some(p) = policy %}
+{% if let Some(why) = inactive %}
+<p class="muted">{{ why }}：這台裝置未啟用，Agent 不會收到更新原則。</p>
+{% else if let Some(p) = policy %}
 <p><a href="/updates/{{ p.0 }}">{{ p.1 }}</a></p>
 <table>
   <tr><th>期望值（HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate）</th></tr>
