@@ -44,6 +44,8 @@ pub struct DeviceFacts {
     pub update_status: Option<UpdateFact>,
     /// 評估時的「現在」（病毒碼天數用）：由呼叫端提供，評估本身維持純函式
     pub now: DateTime<Utc>,
+    /// 管理網頁時區的今天：修補的安裝日期是裝置本地日期，「太久沒更新」用它計算天數
+    pub today: chrono::NaiveDate,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -246,7 +248,7 @@ fn check_one(c: &Check, f: &DeviceFacts) -> Option<(Status, Value)> {
             let Some(last) = u.last_patch_date else {
                 return Some((Status::Unknown, json!({"reason": "no_patch_date"})));
             };
-            let days = (f.now.date_naive() - last).num_days();
+            let days = (f.today - last).num_days();
             (days > i64::from(*max_days)).then(|| {
                 (
                     Status::Violating,
@@ -818,6 +820,7 @@ mod tests {
             agent_version: Some("0.3.0".into()),
             update_status: None,
             now: Utc::now(),
+            today: Utc::now().date_naive(),
         }
     }
 
@@ -1284,7 +1287,7 @@ mod tests {
             (st, d["reason"].as_str()),
             (Status::Unknown, Some("no_patch_date"))
         );
-        let today = f.now.date_naive();
+        let today = f.today;
         f.update_status.as_mut().unwrap().last_patch_date =
             Some(today - chrono::Duration::days(30));
         assert_eq!(one(&f, "patch_age", p.clone()), None, "剛好 30 天不算");
@@ -1293,6 +1296,20 @@ mod tests {
         let (st, d) = one(&f, "patch_age", p).unwrap();
         assert_eq!((st, d["days"].as_i64()), (Status::Violating, Some(31)));
         assert!(summarize(&d).contains("31 天前"), "{}", summarize(&d));
+    }
+
+    #[test]
+    fn patch_age_uses_display_date() {
+        use chrono::TimeZone;
+        let mut f = facts(vec![]);
+        // UTC 還是 10/2，管理網頁的時區（+8）已是 10/3：以 10/3 計算是 31 天
+        f.now = Utc.with_ymd_and_hms(2026, 10, 2, 20, 0, 0).unwrap();
+        f.today = chrono::NaiveDate::from_ymd_opt(2026, 10, 3).unwrap();
+        let mut u = upd("applied");
+        u.last_patch_date = chrono::NaiveDate::from_ymd_opt(2026, 9, 2);
+        f.update_status = Some(u);
+        let (st, d) = one(&f, "patch_age", json!({"max_days": 30})).unwrap();
+        assert_eq!((st, d["days"].as_i64()), (Status::Violating, Some(31)));
     }
 
     #[test]
