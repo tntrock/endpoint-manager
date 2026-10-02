@@ -53,6 +53,7 @@ async fn env(pool: PgPool, token_uses: i32) -> Env {
             expires_at: None,
             max_uses: token_uses,
             created_by: "test".into(),
+            kind: tokens::TokenKind::Device,
         },
     )
     .await

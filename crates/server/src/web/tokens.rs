@@ -217,6 +217,7 @@ pub async fn create(
             expires_at: valid_days.map(|d| Utc::now() + Duration::days(d)),
             max_uses,
             created_by: s.username.clone(),
+            kind: crate::tokens::TokenKind::Device,
         },
     )
     .await

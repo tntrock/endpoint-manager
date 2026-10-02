@@ -81,6 +81,7 @@ async fn main() -> anyhow::Result<()> {
                     expires_at: days.map(|d| chrono::Utc::now() + chrono::Duration::days(d)),
                     max_uses,
                     created_by: "cli".into(),
+                    kind: tokens::TokenKind::Device,
                 },
             )
             .await?;

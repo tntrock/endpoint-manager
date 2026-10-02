@@ -1,7 +1,13 @@
 mod common;
 
 use common::TestServer;
+use endpoint_server::branch::caches;
 use endpoint_server::branch::sites::{self, SiteInput};
+use endpoint_server::tokens::{self, TokenKind};
+use protocol::branch::{
+    CacheEnrollPoll, CacheEnrollPollResponse, CacheEnrollRequest, CacheEnrollResponse,
+    CacheEnrollState,
+};
 use sqlx::PgPool;
 
 fn input(name: &str, cidrs: &[&str]) -> SiteInput {
@@ -181,4 +187,162 @@ async fn site_validation_and_delete(pool: PgPool) {
         sites::delete_site(&s.pool, tp, "admin").await.is_err(),
         "已刪除"
     );
+}
+
+async fn token(s: &TestServer, kind: TokenKind) -> String {
+    tokens::create_token(
+        &s.pool,
+        &tokens::NewToken {
+            name: "cache token".into(),
+            group_id: None,
+            expires_at: None,
+            max_uses: 5,
+            created_by: "test".into(),
+            kind,
+        },
+    )
+    .await
+    .unwrap()
+    .1
+}
+
+fn enroll_req(token: &str, name: &str, csr: &str) -> CacheEnrollRequest {
+    CacheEnrollRequest {
+        token: token.into(),
+        name: name.into(),
+        url: "https://cache-tp.test:8443".into(),
+        dns_names: vec!["cache-tp.test".into(), "127.0.0.1".into()],
+        csr_pem: csr.into(),
+    }
+}
+
+async fn cache_enroll(s: &TestServer, req: &CacheEnrollRequest) -> reqwest::Response {
+    s.client(None)
+        .post(s.url("/v1/cache/enroll"))
+        .json(req)
+        .send()
+        .await
+        .unwrap()
+}
+
+async fn poll(s: &TestServer, cache_id: i64, secret: &str) -> reqwest::Response {
+    s.client(None)
+        .post(s.url("/v1/cache/enroll/poll"))
+        .json(&CacheEnrollPoll {
+            cache_id,
+            poll_secret: secret.into(),
+        })
+        .send()
+        .await
+        .unwrap()
+}
+
+#[sqlx::test(migrations = false)]
+async fn cache_enroll_approve_and_certificate(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let device_tok = token(&s, TokenKind::Device).await;
+    let cache_tok = token(&s, TokenKind::Cache).await;
+    let (csr, key_pem) = common::make_csr();
+
+    let r = cache_enroll(&s, &enroll_req(&device_tok, "台北快取", &csr)).await;
+    assert_eq!(r.status(), 401, "裝置金鑰不能註冊快取");
+    let r = s.enroll_with_csr(&cache_tok, &csr, None, None).await;
+    assert_eq!(r.status(), 401, "快取金鑰不能註冊裝置");
+    let r = cache_enroll(&s, &enroll_req(&cache_tok, "壞 CSR", "not a csr")).await;
+    assert_eq!(r.status(), 400);
+
+    let r = cache_enroll(&s, &enroll_req(&cache_tok, "台北快取", &csr)).await;
+    assert_eq!(r.status(), 200);
+    let e: CacheEnrollResponse = r.json().await.unwrap();
+    let r = cache_enroll(&s, &enroll_req(&cache_tok, "台北快取", &csr)).await;
+    assert_eq!(r.status(), 409, "名稱重複");
+
+    let p: CacheEnrollPollResponse = poll(&s, e.cache_id, &e.poll_secret)
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(p.state, CacheEnrollState::Pending);
+    assert!(p.certificate_chain_pem.is_none());
+    assert_eq!(poll(&s, e.cache_id, "wrong").await.status(), 401);
+
+    let site = sites::create_site(&s.pool, &input("台北", &["127.0.0.0/8"]), "admin")
+        .await
+        .unwrap();
+    caches::approve(&s.pool, &s.state.ca, e.cache_id, site, "admin")
+        .await
+        .unwrap();
+    assert!(
+        caches::reject(&s.pool, e.cache_id, "admin").await.is_err(),
+        "只能拒絕待核准的快取"
+    );
+    let p: CacheEnrollPollResponse = poll(&s, e.cache_id, &e.poll_secret)
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(p.state, CacheEnrollState::Approved);
+    assert_eq!(p.root_pem.as_deref(), Some(s.root_pem.as_str()));
+    let chain = p.certificate_chain_pem.unwrap();
+
+    use rustls::pki_types::{CertificateDer, pem::PemObject};
+    let der = CertificateDer::pem_slice_iter(chain.as_bytes())
+        .next()
+        .unwrap()
+        .unwrap();
+    let (_, cert) = x509_parser::parse_x509_certificate(&der).unwrap();
+    let san = format!(
+        "{:?}",
+        cert.subject_alternative_name().unwrap().unwrap().value
+    );
+    assert!(
+        san.contains("cache-tp.test") && san.contains("IPAddress([127, 0, 0, 1])"),
+        "{san}"
+    );
+    let eku = cert.extended_key_usage().unwrap().unwrap().value;
+    assert!(eku.server_auth && eku.client_auth);
+
+    // 快取憑證不能當裝置用
+    let cache_identity = common::TestAgent {
+        device_id: uuid::Uuid::nil(),
+        key_pem,
+        chain_pem: chain,
+    };
+    let r = s
+        .client(Some(&cache_identity))
+        .post(s.url("/v1/checkin"))
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 401);
+
+    // 第二台快取不能核准到已有快取的據點；拒絕待核准的可以
+    let (csr2, _) = common::make_csr();
+    let e2: CacheEnrollResponse = cache_enroll(&s, &enroll_req(&cache_tok, "第二台", &csr2))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        caches::approve(&s.pool, &s.state.ca, e2.cache_id, site, "admin")
+            .await
+            .is_err()
+    );
+    caches::reject(&s.pool, e2.cache_id, "admin").await.unwrap();
+    let p: CacheEnrollPollResponse = poll(&s, e2.cache_id, &e2.poll_secret)
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(p.state, CacheEnrollState::Rejected);
+
+    for action in ["cache_enroll", "cache_approve", "cache_reject"] {
+        let n: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_log WHERE action = $1")
+            .bind(action)
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+        assert!(n >= 1, "{action}");
+    }
 }
