@@ -1,12 +1,11 @@
 //! 腳本管理（平台管理員）：新增、修改、核准、停用／啟用、刪除；雙人核准設定。
 
-use anyhow::{Context, bail, ensure};
 use protocol::command::MAX_SCRIPT_BYTES;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use sqlx::{PgConnection, PgPool};
 
-use super::{Actor, Forbidden};
+use super::{Actor, CmdError, check};
 use crate::audit;
 
 pub const MAX_NAME_LEN: usize = 100;
@@ -29,34 +28,44 @@ struct Valid {
 
 fn platform(actor: &Actor) -> anyhow::Result<()> {
     if !actor.platform {
-        return Err(Forbidden("只有平台管理員能管理腳本".into()).into());
+        return Err(CmdError::Forbidden("只有平台管理員能管理腳本".into()).into());
     }
     Ok(())
 }
 
 fn validate(i: &ScriptInput) -> anyhow::Result<Valid> {
-    let name = i.name.trim().to_string();
-    ensure!(
+    // 格式字元（例如 U+202E）會讓名稱與說明顯示成別的樣子
+    let name = protocol::command::strip_format_chars(i.name.trim());
+    check!(
         !name.is_empty() && name.chars().count() <= MAX_NAME_LEN,
+        Invalid,
         "腳本名稱必填，最多 {MAX_NAME_LEN} 字"
     );
-    ensure!(
+    check!(
         !name.chars().any(char::is_control),
+        Invalid,
         "腳本名稱不能包含控制字元"
     );
-    let description = i.description.trim().to_string();
-    ensure!(
+    let description = protocol::command::strip_format_chars(i.description.trim());
+    check!(
         description.chars().count() <= MAX_DESCRIPTION_LEN,
+        Invalid,
         "說明最多 {MAX_DESCRIPTION_LEN} 字"
     );
-    ensure!(
+    check!(
         !i.content.is_empty() && i.content.len() <= MAX_SCRIPT_BYTES,
+        Invalid,
         "腳本內容必填，最多 {} KiB",
         MAX_SCRIPT_BYTES / 1024
     );
-    ensure!(!i.content.contains('\0'), "腳本內容不能包含 NUL 字元");
-    ensure!(
+    check!(
+        !i.content.contains('\0'),
+        Invalid,
+        "腳本內容不能包含 NUL 字元"
+    );
+    check!(
         (1..=120).contains(&i.timeout_minutes),
+        Invalid,
         "逾時必須是 1–120 分鐘"
     );
     Ok(Valid {
@@ -82,6 +91,7 @@ pub async fn set_require_second_approver(
     actor: &Actor,
 ) -> anyhow::Result<()> {
     platform(actor)?;
+    let old = require_second_approver(pool).await?;
     let mut tx = pool.begin().await?;
     sqlx::query(
         "INSERT INTO settings (key, value) VALUES ($1, $2::jsonb) \
@@ -96,7 +106,7 @@ pub async fn set_require_second_approver(
         &actor.username,
         "setting_scripts_second_approver",
         None,
-        json!({ "on": on }),
+        json!({ "on": on, "old": old }),
     )
     .await?;
     tx.commit().await?;
@@ -105,7 +115,9 @@ pub async fn set_require_second_approver(
 
 fn name_taken(e: sqlx::Error) -> anyhow::Error {
     match &e {
-        sqlx::Error::Database(d) if d.is_unique_violation() => anyhow::anyhow!("腳本名稱已存在"),
+        sqlx::Error::Database(d) if d.is_unique_violation() => {
+            CmdError::Conflict("腳本名稱已存在".into()).into()
+        }
         _ => e.into(),
     }
 }
@@ -175,7 +187,8 @@ async fn lock(conn: &mut PgConnection, id: i64) -> anyhow::Result<Locked> {
     .bind(id)
     .fetch_optional(&mut *conn)
     .await?;
-    let (name, sha256, timeout, status, approved_by, editors) = row.context("腳本不存在")?;
+    let (name, sha256, timeout, status, approved_by, editors) =
+        row.ok_or_else(|| CmdError::NotFound("腳本不存在".into()))?;
     Ok(Locked {
         name,
         sha256,
@@ -199,7 +212,7 @@ pub async fn update_script(
     let old = lock(&mut tx, id).await?;
     let changed = old.sha256 != v.sha256 || old.timeout != i.timeout_minutes;
     if changed {
-        ensure!(old.status != "disabled", "腳本已停用，請先啟用");
+        check!(old.status != "disabled", Conflict, "腳本已停用，請先啟用");
         let status = status_after_change(second);
         // 修改者清單：上次核准後重新開始，之後每位修改者都加進去
         sqlx::query(
@@ -238,7 +251,7 @@ pub async fn update_script(
         &actor.username,
         "script_update",
         Some(&v.name),
-        json!({"id": id, "sha256": v.sha256, "content_changed": changed}),
+        json!({"id": id, "sha256": v.sha256, "old_sha256": old.sha256, "content_changed": changed}),
     )
     .await?;
     tx.commit().await?;
@@ -268,21 +281,25 @@ pub async fn approve_version(
     let mut tx = pool.begin().await?;
     let s = lock(&mut tx, id).await?;
     let (name, sha) = (s.name.clone(), s.sha256.clone());
-    ensure!(
+    check!(
         sha == expected_sha256.to_ascii_lowercase()
             && expected_timeout.is_none_or(|t| t == s.timeout),
+        Conflict,
         "腳本內容已變更，請重新檢視後再核准"
     );
     // 雙人核准下，自己核准過的（例如單人模式時）可以由另一位重新核准
     let reapprove = second
         && s.status == "approved"
         && !approval_is_independent(s.approved_by.as_deref(), &s.editors);
-    ensure!(
+    check!(
         s.status == "pending" || reapprove,
+        Conflict,
         "只有待核准的腳本可以核准"
     );
     if second && s.editors.contains(&actor.username) {
-        return Err(Forbidden("不能核准自己修改的腳本，請由另一位平台管理員核准".into()).into());
+        return Err(
+            CmdError::Forbidden("不能核准自己修改的腳本，請由另一位平台管理員核准".into()).into(),
+        );
     }
     sqlx::query(
         "UPDATE scripts SET status = 'approved', approved_by = $2, approved_at = now() \
@@ -316,10 +333,10 @@ pub async fn set_disabled(
     let s = lock(&mut tx, id).await?;
     let (name, sha) = (s.name, s.sha256);
     let new_status = if disabled {
-        ensure!(s.status != "disabled", "腳本已停用");
+        check!(s.status != "disabled", Conflict, "腳本已停用");
         "disabled"
     } else {
-        ensure!(s.status == "disabled", "腳本沒有停用");
+        check!(s.status == "disabled", Conflict, "腳本沒有停用");
         status_after_change(second)
     };
     sqlx::query(
@@ -361,16 +378,14 @@ pub async fn delete_script(pool: &PgPool, id: i64, actor: &Actor) -> anyhow::Res
             .bind(id)
             .fetch_one(&mut *tx)
             .await?;
-    if used {
-        bail!("腳本已被指令使用，只能停用");
-    }
+    check!(!used, Conflict, "腳本已被指令使用，只能停用");
     sqlx::query("DELETE FROM scripts WHERE id = $1")
         .bind(id)
         .execute(&mut *tx)
         .await
         .map_err(|e| match &e {
             sqlx::Error::Database(d) if d.is_foreign_key_violation() => {
-                anyhow::anyhow!("腳本已被指令使用，只能停用")
+                anyhow::Error::from(CmdError::Conflict("腳本已被指令使用，只能停用".into()))
             }
             _ => e.into(),
         })?;

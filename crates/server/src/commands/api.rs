@@ -84,8 +84,8 @@ pub async fn result(
     Json(r): Json<CommandResult>,
 ) -> Result<StatusCode, AppError> {
     r.validate().map_err(|e| AppError::BadRequest(e.into()))?;
-    let output: String = r
-        .output
+    // 控制字元與格式字元（例如 U+202E 反轉方向）都移除，換行與 Tab 保留
+    let output: String = protocol::command::strip_format_chars(&r.output)
         .chars()
         .filter(|c| !c.is_control() || matches!(c, '\n' | '\r' | '\t'))
         .collect();

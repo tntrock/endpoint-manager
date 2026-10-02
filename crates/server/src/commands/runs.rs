@@ -1,13 +1,12 @@
 //! 建立與取消遠端指令：權限範圍、腳本快照、群組展開成每台一筆。
 
-use anyhow::{Context, bail, ensure};
 use chrono::{Duration, Utc};
 use protocol::command::CommandAction;
 use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::{Actor, Forbidden};
+use super::{Actor, CmdError, check};
 use crate::audit;
 
 pub const DEFAULT_DELAY_MINUTES: i32 = 10;
@@ -35,31 +34,43 @@ type ScriptSnapshot = (i64, String, String, i32);
 /// 回傳 (run id, 台數)
 pub async fn create_run(pool: &PgPool, i: &RunInput, actor: &Actor) -> anyhow::Result<(i64, i64)> {
     let action = CommandAction::parse(&i.action);
-    ensure!(
+    // 權限最先檢查：群組管理員送腳本一律 403，不因其他欄位得到不同的錯誤
+    if action == CommandAction::Script && !actor.platform {
+        return Err(CmdError::Forbidden("只有平台管理員能執行腳本".into()).into());
+    }
+    // 群組：範圍先於存在，群組管理員無法藉錯誤訊息得知群組是否存在
+    if let Target::Group(g) = i.target
+        && !actor.platform
+        && !actor.groups.contains(&g)
+    {
+        return Err(CmdError::Forbidden("這個群組不在你的管理範圍".into()).into());
+    }
+    check!(
         action != CommandAction::Unknown,
+        Invalid,
         "不支援的動作：{}",
         i.action
     );
     let delay = match action {
         CommandAction::Reboot | CommandAction::Shutdown => {
             let d = i.delay_minutes.unwrap_or(DEFAULT_DELAY_MINUTES);
-            ensure!((0..=60).contains(&d), "延遲必須是 0–60 分鐘");
+            check!((0..=60).contains(&d), Invalid, "延遲必須是 0–60 分鐘");
             Some(d)
         }
         _ => None,
     };
-    ensure!(
+    check!(
         (1..=MAX_EXPIRES_HOURS).contains(&i.expires_hours),
+        Invalid,
         "過期時間必須是 1 小時到 30 天"
     );
-    if action == CommandAction::Script && !actor.platform {
-        return Err(Forbidden("只有平台管理員能執行腳本".into()).into());
-    }
     let second = super::scripts::require_second_approver(pool).await?;
     let mut tx = pool.begin().await?;
 
     let script: Option<ScriptSnapshot> = if action == CommandAction::Script {
-        let id = i.script_id.context("請選擇腳本")?;
+        let id = i
+            .script_id
+            .ok_or_else(|| CmdError::Invalid("請選擇腳本".into()))?;
         type Row = (String, String, String, i32, Option<String>, Vec<String>);
         let row: Option<Row> = sqlx::query_as(
             "SELECT status, sha256, content, timeout_minutes, approved_by, editors FROM scripts \
@@ -68,11 +79,13 @@ pub async fn create_run(pool: &PgPool, i: &RunInput, actor: &Actor) -> anyhow::R
         .bind(id)
         .fetch_optional(&mut *tx)
         .await?;
-        let (status, sha, content, timeout, approved_by, editors) = row.context("腳本不存在")?;
-        ensure!(status == "approved", "腳本尚未核准或已停用");
+        let (status, sha, content, timeout, approved_by, editors) =
+            row.ok_or_else(|| CmdError::NotFound("腳本不存在".into()))?;
+        check!(status == "approved", Conflict, "腳本尚未核准或已停用");
         // 雙人核准下，自己核准的（切換模式前）不能執行
-        ensure!(
+        check!(
             !second || super::scripts::approval_is_independent(approved_by.as_deref(), &editors),
+            Conflict,
             "腳本需要另一位平台管理員核准（已開啟雙人核准）"
         );
         Some((id, sha, content, timeout))
@@ -84,15 +97,25 @@ pub async fn create_run(pool: &PgPool, i: &RunInput, actor: &Actor) -> anyhow::R
     let in_scope = |g: Option<i64>| actor.platform || g.is_some_and(|g| actor.groups.contains(&g));
     let label = match i.target {
         Target::Device(d) => {
+            // FOR SHARE：檢查範圍到建立完成之間，裝置不會被移到別的群組
             let row: Option<(String, Option<i64>)> = sqlx::query_as(
-                "SELECT hostname, group_id FROM devices WHERE id = $1 AND status = 'active'",
+                "SELECT hostname, group_id FROM devices WHERE id = $1 AND status = 'active' \
+                 FOR SHARE",
             )
             .bind(d)
             .fetch_optional(&mut *tx)
             .await?;
-            let (hostname, group) = row.context("裝置不存在或未啟用")?;
+            let forbidden = || CmdError::Forbidden("這台裝置不在你的管理範圍".into());
+            // 群組管理員：不存在與範圍外是同一個錯誤
+            let (hostname, group) = match row {
+                Some(r) => r,
+                None if actor.platform => {
+                    return Err(CmdError::NotFound("裝置不存在或未啟用".into()).into());
+                }
+                None => return Err(forbidden().into()),
+            };
             if !in_scope(group) {
-                return Err(Forbidden("這台裝置不在你的管理範圍".into()).into());
+                return Err(forbidden().into());
             }
             format!("裝置 {hostname}")
         }
@@ -102,10 +125,8 @@ pub async fn create_run(pool: &PgPool, i: &RunInput, actor: &Actor) -> anyhow::R
                     .bind(g)
                     .fetch_optional(&mut *tx)
                     .await?;
-            let name = name.context("群組不存在")?;
-            if !in_scope(Some(g)) {
-                return Err(Forbidden("這個群組不在你的管理範圍".into()).into());
-            }
+            // 範圍已在最前面檢查過，走到這裡的都是平台管理員或自己的群組
+            let name = name.ok_or_else(|| CmdError::NotFound("群組不存在".into()))?;
             format!("群組 {name}")
         }
     };
@@ -146,9 +167,7 @@ pub async fn create_run(pool: &PgPool, i: &RunInput, actor: &Actor) -> anyhow::R
         .await?
         .rows_affected(),
     } as i64;
-    if count == 0 {
-        bail!("群組內沒有使用中的裝置");
-    }
+    check!(count > 0, Conflict, "群組內沒有使用中的裝置");
     audit::record(
         &mut tx,
         &actor.username,
@@ -175,11 +194,12 @@ pub async fn cancel_run(pool: &PgPool, id: i64, actor: &Actor) -> anyhow::Result
     .bind(id)
     .fetch_optional(&mut *tx)
     .await?;
-    let (label, created_by, canceled) = row.context("指令不存在")?;
+    let (label, created_by, canceled) =
+        row.ok_or_else(|| CmdError::NotFound("指令不存在".into()))?;
     if !actor.platform && created_by != actor.username {
-        return Err(Forbidden("只有建立者或平台管理員能取消".into()).into());
+        return Err(CmdError::Forbidden("只有建立者或平台管理員能取消".into()).into());
     }
-    ensure!(!canceled, "指令已取消");
+    check!(!canceled, Conflict, "指令已取消");
     sqlx::query("UPDATE command_runs SET canceled_at = now(), canceled_by = $2 WHERE id = $1")
         .bind(id)
         .bind(&actor.username)
@@ -193,6 +213,7 @@ pub async fn cancel_run(pool: &PgPool, id: i64, actor: &Actor) -> anyhow::Result
     .execute(&mut *tx)
     .await?
     .rows_affected();
+    check!(n > 0, Conflict, "指令都已完成，沒有可取消的裝置");
     audit::record(
         &mut tx,
         &actor.username,
