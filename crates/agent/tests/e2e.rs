@@ -1877,6 +1877,53 @@ mod updates {
 
     /// 移出範圍時刪除失敗：記為 error、保留 written，下次再刪
     #[sqlx::test(migrations = false)]
+    async fn read_failure_does_not_overwrite_next_round(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let mut s = setup(&e).await;
+        let w = work(&s);
+        s.worker.pass(&w).await;
+        // 別人（例如 GPO）改了值：衝突，不寫回
+        let name = "DeferQualityUpdatesPeriodInDays";
+        s.host
+            .values
+            .lock()
+            .unwrap()
+            .insert(name.into(), PolicyData::Dword(30));
+        s.worker.pass(&w).await;
+        assert_eq!(row(&e, s.device).await.0, "conflict");
+        // 一輪讀取失敗：回報錯誤
+        s.host.fail_reads.store(true, Ordering::SeqCst);
+        s.worker.pass(&w).await;
+        assert_eq!(row(&e, s.device).await.0, "error");
+        // 恢復後仍是衝突，別人的值不被覆寫
+        s.host.fail_reads.store(false, Ordering::SeqCst);
+        s.worker.pass(&w).await;
+        assert_eq!(row(&e, s.device).await.0, "conflict");
+        assert_eq!(value(&s, name), Some(PolicyData::Dword(30)));
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn read_failure_on_release_keeps_written(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let mut s = setup(&e).await;
+        s.worker.pass(&work(&s)).await;
+        admin::delete_policy(&e.pool, s.policy, "admin")
+            .await
+            .unwrap();
+        e.state.updates.invalidate();
+        s.a.run_cycle().await;
+        let w = work(&s);
+        s.host.fail_reads.store(true, Ordering::SeqCst);
+        s.worker.pass(&w).await;
+        assert_eq!(row(&e, s.device).await.0, "error");
+        assert!(!s.worker.state().applied.written.is_empty(), "還要清");
+        s.host.fail_reads.store(false, Ordering::SeqCst);
+        s.worker.pass(&w).await;
+        assert!(s.host.values.lock().unwrap().is_empty());
+        assert_eq!(row(&e, s.device).await.0, "unmanaged");
+    }
+
+    #[sqlx::test(migrations = false)]
     async fn read_failure_is_error_not_conflict(pool: PgPool) {
         let e = env(pool, 1).await;
         let mut s = setup(&e).await;

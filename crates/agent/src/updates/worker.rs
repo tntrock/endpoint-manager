@@ -85,20 +85,20 @@ impl<C: Collector, H: WuHost> UpdateWorker<C, H> {
         let policy = w.policy.clone();
         let mut applied = self.state.applied.clone();
         let applied = tokio::task::spawn_blocking(move || {
-            apply(&*host, policy.as_ref(), &mut applied);
+            let read_error = apply(&*host, policy.as_ref(), &mut applied);
             let reboot = host.reboot_pending();
-            (applied, reboot)
+            (applied, reboot, read_error)
         })
         .await;
-        let reboot = match applied {
-            Ok((a, reboot)) => {
+        let (reboot, read_error) = match applied {
+            Ok((a, reboot, read_error)) => {
                 // 寫完登錄檔立刻存檔：之後等 WMI 或回報時被中斷（服務停止、重開機），
                 // 下次仍記得自己寫過哪些值
                 if a != self.state.applied {
                     self.state.applied = a;
                     self.save();
                 }
-                reboot
+                (reboot, read_error)
             }
             Err(e) => {
                 tracing::error!(error = %e, "update policy: registry task panicked");
@@ -113,11 +113,15 @@ impl<C: Collector, H: WuHost> UpdateWorker<C, H> {
         let status = UpdateStatus {
             policy_id: self.state.applied.policy_id,
             revision: self.state.applied.revision,
-            state: self.state.applied.state.unwrap_or(ApplyState::Unmanaged),
-            detail: self
-                .state
-                .applied
-                .detail
+            // 讀取失敗只影響這一輪的回報：不寫進 applied.state，下一輪不會因此整批重寫
+            state: if read_error.is_some() {
+                ApplyState::Error
+            } else {
+                self.state.applied.state.unwrap_or(ApplyState::Unmanaged)
+            },
+            detail: read_error
+                .as_deref()
+                .unwrap_or(&self.state.applied.detail)
                 .chars()
                 .take(MAX_DETAIL_LEN)
                 .collect(),
@@ -182,8 +186,13 @@ impl<C: Collector, H: WuHost> UpdateWorker<C, H> {
 }
 
 /// 依 decide 的結果操作登錄檔並更新 applied
-fn apply<H: WuHost>(host: &H, desired: Option<&UpdatePolicy>, applied: &mut super::logic::Applied) {
-    // 讀取失敗時當成「沒有值」讓決策繼續（不會因此刪或寫），但最後回報錯誤而不是衝突
+/// 回傳讀取登錄檔的錯誤（有的話）：只用於這一輪回報，不改變 applied.state
+fn apply<H: WuHost>(
+    host: &H,
+    desired: Option<&UpdatePolicy>,
+    applied: &mut super::logic::Applied,
+) -> Option<String> {
+    // 讀取失敗時當成「沒有值」讓決策繼續（不會因此刪或寫），這一輪回報錯誤而不是衝突
     let read_error: std::cell::RefCell<Option<String>> = Default::default();
     let current = |name: &str| -> Option<PolicyData> {
         host.read(name).unwrap_or_else(|e| {
@@ -229,17 +238,16 @@ fn apply<H: WuHost>(host: &H, desired: Option<&UpdatePolicy>, applied: &mut supe
                 }
                 applied.written.remove(name);
             }
-            // 被別人改過的值不刪，也不再管
-            applied.written.clear();
+            // 被別人改過的值不刪，也不再管；讀不到的值無法判斷，保留紀錄下一輪再處理
+            if read_error.borrow().is_none() {
+                applied.written.clear();
+            }
             (ApplyState::Unmanaged, String::new())
         }
     };
-    let (state, detail) = match read_error.into_inner() {
-        Some(e) if state != ApplyState::Error => (ApplyState::Error, e),
-        _ => (state, detail),
-    };
     applied.state = Some(state);
     applied.detail = detail;
+    read_error.into_inner()
 }
 
 /// 背景迴圈：原則變動時立刻處理，否則每 RECHECK 檢查一次；伺服器不支援（None）時什麼都不做。
