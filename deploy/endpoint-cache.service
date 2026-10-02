@@ -1,0 +1,24 @@
+# systemd：先以同一個資料目錄執行
+#   sudo -u endpoint-cache endpoint-cache enroll --data-dir /var/lib/endpoint-cache ...
+# 管理員核准後啟用：systemctl enable --now endpoint-cache
+[Unit]
+Description=Endpoint Manager branch cache
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/endpoint-cache run --data-dir /var/lib/endpoint-cache
+Restart=on-failure
+RestartSec=10
+User=endpoint-cache
+StateDirectory=endpoint-cache
+StateDirectoryMode=0700
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+# 監聽 1024 以下的埠時才需要
+# AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target
