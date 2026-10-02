@@ -367,6 +367,27 @@ pub async fn deploy(t: &Target, devices: &[Device], concurrency: usize) -> (Repo
     )
 }
 
+/// commands 情境的判定：錯誤、逾時，或成功台數不等於預期（`--expect`）時回傳失敗原因
+pub fn commands_verdict(
+    r: &Report,
+    without: usize,
+    expect: Option<usize>,
+    max: Duration,
+) -> Option<String> {
+    let succeeded = r.ok.saturating_sub(without);
+    if r.errors > 0 || r.elapsed > max || expect.is_some_and(|n| n != succeeded) {
+        return Some(format!(
+            "errors {} / succeeded {succeeded} (expected {}) / elapsed {:?}",
+            r.errors,
+            expect
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "any".into()),
+            r.elapsed
+        ));
+    }
+    None
+}
+
 /// 每台：報到取得更新原則 → 回報一次 applied 狀態。回傳報告與沒有原則的台數。
 pub async fn updates(t: &Target, devices: &[Device], concurrency: usize) -> (Report, usize) {
     use protocol::update::{ApplyState, UpdateStatus};
@@ -459,6 +480,24 @@ async fn collect(mut set: JoinSet<Option<Duration>>, start: Instant) -> Report {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn report(ok: usize, errors: usize) -> Report {
+        Report::new(
+            vec![Duration::from_millis(1); ok],
+            errors,
+            Duration::from_secs(1),
+        )
+    }
+
+    #[test]
+    fn commands_expectation() {
+        let max = Duration::from_secs(10);
+        // 5,000 台有指令、25,000 台沒有
+        assert!(commands_verdict(&report(30_000, 0), 25_000, Some(5_000), max).is_none());
+        assert!(commands_verdict(&report(30_000, 0), 25_001, Some(5_000), max).is_some());
+        assert!(commands_verdict(&report(30_000, 1), 25_000, None, max).is_some());
+        assert!(commands_verdict(&report(30_000, 0), 25_000, None, max).is_none());
+    }
 
     #[test]
     fn percentile_nearest_rank() {

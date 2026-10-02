@@ -10,7 +10,7 @@ const USAGE: &str = "usage:
   loadsim config    --server URL --root root.pem --devices devices.json [--concurrency 100] [--max-secs 900]
   loadsim deploy    --server URL --root root.pem --devices devices.json [--concurrency 50] [--max-secs 3600]
   loadsim updates   --server URL --root root.pem --devices devices.json [--concurrency 60] [--max-secs 900]
-  loadsim commands  --server URL --root root.pem --devices devices.json [--concurrency 60] [--max-secs 900]
+  loadsim commands  --server URL --root root.pem --devices devices.json [--concurrency 60] [--max-secs 900] [--expect N]
   loadsim cache-deploy --server URL --root root.pem --devices devices.json [--count 5000] [--concurrency 300] [--max-secs 3600]
   （所有子命令都可加 --ip 10.0.0.1：報到回報的本機 IP，分點快取依此對應據點）
   loadsim make-package --out FILE [--size-mb 10]";
@@ -157,8 +157,12 @@ async fn main() -> anyhow::Result<()> {
             print(&r);
             println!("without commands {without}");
             let max = Duration::from_secs(num(&args, "--max-secs", 900)?);
-            if r.errors > 0 || r.elapsed > max {
-                bail!("FAIL: errors {} / elapsed {:?}", r.errors, r.elapsed);
+            let expect = arg(&args, "--expect")
+                .map(|v| v.parse::<usize>())
+                .transpose()
+                .context("--expect")?;
+            if let Some(why) = loadsim::commands_verdict(&r, without, expect, max) {
+                bail!("FAIL: {why}");
             }
         }
         "cache-deploy" => {
