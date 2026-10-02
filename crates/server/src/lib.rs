@@ -2,6 +2,7 @@
 
 pub mod accounts;
 pub mod audit;
+pub mod branch;
 pub mod ca;
 pub mod checkin;
 pub mod commands;
@@ -69,6 +70,8 @@ pub struct AppState {
     pub downloads: Arc<tokio::sync::Semaphore>,
     /// 更新原則快取
     pub updates: Arc<updates::assign::UpdatePolicyCache>,
+    /// 據點與快取（報到時下發 package_source）
+    pub branch: Arc<branch::assign::BranchCache>,
 }
 
 impl AppState {
@@ -95,6 +98,7 @@ impl AppState {
             package_dir: "packages".into(),
             downloads: Arc::new(tokio::sync::Semaphore::new(DOWNLOAD_CONCURRENCY)),
             updates: Arc::new(updates::assign::UpdatePolicyCache::default()),
+            branch: Arc::new(branch::assign::BranchCache::default()),
         }
     }
 

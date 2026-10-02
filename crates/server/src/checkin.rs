@@ -72,14 +72,16 @@ pub async fn checkin(
             .await?;
     let deploy = st.deploy.get_throttled(&st.pool).await?;
     let updates = st.updates.get_throttled(&st.pool).await?;
-    let (deployments, update_policy, commands) = if status == "active" {
+    let branch = st.branch.get_throttled(&st.pool).await?;
+    let (deployments, update_policy, commands, package_source) = if status == "active" {
         (
             deploy.assignments_for(group_id),
             updates.policy_for(group_id),
             crate::commands::api::pending_for(&st.pool, device.device_id).await?,
+            branch.source_for(&req.ip_addresses),
         )
     } else {
-        (vec![], None, vec![])
+        (vec![], None, vec![], None)
     };
     Ok(Json(CheckinResponse {
         next_checkin_seconds: settings.checkin_interval_secs,
@@ -93,7 +95,7 @@ pub async fn checkin(
         update_policy_hash: Some(protocol::update::update_policy_hash(update_policy.as_ref())),
         update_policy,
         commands,
-        package_source: None,
+        package_source,
     }))
 }
 
