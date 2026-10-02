@@ -116,7 +116,7 @@ async fn group_belongs_to_one_policy(pool: PgPool) {
     )
     .await
     .unwrap();
-    admin::update_policy(&s.pool, a, &input("原則A", vec![ks]), "admin")
+    admin::update_policy(&s.pool, a, &input("原則A", vec![ks]), None, "admin")
         .await
         .unwrap();
     let (rev, set) = settings(&s.pool, a).await;
@@ -126,7 +126,7 @@ async fn group_belongs_to_one_policy(pool: PgPool) {
         .await
         .unwrap();
     // 自己原本的群組不算衝突
-    admin::update_policy(&s.pool, a, &input("原則A2", vec![ks]), "admin")
+    admin::update_policy(&s.pool, a, &input("原則A2", vec![ks]), None, "admin")
         .await
         .unwrap();
 }
@@ -174,7 +174,7 @@ async fn delete_releases_groups(pool: PgPool) {
         admin::delete_policy(&s.pool, id, "admin")
             .await
             .unwrap_err(),
-        admin::update_policy(&s.pool, id, &input("x", vec![]), "admin")
+        admin::update_policy(&s.pool, id, &input("x", vec![]), None, "admin")
             .await
             .unwrap_err(),
         admin::set_pause(&s.pool, id, PauseKind::Quality, None, "admin")
@@ -244,6 +244,7 @@ async fn checkin_delivers_policy_by_group(pool: PgPool) {
             },
             ..i.clone()
         },
+        None,
         "admin",
     )
     .await
@@ -459,4 +460,55 @@ async fn status_upload_drives_compliance(pool: PgPool) {
     assert_eq!(put_status(&s, Some(&a), &b).await, 204);
     assert_eq!(violating(conflict).await, None);
     assert_eq!(violating(age).await, None);
+}
+
+#[sqlx::test(migrations = false)]
+async fn pause_date_must_be_recent(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tp = s.group_id("台北").await;
+    let id = admin::create_policy(&s.pool, &input("一般", vec![tp]), "admin")
+        .await
+        .unwrap();
+    let old = NaiveDate::from_ymd_opt(2000, 1, 1).unwrap();
+    let e = err(
+        admin::set_pause(&s.pool, id, PauseKind::Quality, Some(old), "admin")
+            .await
+            .unwrap_err(),
+    );
+    assert!(e.contains("35 天"), "{e}");
+    let today = chrono::Utc::now().date_naive();
+    admin::set_pause(&s.pool, id, PauseKind::Quality, Some(today), "admin")
+        .await
+        .unwrap();
+}
+
+async fn last_detail(pool: &PgPool, action: &str) -> serde_json::Value {
+    sqlx::query_scalar("SELECT detail FROM audit_log WHERE action = $1 ORDER BY id DESC LIMIT 1")
+        .bind(action)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[sqlx::test(migrations = false)]
+async fn audit_keeps_old_settings_and_groups(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tp = s.group_id("台北").await;
+    let ks = s.group_id("高雄").await;
+    let id = admin::create_policy(&s.pool, &input("一般", vec![tp]), "admin")
+        .await
+        .unwrap();
+    let mut changed = input("一般2", vec![ks]);
+    changed.settings.quality_defer_days = Some(3);
+    admin::update_policy(&s.pool, id, &changed, None, "admin")
+        .await
+        .unwrap();
+    let d = last_detail(&s.pool, "update_policy_update").await;
+    assert_eq!(d["old"]["name"], "一般", "{d}");
+    assert_eq!(d["old"]["settings"]["quality_defer_days"], 7, "{d}");
+    assert_eq!(d["old"]["groups"], serde_json::json!([tp]), "{d}");
+    admin::delete_policy(&s.pool, id, "admin").await.unwrap();
+    let d = last_detail(&s.pool, "update_policy_delete").await;
+    assert_eq!(d["settings"]["quality_defer_days"], 3, "{d}");
+    assert_eq!(d["groups"], serde_json::json!([ks]), "{d}");
 }

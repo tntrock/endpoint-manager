@@ -24,8 +24,8 @@ const TARGET: &str = "v.status = 'active' AND ($1::bool OR v.group_id = ANY($2::
 /// 狀態分類（s = update_policy_status）。第一次套用就失敗時 Agent 回報的 policy_id 是 None，
 /// 所以「錯誤」不比對 policy_id；其餘（沒有狀態、舊 revision、不受管）都算尚未回報
 const APPLIED: &str = "(s.state = 'applied' AND s.policy_id = p.id AND s.revision = p.revision)";
-const CONFLICT: &str = "(s.state = 'conflict' AND s.policy_id = p.id)";
-const ERROR: &str = "(s.state = 'error')";
+const CONFLICT: &str = "(s.state = 'conflict' AND s.policy_id = p.id AND s.revision = p.revision)";
+const ERROR: &str = "(s.state = 'error' AND (s.policy_id IS NULL OR s.policy_id = p.id))";
 
 /// Windows Update 寬限期的預設值（期限有填、寬限沒填時使用）
 const DEFAULT_GRACE: u32 = 2;
@@ -89,8 +89,23 @@ fn describe(set: &PolicySettings, today: NaiveDate) -> Vec<String> {
     v
 }
 
-fn parse_settings(json: &str) -> PolicySettings {
-    serde_json::from_str(json).unwrap_or_default()
+/// 被手動改壞的設定回 None（頁面顯示「設定無法解析」）
+fn parse_settings(json: &str) -> Option<PolicySettings> {
+    serde_json::from_str(json).ok()
+}
+
+const UNPARSEABLE: &str = "設定無法解析（請編輯原則重新儲存）";
+
+/// admin 的錯誤：不存在 404、輸入錯誤 422，其餘 409
+fn policy_error(e: anyhow::Error) -> Response {
+    use crate::commands::CmdError;
+    match e.downcast_ref::<CmdError>() {
+        Some(CmdError::NotFound(_)) => not_found(),
+        Some(CmdError::Invalid(m)) => {
+            (axum::http::StatusCode::UNPROCESSABLE_ENTITY, m.clone()).into_response()
+        }
+        _ => action_error(e),
+    }
 }
 
 pub struct Counts {
@@ -184,7 +199,7 @@ pub async fn list(
                 id: r.0,
                 name: r.1.clone(),
                 groups: names.remove(&r.0).unwrap_or_default().join("、"),
-                pauses: pause_labels(&parse_settings(&r.2), today),
+                pauses: pause_labels(&parse_settings(&r.2).unwrap_or_default(), today),
                 counts: counts(r),
             })
             .collect(),
@@ -205,6 +220,8 @@ pub struct FormFields {
     pub no_auto_reboot: bool,
     pub active_start: String,
     pub active_end: String,
+    /// 編輯表單開啟時的 revision（同時編輯時後送出的回 409）
+    pub revision: String,
 }
 
 fn parse_form(raw: &[u8]) -> (String, FormFields) {
@@ -225,6 +242,7 @@ fn parse_form(raw: &[u8]) -> (String, FormFields) {
             "no_auto_reboot" => f.no_auto_reboot = v == "1",
             "active_start" => f.active_start = v,
             "active_end" => f.active_end = v,
+            "revision" => f.revision = v,
             _ => {}
         }
     }
@@ -245,6 +263,9 @@ impl FormFields {
     fn to_input(&self) -> Result<PolicyInput, String> {
         let deadline = |label: &str, days: &str, grace: &str| -> Result<Option<Deadline>, String> {
             let Some(days) = num(&format!("{label}期限"), days)? else {
+                if !grace.trim().is_empty() {
+                    return Err(format!("{label}寬限期需要先填期限"));
+                }
                 return Ok(None);
             };
             let grace = num(&format!("{label}寬限期"), grace)?.unwrap_or(DEFAULT_GRACE);
@@ -296,6 +317,7 @@ impl FormFields {
             no_auto_reboot: set.no_auto_reboot,
             active_start: n(set.active_hours.map(|h| h.start)),
             active_end: n(set.active_hours.map(|h| h.end)),
+            revision: String::new(),
         }
     }
 }
@@ -372,7 +394,7 @@ pub async fn create(
 async fn load(
     st: &AppState,
     id: i64,
-) -> Result<Option<(String, PolicySettings, i32)>, sqlx::Error> {
+) -> Result<Option<(String, Option<PolicySettings>, i32)>, sqlx::Error> {
     let row: Option<(String, String, i32)> =
         sqlx::query_as("SELECT name, settings::text, revision FROM update_policies WHERE id = $1")
             .bind(id)
@@ -387,7 +409,7 @@ pub async fn edit_form(
     Path(id): Path<i64>,
 ) -> Result<Response, Response> {
     platform(&s)?;
-    let Some((name, set, _)) = load(&st, id).await.map_err(db_error)? else {
+    let Some((name, set, revision)) = load(&st, id).await.map_err(db_error)? else {
         return Err(not_found());
     };
     let groups: Vec<i64> =
@@ -396,7 +418,10 @@ pub async fn edit_form(
             .fetch_all(&st.pool)
             .await
             .map_err(db_error)?;
-    let f = FormFields::from_policy(name, &set, groups);
+    let f = FormFields {
+        revision: revision.to_string(),
+        ..FormFields::from_policy(name, &set.unwrap_or_default(), groups)
+    };
     let page = form_page(&st, &s, Some(id), f, None)
         .await
         .map_err(db_error)?;
@@ -416,9 +441,20 @@ pub async fn update(
         Ok(i) => i,
         Err(e) => return invalid(&st, &s, Some(id), f, e).await,
     };
-    match admin::update_policy(&st.pool, id, &input, &s.username).await {
+    let expected = f.revision.trim().parse::<i32>().ok();
+    match admin::update_policy(&st.pool, id, &input, expected, &s.username).await {
         Ok(()) => Ok(Redirect::to(&format!("/updates/{id}")).into_response()),
-        Err(e) => invalid(&st, &s, Some(id), f, format!("{e:#}")).await,
+        Err(e) => match e.downcast_ref::<crate::commands::CmdError>() {
+            Some(crate::commands::CmdError::NotFound(_)) => Err(not_found()),
+            Some(crate::commands::CmdError::Conflict(m)) => {
+                let m = m.clone();
+                let page = form_page(&st, &s, Some(id), f, Some(m))
+                    .await
+                    .map_err(db_error)?;
+                Ok((axum::http::StatusCode::CONFLICT, render(&page)).into_response())
+            }
+            _ => invalid(&st, &s, Some(id), f, format!("{e:#}")).await,
+        },
     }
 }
 
@@ -473,8 +509,8 @@ pub fn classify(
 ) -> &'static str {
     match state {
         Some("applied") if policy_id == Some(id) && revision == Some(rev) => "已套用",
-        Some("conflict") if policy_id == Some(id) => "衝突",
-        Some("error") => "錯誤",
+        Some("conflict") if policy_id == Some(id) && revision == Some(rev) => "衝突",
+        Some("error") if policy_id.is_none_or(|p| p == id) => "錯誤",
         _ => "尚未回報",
     }
 }
@@ -568,9 +604,16 @@ pub async fn detail(
         name,
         revision,
         groups,
-        quality_paused: set.quality_pause_start.is_some(),
-        feature_paused: set.feature_pause_start.is_some(),
-        settings: describe(&set, today),
+        quality_paused: set
+            .as_ref()
+            .is_some_and(|s| s.quality_pause_start.is_some()),
+        feature_paused: set
+            .as_ref()
+            .is_some_and(|s| s.feature_pause_start.is_some()),
+        settings: match &set {
+            Some(set) => describe(set, today),
+            None => vec![UNPARSEABLE.into()],
+        },
         filters,
         devices: rows
             .into_iter()
@@ -608,12 +651,12 @@ pub async fn act(
         "delete" => {
             admin::delete_policy(pool, id, user)
                 .await
-                .map_err(action_error)?;
+                .map_err(policy_error)?;
             return Ok(Redirect::to("/updates").into_response());
         }
         _ => return Err(not_found()),
     };
-    r.map_err(action_error)?;
+    r.map_err(policy_error)?;
     Ok(Redirect::to(&format!("/updates/{id}")).into_response())
 }
 
@@ -699,6 +742,8 @@ pub struct Report {
 #[derive(Template)]
 #[template(path = "updates_tab.html")]
 struct Tab {
+    /// 裝置未啟用時的狀態文字（已除役／待核准…）：Agent 不會收到原則
+    inactive: Option<&'static str>,
     /// (原則 id, 名稱)；None 為不受管
     policy: Option<(i64, String)>,
     values: Vec<String>,
@@ -722,10 +767,13 @@ pub async fn device_tab(st: &AppState, s: &Session, device: Uuid) -> Result<Resp
     let Some(group) = super::devices::device_group_in_scope(st, s, device).await? else {
         return Ok(not_found());
     };
-    let active: bool = sqlx::query_scalar("SELECT status = 'active' FROM devices WHERE id = $1")
+    let status: String = sqlx::query_scalar("SELECT status FROM devices WHERE id = $1")
         .bind(device)
         .fetch_one(&st.pool)
         .await?;
+    let active = status == "active";
+    // 與裝置頁相同的狀態文字（已除役／待核准／疑似重複）
+    let inactive = (!active).then(|| super::devices::status_label(&status, false).1);
     let set = st.updates.get(&st.pool).await?;
     let assigned = if active { set.policy_for(group) } else { None };
     let policy = match &assigned {
@@ -780,6 +828,7 @@ pub async fn device_tab(st: &AppState, s: &Session, device: Uuid) -> Result<Resp
         },
     );
     Ok(render(&Tab {
+        inactive,
         policy,
         values,
         report,
@@ -803,6 +852,17 @@ mod tests {
         );
         assert_eq!(pause_labels(&set, d(10, 7)), vec!["品質更新暫停已過期"]);
         assert!(pause_labels(&PolicySettings::default(), d(10, 7)).is_empty());
+    }
+
+    #[test]
+    fn grace_without_deadline_is_rejected() {
+        let f = FormFields {
+            name: "x".into(),
+            feature_grace: "3".into(),
+            ..Default::default()
+        };
+        let e = f.to_input().unwrap_err();
+        assert!(e.contains("功能更新寬限期需要先填期限"), "{e}");
     }
 
     #[test]

@@ -617,6 +617,16 @@ mod deploy {
 
     /// 建立 EXE 套件與派送（全部裝置），回傳派送 id
     pub async fn deployment(e: &Env, data: &[u8], args: &str) -> i64 {
+        deployment_with(e, data, args, "install", "").await
+    }
+
+    pub async fn deployment_with(
+        e: &Env,
+        data: &[u8],
+        args: &str,
+        action: &str,
+        uninstall_args: &str,
+    ) -> i64 {
         let chunk: Result<bytes::Bytes, std::io::Error> = Ok(bytes::Bytes::copy_from_slice(data));
         let st = store::save(
             &e.state.package_dir,
@@ -635,7 +645,7 @@ mod deploy {
                 version: "1.0".into(),
                 kind: "exe".into(),
                 install_args: args.into(),
-                uninstall_args: String::new(),
+                uninstall_args: uninstall_args.into(),
                 success_codes: vec![],
                 detect_name: "Fake App*".into(),
                 detect_publisher: String::new(),
@@ -650,7 +660,7 @@ mod deploy {
             &admin::DeploymentInput {
                 name: "Fake".into(),
                 package_id: pkg,
-                action: "install".into(),
+                action: action.into(),
                 include: vec![],
                 exclude: vec![],
                 pilot_group_id: None,
@@ -769,7 +779,12 @@ mod deploy {
                 cmd.program
             );
             self.runs.fetch_add(1, Ordering::SeqCst);
-            if self.install {
+            if cmd.args.contains("/uninstall") {
+                self.software
+                    .lock()
+                    .unwrap()
+                    .retain(|i| !i.name.starts_with("Fake App"));
+            } else if self.install {
                 self.software.lock().unwrap().push(app("Fake App"));
             }
             Ok(RunResult::Exited(self.code))
@@ -893,6 +908,109 @@ mod deploy {
         worker.pass(&w).await;
         assert_eq!(status(&e, d).await.unwrap().0, "compliant");
         assert_eq!(runner.runs.load(Ordering::SeqCst), 0);
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn reinstalls_stop_after_three_removals(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let (_a, mut worker, runner, w, d) = setup(&e, 0, true).await;
+        for _ in 0..3 {
+            worker.pass(&w).await;
+            // 其他工具把軟體移除
+            runner.software.lock().unwrap().clear();
+        }
+        worker.pass(&w).await;
+        worker.pass(&w).await;
+        assert_eq!(runner.runs.load(Ordering::SeqCst), 3);
+        let (st, msg, _) = status(&e, d).await.unwrap();
+        assert_eq!(st, "failed");
+        assert!(msg.contains("一再被移除"), "{msg}");
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn result_for_deleted_deployment_is_done(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let (_a, c) = enrolled(&e, Fake::new()).await;
+        let r = DeployResult {
+            revision: 1,
+            status: DeployStatus::Failed,
+            exit_code: None,
+            message: String::new(),
+            attempts: 1,
+            source: None,
+        };
+        assert!(c.report(999_999, &r).await.is_ok(), "404：伺服器已沒有這筆");
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn each_assignment_uses_its_own_time(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let (a, mut worker, _runner, _w, d1) = setup(&e, 1603, false).await;
+        let d2 = deployment(&e, b"MZ second installer", "/S").await;
+        let c = ServerClient::new(&e.url(), &e.root_pem(), a.state().identity_pem()).unwrap();
+        let w = work(&a, &e, assignments(&c).await);
+        assert_eq!(w.assignments.len(), 2);
+        worker
+            .pass_at(&w, chrono::Utc::now() - chrono::Duration::hours(1))
+            .await;
+        let at = |d: i64| worker.state().entries[&d].last_attempt.unwrap();
+        assert!(at(d2) > at(d1), "{} vs {}", at(d1), at(d2));
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn old_install_logs_are_removed(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let dir = e.dir.path().join("packages");
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["old.log", "new.log"] {
+            std::fs::write(dir.join(name), b"log").unwrap();
+        }
+        std::fs::File::options()
+            .write(true)
+            .open(dir.join("old.log"))
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - Duration::from_secs(31 * 86_400))
+            .unwrap();
+        let fake = Fake::new();
+        let runner = FakeRunner {
+            code: 0,
+            install: false,
+            software: fake.software.clone(),
+            runs: Arc::new(AtomicUsize::new(0)),
+        };
+        let _w = Worker::new(e.dir.path(), Arc::new(fake), runner);
+        assert!(!dir.join("old.log").exists());
+        assert!(dir.join("new.log").exists());
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn worker_uninstalls_and_reports(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let fake = Fake::new();
+        fake.software.lock().unwrap().push(app("Fake App"));
+        let (a, c) = enrolled(&e, fake.clone()).await;
+        let d = deployment_with(&e, b"MZ uninstaller", "/S", "uninstall", "/uninstall /S").await;
+        let runner = FakeRunner {
+            code: 0,
+            install: false,
+            software: fake.software.clone(),
+            runs: Arc::new(AtomicUsize::new(0)),
+        };
+        let w = work(&a, &e, assignments(&c).await);
+        let mut worker = Worker::new(e.dir.path(), Arc::new(fake.clone()), runner.clone());
+        worker.pass(&w).await;
+        assert_eq!(runner.runs.load(Ordering::SeqCst), 1);
+        assert_eq!(status(&e, d).await.unwrap().0, "succeeded");
+        assert!(
+            !fake
+                .software
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|i| i.name.starts_with("Fake App"))
+        );
+        worker.pass(&w).await;
+        assert_eq!(runner.runs.load(Ordering::SeqCst), 1, "已移除不再執行");
     }
 
     #[sqlx::test(migrations = false)]
@@ -1601,7 +1719,7 @@ mod updates {
         // 原則改版：重新寫入
         let g = e.state.updates.get(&e.pool).await.unwrap();
         let group = *g.by_group.keys().next().unwrap();
-        admin::update_policy(&e.pool, s.policy, &input(14, group), "admin")
+        admin::update_policy(&e.pool, s.policy, &input(14, group), None, "admin")
             .await
             .unwrap();
         e.state.updates.invalidate();
@@ -1759,6 +1877,69 @@ mod updates {
 
     /// 移出範圍時刪除失敗：記為 error、保留 written，下次再刪
     #[sqlx::test(migrations = false)]
+    async fn read_failure_does_not_overwrite_next_round(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let mut s = setup(&e).await;
+        let w = work(&s);
+        s.worker.pass(&w).await;
+        // 別人（例如 GPO）改了值：衝突，不寫回
+        let name = "DeferQualityUpdatesPeriodInDays";
+        s.host
+            .values
+            .lock()
+            .unwrap()
+            .insert(name.into(), PolicyData::Dword(30));
+        s.worker.pass(&w).await;
+        assert_eq!(row(&e, s.device).await.0, "conflict");
+        // 一輪讀取失敗：回報錯誤
+        s.host.fail_reads.store(true, Ordering::SeqCst);
+        s.worker.pass(&w).await;
+        assert_eq!(row(&e, s.device).await.0, "error");
+        // 恢復後仍是衝突，別人的值不被覆寫
+        s.host.fail_reads.store(false, Ordering::SeqCst);
+        s.worker.pass(&w).await;
+        assert_eq!(row(&e, s.device).await.0, "conflict");
+        assert_eq!(value(&s, name), Some(PolicyData::Dword(30)));
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn read_failure_on_release_keeps_written(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let mut s = setup(&e).await;
+        s.worker.pass(&work(&s)).await;
+        admin::delete_policy(&e.pool, s.policy, "admin")
+            .await
+            .unwrap();
+        e.state.updates.invalidate();
+        s.a.run_cycle().await;
+        let w = work(&s);
+        s.host.fail_reads.store(true, Ordering::SeqCst);
+        s.worker.pass(&w).await;
+        assert_eq!(row(&e, s.device).await.0, "error");
+        assert!(!s.worker.state().applied.written.is_empty(), "還要清");
+        s.host.fail_reads.store(false, Ordering::SeqCst);
+        s.worker.pass(&w).await;
+        assert!(s.host.values.lock().unwrap().is_empty());
+        assert_eq!(row(&e, s.device).await.0, "unmanaged");
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn read_failure_is_error_not_conflict(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let mut s = setup(&e).await;
+        let w = work(&s);
+        s.worker.pass(&w).await;
+        assert_eq!(row(&e, s.device).await.0, "applied");
+        let before = s.host.values.lock().unwrap().clone();
+        s.host.fail_reads.store(true, Ordering::SeqCst);
+        s.worker.pass(&w).await;
+        let (state, detail, _) = row(&e, s.device).await;
+        assert_eq!(state, "error", "{detail}");
+        assert!(detail.contains("讀取"), "{detail}");
+        assert_eq!(*s.host.values.lock().unwrap(), before, "不刪也不覆寫");
+    }
+
+    #[sqlx::test(migrations = false)]
     async fn release_failure_keeps_written_and_retries(pool: PgPool) {
         let e = env(pool, 1).await;
         let mut s = setup(&e).await;
@@ -1771,7 +1952,12 @@ mod updates {
         let w = work(&s);
         s.host.fail_writes.store(true, Ordering::SeqCst);
         s.worker.pass(&w).await;
-        assert_eq!(row(&e, s.device).await.0, "error");
+        let (state, _, revision) = row(&e, s.device).await;
+        assert_eq!(
+            (state.as_str(), revision),
+            ("error", None),
+            "已移出原則：不再回報舊原則"
+        );
         assert!(!s.worker.state().applied.written.is_empty());
         assert!(!s.host.values.lock().unwrap().is_empty());
         s.host.fail_writes.store(false, Ordering::SeqCst);

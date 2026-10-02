@@ -21,10 +21,14 @@ pub struct MemoryHost {
     pub values: Mutex<BTreeMap<String, PolicyData>>,
     pub reboot: AtomicBool,
     pub fail_writes: AtomicBool,
+    pub fail_reads: AtomicBool,
 }
 
 impl WuHost for MemoryHost {
     fn read(&self, name: &str) -> std::io::Result<Option<PolicyData>> {
+        if self.fail_reads.load(Ordering::SeqCst) {
+            return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        }
         Ok(self.values.lock().expect("lock").get(name).cloned())
     }
 

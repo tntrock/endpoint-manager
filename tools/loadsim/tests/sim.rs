@@ -24,7 +24,7 @@ async fn enroll_heartbeat_upload(pool: PgPool) {
     tokio::spawn(tls::serve_mtls(
         listener,
         tls::server_config(pki.path()).unwrap(),
-        agent_router(state),
+        agent_router(state.clone()),
         tls::ConnLimits::default(),
     ));
     let (_, token) = tokens::create_token(
@@ -66,8 +66,8 @@ async fn enroll_heartbeat_upload(pool: PgPool) {
         .execute(&pool)
         .await
         .unwrap();
-    // 報到用的規則快取最多每 5 秒確認一次 generation
-    tokio::time::sleep(Duration::from_millis(5500)).await;
+    // 報到用的規則快取最多每 5 秒確認一次 generation：直接讓它失效
+    state.rules.invalidate();
     let (cfg, unverified) = loadsim::config(&t, &devices, 5).await;
     assert_eq!((cfg.ok, cfg.errors, unverified), (5, 0, 0));
     let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM device_registry")
@@ -122,7 +122,7 @@ async fn enroll_heartbeat_upload(pool: PgPool) {
         .await
         .unwrap();
     }
-    tokio::time::sleep(Duration::from_millis(5500)).await;
+    state.deploy.invalidate();
     let (dep, retries, unassigned) = loadsim::deploy(&t, &devices, 5).await;
     assert_eq!(
         (dep.ok, dep.errors, unassigned),
@@ -140,7 +140,7 @@ async fn enroll_heartbeat_upload(pool: PgPool) {
         .execute(&pool)
         .await
         .unwrap();
-    tokio::time::sleep(Duration::from_millis(5500)).await;
+    state.updates.invalidate();
     let (up, unmanaged) = loadsim::updates(&t, &devices, 5).await;
     assert_eq!((up.ok, up.errors, unmanaged), (5, 0, 0));
     let applied: i64 =

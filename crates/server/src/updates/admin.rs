@@ -1,12 +1,13 @@
 //! 更新原則的管理（平台管理員）：驗證、CRUD、暫停、稽核。
 
-use anyhow::{Context, bail, ensure};
+use anyhow::{bail, ensure};
 use chrono::NaiveDate;
 use serde_json::json;
 use sqlx::{PgConnection, PgPool};
 
-use super::policy::PolicySettings;
+use super::policy::{PAUSE_DAYS, PolicySettings};
 use crate::audit;
+use crate::commands::CmdError;
 
 pub const MAX_NAME_LEN: usize = 100;
 
@@ -54,18 +55,32 @@ async fn bump(conn: &mut PgConnection) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
-/// 鎖住原則列並回傳 (名稱, 設定)
-async fn lock_policy(conn: &mut PgConnection, id: i64) -> anyhow::Result<(String, PolicySettings)> {
-    let row: Option<(String, String)> =
-        sqlx::query_as("SELECT name, settings::text FROM update_policies WHERE id = $1 FOR UPDATE")
-            .bind(id)
-            .fetch_optional(&mut *conn)
-            .await?;
-    let (name, settings) = row.context("原則不存在")?;
-    Ok((
-        name,
-        serde_json::from_str(&settings).context("原則設定無法解析")?,
-    ))
+/// 鎖住原則列並回傳 (名稱, 設定, revision)；設定無法解析（被手動改壞）時為 None
+async fn lock_policy(
+    conn: &mut PgConnection,
+    id: i64,
+) -> anyhow::Result<(String, Option<PolicySettings>, i32)> {
+    let row: Option<(String, String, i32)> = sqlx::query_as(
+        "SELECT name, settings::text, revision FROM update_policies WHERE id = $1 FOR UPDATE",
+    )
+    .bind(id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let (name, settings, revision) =
+        row.ok_or_else(|| anyhow::Error::from(CmdError::NotFound("原則不存在".into())))?;
+    let parsed = serde_json::from_str(&settings)
+        .map_err(|e| tracing::error!(policy_id = id, error = %e, "更新原則設定無法解析"))
+        .ok();
+    Ok((name, parsed, revision))
+}
+
+async fn groups_of(conn: &mut PgConnection, id: i64) -> Result<Vec<i64>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT group_id FROM update_policy_groups WHERE policy_id = $1 ORDER BY group_id",
+    )
+    .bind(id)
+    .fetch_all(conn)
+    .await
 }
 
 /// 寫入原則的群組；群組已屬於其他原則時回錯誤（寫出是哪個原則）
@@ -152,15 +167,23 @@ pub async fn create_policy(pool: &PgPool, i: &PolicyInput, actor: &str) -> anyho
     Ok(id)
 }
 
+/// `expected_revision`：表單開啟時的 revision；之後有人改過（含暫停／恢復）就回 409
 pub async fn update_policy(
     pool: &PgPool,
     id: i64,
     i: &PolicyInput,
+    expected_revision: Option<i32>,
     actor: &str,
 ) -> anyhow::Result<()> {
     let mut tx = pool.begin().await?;
-    let (_, old) = lock_policy(&mut tx, id).await?;
+    let (old_name, old, revision) = lock_policy(&mut tx, id).await?;
+    if expected_revision.is_some_and(|r| r != revision) {
+        return Err(CmdError::Conflict("原則已被其他人修改，請重新整理後再編輯".into()).into());
+    }
     let v = validate(i)?;
+    // 設定無法解析時以表單內容整個取代（暫停日一併清除）
+    let old = old.unwrap_or_default();
+    let old_groups = groups_of(&mut tx, id).await?;
     let settings = PolicySettings {
         quality_pause_start: old.quality_pause_start,
         feature_pause_start: old.feature_pause_start,
@@ -183,7 +206,10 @@ pub async fn update_policy(
         actor,
         "update_policy_update",
         Some(&v.name),
-        json!({"id": id, "settings": settings, "groups": v.groups}),
+        json!({
+            "id": id, "settings": settings, "groups": v.groups,
+            "old": {"name": old_name, "settings": old, "groups": old_groups},
+        }),
     )
     .await?;
     tx.commit().await?;
@@ -198,12 +224,25 @@ pub async fn set_pause(
     start: Option<NaiveDate>,
     actor: &str,
 ) -> anyhow::Result<()> {
-    let mut tx = pool.begin().await?;
-    let (name, mut settings) = lock_policy(&mut tx, id).await?;
-    match kind {
-        PauseKind::Quality => settings.quality_pause_start = start,
-        PauseKind::Feature => settings.feature_pause_start = start,
+    // Windows 從暫停開始日起算 35 天自動恢復：太舊的日期等於沒暫停，未來的日期行為不確定
+    if let Some(d) = start {
+        let today = chrono::Utc::now().date_naive();
+        if d < today - chrono::Duration::days(PAUSE_DAYS) || d > today + chrono::Duration::days(1) {
+            return Err(CmdError::Invalid(format!("暫停日期必須是最近 {PAUSE_DAYS} 天內")).into());
+        }
     }
+    let mut tx = pool.begin().await?;
+    let (name, settings, _) = lock_policy(&mut tx, id).await?;
+    let mut settings = settings.ok_or_else(|| {
+        anyhow::Error::from(CmdError::Invalid(
+            "原則設定無法解析，請先編輯原則重新儲存".into(),
+        ))
+    })?;
+    let slot = match kind {
+        PauseKind::Quality => &mut settings.quality_pause_start,
+        PauseKind::Feature => &mut settings.feature_pause_start,
+    };
+    let old_start = std::mem::replace(slot, start);
     sqlx::query(
         "UPDATE update_policies SET settings = $2::jsonb, revision = revision + 1, \
          updated_at = now() WHERE id = $1",
@@ -226,6 +265,7 @@ pub async fn set_pause(
             "id": id,
             "kind": match kind { PauseKind::Quality => "quality", PauseKind::Feature => "feature" },
             "start": start,
+            "old_start": old_start,
         }),
     )
     .await?;
@@ -235,7 +275,8 @@ pub async fn set_pause(
 
 pub async fn delete_policy(pool: &PgPool, id: i64, actor: &str) -> anyhow::Result<()> {
     let mut tx = pool.begin().await?;
-    let (name, _) = lock_policy(&mut tx, id).await?;
+    let (name, settings, _) = lock_policy(&mut tx, id).await?;
+    let groups = groups_of(&mut tx, id).await?;
     sqlx::query("DELETE FROM update_policies WHERE id = $1")
         .bind(id)
         .execute(&mut *tx)
@@ -246,7 +287,7 @@ pub async fn delete_policy(pool: &PgPool, id: i64, actor: &str) -> anyhow::Resul
         actor,
         "update_policy_delete",
         Some(&name),
-        json!({"id": id}),
+        json!({"id": id, "settings": settings, "groups": groups}),
     )
     .await?;
     tx.commit().await?;

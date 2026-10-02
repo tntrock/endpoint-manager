@@ -219,6 +219,7 @@ pub async fn serve(cfg: config::Config) -> anyhow::Result<()> {
             }
         }
     });
+    compliance::set_display_offset(state.display_offset);
     compliance::worker::spawn(pool.clone(), state.display_offset);
     commands::worker::spawn(pool.clone());
     notify::worker::spawn(pool.clone(), state.notify.clone());

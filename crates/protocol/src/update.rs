@@ -142,6 +142,15 @@ impl UpdateStatus {
         if self.state == ApplyState::Unknown {
             return Err("unknown state");
         }
+        // 超出資料庫範圍的日期會讓寫入失敗（500）：2000 年以前一律拒收
+        let floor = NaiveDate::from_ymd_opt(2000, 1, 1).expect("valid date");
+        if self.last_patch_date.is_some_and(|d| d < floor)
+            || self
+                .reboot_pending_since
+                .is_some_and(|t| t.date_naive() < floor)
+        {
+            return Err("date is too old");
+        }
         let limit = now + Duration::days(1);
         if self.reboot_pending_since.is_some_and(|t| t > limit) {
             return Err("reboot_pending_since is in the future");
@@ -255,6 +264,20 @@ mod tests {
         s.reboot_pending_since = Some(now + Duration::hours(23));
         assert!(s.validate(now).is_ok());
         s.reboot_pending_since = Some(now + Duration::hours(25));
+        assert!(s.validate(now).is_err());
+    }
+
+    #[test]
+    fn ancient_dates_are_rejected() {
+        // 超出 Postgres 範圍的日期會讓寫入變成 500：2000 年以前一律拒收
+        let now = Utc.with_ymd_and_hms(2026, 9, 30, 12, 0, 0).unwrap();
+        let mut s = status();
+        s.last_patch_date = Some(NaiveDate::from_ymd_opt(1999, 12, 31).unwrap());
+        assert!(s.validate(now).is_err());
+        s.last_patch_date = Some(NaiveDate::from_ymd_opt(2000, 1, 1).unwrap());
+        assert!(s.validate(now).is_ok());
+        let mut s = status();
+        s.reboot_pending_since = Some(Utc.with_ymd_and_hms(1900, 1, 1, 0, 0, 0).unwrap());
         assert!(s.validate(now).is_err());
     }
 

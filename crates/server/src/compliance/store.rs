@@ -126,7 +126,8 @@ async fn load_config(conn: &mut PgConnection, ids: &[Uuid]) -> Result<ConfigFact
         });
     }
     let rows: Vec<UpdateDbRow> = sqlx::query_as(
-        "SELECT device_id, state, detail, reboot_pending, reboot_pending_since, last_patch_date          FROM update_policy_status WHERE device_id = ANY($1)",
+        "SELECT device_id, state, detail, reboot_pending, reboot_pending_since, last_patch_date \
+         FROM update_policy_status WHERE device_id = ANY($1)",
     )
     .bind(ids)
     .fetch_all(&mut *conn)
@@ -202,6 +203,7 @@ pub async fn load_facts(
     .fetch_all(&mut *conn)
     .await?;
     let mut cfg = load_config(conn, &[id]).await?;
+    let now = chrono::Utc::now();
     Ok(Some(DeviceFacts {
         active: status == "active",
         group_id,
@@ -215,7 +217,8 @@ pub async fn load_facts(
         services: has("services").then(|| cfg.services.remove(&id).unwrap_or_default()),
         agent_version,
         update_status: cfg.updates.remove(&id),
-        now: chrono::Utc::now(),
+        now,
+        today: super::today(now),
     }))
 }
 
@@ -457,6 +460,7 @@ pub async fn load_facts_bulk(
         kbs.entry(d).or_default().push(kb);
     }
     let mut cfg = load_config(conn, ids).await?;
+    let now = chrono::Utc::now();
     let mut has: std::collections::HashSet<(Uuid, String)> = std::collections::HashSet::new();
     has.extend(sections);
     let has = |d: Uuid, s: &str| has.contains(&(d, s.to_string()));
@@ -478,7 +482,8 @@ pub async fn load_facts_bulk(
                 services: has(id, "services").then(|| cfg.services.remove(&id).unwrap_or_default()),
                 agent_version,
                 update_status: cfg.updates.remove(&id),
-                now: chrono::Utc::now(),
+                now,
+                today: super::today(now),
             };
             (id, facts)
         })

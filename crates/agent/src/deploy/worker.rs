@@ -14,7 +14,10 @@ use protocol::deploy::{
 use protocol::{InventoryPayload, Section, SoftwareItem};
 use tokio::sync::watch;
 
-use super::logic::{Cmd, Outcome, Plan, decide, install_cmd, is_installed, outcome, uninstall_cmd};
+use super::logic::{
+    Cmd, Outcome, Plan, RETRY_AFTER_HOURS, decide, install_cmd, is_installed, outcome,
+    uninstall_cmd,
+};
 use super::state::DeployState;
 use crate::backoff::{jitter, with_jitter};
 use crate::client::{ClientError, DownloadError, ServerClient};
@@ -28,6 +31,8 @@ pub const RECHECK: Duration = Duration::from_secs(15 * 60);
 pub const DOWNLOAD_RETRY: Duration = Duration::from_secs(5 * 60);
 /// 快取連不上而改向中央後，這段時間內都直接向中央下載
 pub const CACHE_PAUSE: Duration = Duration::from_secs(5 * 60);
+/// 安裝紀錄（<sha>.log）保留天數
+pub const LOG_KEEP_DAYS: u64 = 30;
 
 /// 報到後交給 worker 的工作：指派清單與建立連線需要的資訊（憑證可能已更新）
 #[derive(Debug, Clone)]
@@ -240,10 +245,19 @@ fn truncate(msg: String) -> String {
 
 impl<C: Collector, R: Runner> Worker<C, R> {
     pub fn new(dir: &Path, collector: Arc<C>, runner: R) -> Self {
-        // 上次中斷留下的安裝檔與下載暫存檔（log 保留供排查）
+        // 上次中斷留下的安裝檔與下載暫存檔；log 保留 LOG_KEEP_DAYS 天供排查
         if let Ok(entries) = std::fs::read_dir(dir.join("packages")) {
+            let keep = std::time::Duration::from_secs(LOG_KEEP_DAYS * 86_400);
             for e in entries.flatten() {
-                if e.path().extension().is_none_or(|x| x != "log") {
+                let is_log = e.path().extension().is_some_and(|x| x == "log");
+                let old = || {
+                    e.metadata()
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .and_then(|t| t.elapsed().ok())
+                        .is_some_and(|age| age > keep)
+                };
+                if !is_log || old() {
                     let _ = std::fs::remove_file(e.path());
                 }
             }
@@ -280,6 +294,10 @@ impl<C: Collector, R: Runner> Worker<C, R> {
         }
     }
 
+    pub fn state(&self) -> &DeployState {
+        &self.state
+    }
+
     pub async fn pass(&mut self, w: &Work) -> Option<DateTime<Utc>> {
         self.pass_at(w, Utc::now()).await
     }
@@ -297,10 +315,13 @@ impl<C: Collector, R: Runner> Worker<C, R> {
         let mut sorted: Vec<&Assignment> = w.assignments.iter().collect();
         sorted.sort_by_key(|a| a.deployment_id);
         let mut next: Option<DateTime<Utc>> = None;
+        // 每個指派用當下的時間（前一個安裝可能跑了很久），以 now 為起點
+        let started = Utc::now();
         let wake = |t: DateTime<Utc>, next: &mut Option<DateTime<Utc>>| {
             *next = Some(next.map_or(t, |n| n.min(t)));
         };
         for a in sorted {
+            let now = now + (Utc::now() - started);
             self.source = None;
             self.flush_unreported(&client, a).await;
             self.report_interrupted(&client, a).await;
@@ -308,6 +329,18 @@ impl<C: Collector, R: Runner> Worker<C, R> {
             let installed = is_installed(&a.package.detect, &items);
             match decide(a, installed, &entry, now) {
                 Plan::Nothing => {}
+                Plan::Removed => {
+                    let attempts = entry.attempts;
+                    self.report(
+                        &client,
+                        a,
+                        DeployStatus::Failed,
+                        None,
+                        "安裝後一再被移除（24 小時內已安裝 3 次），24 小時後再試".into(),
+                        attempts,
+                    )
+                    .await;
+                }
                 Plan::Wait(t) => wake(t, &mut next),
                 Plan::ReportCompliant => {
                     let attempts = entry.attempts;
@@ -454,12 +487,18 @@ impl<C: Collector, R: Runner> Worker<C, R> {
         a: &Assignment,
         status: DeployStatus,
         exit_code: i32,
+        now: DateTime<Utc>,
     ) {
         let e = self.state.entry_for(a.deployment_id, a.revision);
         let attempts = e.attempts;
-        // 成功後重新計算：之後被使用者移除時還能再裝
+        // 成功後重新計算：之後被使用者移除時還能再裝（24 小時內最多 MAX_REINSTALLS 次）
         e.attempts = 0;
         e.last_failed = false;
+        if a.action == DeployAction::Install {
+            e.installs
+                .retain(|t| *t > now - chrono::Duration::hours(RETRY_AFTER_HOURS));
+            e.installs.push(now);
+        }
         tracing::info!(deployment_id = a.deployment_id, ?status, "deploy: done");
         self.report(client, a, status, Some(exit_code), String::new(), attempts)
             .await;
@@ -631,7 +670,7 @@ impl<C: Collector, R: Runner> Worker<C, R> {
                     (DeployAction::Install, Some(true)) | (DeployAction::Uninstall, Some(false))
                 );
                 if ok {
-                    self.succeed(client, a, status, code).await;
+                    self.succeed(client, a, status, code, now).await;
                 } else {
                     let msg = if a.action == DeployAction::Install {
                         format!("安裝程式回報成功（結束碼 {code}），但偵測不到軟體")
