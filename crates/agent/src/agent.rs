@@ -407,6 +407,7 @@ impl<C: Collector> Agent<C> {
                 server_url: self.config.server_url.clone(),
                 root_pem: self.root_pem.clone(),
                 identity_pem: self.state.identity_pem(),
+                package_source: resp.package_source.clone(),
             });
             tx.send_if_modified(|cur| {
                 let changed =

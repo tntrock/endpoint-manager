@@ -6,8 +6,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use protocol::branch::DownloadSource;
 use protocol::deploy::{
     Assignment, DeployAction, DeployResult, DeployStatus, MAX_RESULT_MESSAGE, PackageKind,
+    PackageSpec,
 };
 use protocol::{InventoryPayload, Section, SoftwareItem};
 use tokio::sync::watch;
@@ -24,6 +26,8 @@ pub const EXEC_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 pub const RECHECK: Duration = Duration::from_secs(15 * 60);
 /// 下載遇到忙碌但伺服器沒給 Retry-After 時的等待
 pub const DOWNLOAD_RETRY: Duration = Duration::from_secs(5 * 60);
+/// 快取連不上而改向中央後，這段時間內都直接向中央下載
+pub const CACHE_PAUSE: Duration = Duration::from_secs(5 * 60);
 
 /// 報到後交給 worker 的工作：指派清單與建立連線需要的資訊（憑證可能已更新）
 #[derive(Debug, Clone)]
@@ -32,6 +36,8 @@ pub struct Work {
     pub server_url: String,
     pub root_pem: String,
     pub identity_pem: Option<String>,
+    /// 據點的分點快取（報到時中央下發）；None 表示向中央下載
+    pub package_source: Option<protocol::branch::PackageSource>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -218,6 +224,10 @@ pub struct Worker<C: Collector, R: Runner> {
     collector: Arc<C>,
     runner: R,
     state: DeployState,
+    /// 快取暫停期：這個時間之前都直接向中央下載
+    cache_paused_until: Option<DateTime<Utc>>,
+    /// 這次執行實際下載的來源（回報時帶上）
+    source: Option<DownloadSource>,
 }
 
 fn is_sha256(s: &str) -> bool {
@@ -243,6 +253,8 @@ impl<C: Collector, R: Runner> Worker<C, R> {
             collector,
             runner,
             state: DeployState::load(dir),
+            cache_paused_until: None,
+            source: None,
         }
     }
 
@@ -289,6 +301,7 @@ impl<C: Collector, R: Runner> Worker<C, R> {
             *next = Some(next.map_or(t, |n| n.min(t)));
         };
         for a in sorted {
+            self.source = None;
             self.flush_unreported(&client, a).await;
             self.report_interrupted(&client, a).await;
             let entry = self.state.entry_for(a.deployment_id, a.revision).clone();
@@ -309,7 +322,7 @@ impl<C: Collector, R: Runner> Worker<C, R> {
                     .await;
                 }
                 Plan::Execute => {
-                    if let Some(t) = self.execute(&client, a, now).await {
+                    if let Some(t) = self.execute(w, &client, a, now).await {
                         wake(t, &mut next);
                     }
                     // 安裝／移除可能改變其他指派的偵測結果
@@ -371,7 +384,7 @@ impl<C: Collector, R: Runner> Worker<C, R> {
             exit_code,
             message: truncate(message),
             attempts,
-            source: None,
+            source: self.source.take(),
         };
         self.send(client, a.deployment_id, a.revision, r).await;
     }
@@ -452,9 +465,52 @@ impl<C: Collector, R: Runner> Worker<C, R> {
             .await;
     }
 
+    /// 依來源下載（規格 §4）：有分點快取且不在暫停期時向快取下載；
+    /// 快取忙碌（503）稍後再試，不改向；連不上或 5xx 時依據點設定改向中央並暫停快取 5 分鐘；
+    /// 檔案不符時允許的話改向中央一次；403／404 照下載失敗處理
+    async fn download(
+        &mut self,
+        w: &Work,
+        central: &ServerClient,
+        spec: &PackageSpec,
+        file: &Path,
+        now: DateTime<Utc>,
+    ) -> Result<(), DownloadError> {
+        if let Some(src) = &w.package_source
+            && self.cache_paused_until.is_none_or(|t| now >= t)
+        {
+            match ServerClient::new(&src.url, &w.root_pem, w.identity_pem.clone()) {
+                Ok(cache) => match cache.download(spec, file).await {
+                    Ok(()) => {
+                        self.source = Some(DownloadSource::Cache);
+                        return Ok(());
+                    }
+                    Err(DownloadError::Retry(after)) => return Err(DownloadError::Retry(after)),
+                    Err(DownloadError::Unreachable | DownloadError::Unauthorized) => {
+                        if !src.fallback_to_central {
+                            return Err(DownloadError::Retry(None));
+                        }
+                        tracing::warn!(url = %src.url, "deploy: cache unreachable; using central for a while");
+                        self.cache_paused_until =
+                            Some(now + chrono::Duration::from_std(CACHE_PAUSE).unwrap_or_default());
+                    }
+                    Err(DownloadError::Mismatch) if src.fallback_to_central => {
+                        tracing::warn!(url = %src.url, "deploy: file from cache does not match; trying central");
+                    }
+                    Err(e) => return Err(e),
+                },
+                Err(e) => tracing::warn!(error = %e, "deploy: cannot build cache client"),
+            }
+        }
+        central.download(spec, file).await?;
+        self.source = Some(DownloadSource::Central);
+        Ok(())
+    }
+
     /// 回傳需要再檢查的時間（伺服器忙碌時依 Retry-After）
     async fn execute(
         &mut self,
+        w: &Work,
         client: &ServerClient,
         a: &Assignment,
         now: DateTime<Utc>,
@@ -498,10 +554,14 @@ impl<C: Collector, R: Runner> Worker<C, R> {
         // MSI 以 ProductCode 移除，不需要下載
         let needs_file = a.action == DeployAction::Install || spec.kind == PackageKind::Exe;
         if needs_file && !verified(&file, spec).await {
-            match client.download(spec, &file).await {
+            match self.download(w, client, spec, &file, now).await {
                 Ok(()) => {}
                 // 伺服器忙碌或連不上：不算嘗試，依 Retry-After（加上隨機延遲）再試
-                Err(DownloadError::Retry(after)) => {
+                Err(e @ (DownloadError::Retry(_) | DownloadError::Unreachable)) => {
+                    let after = match e {
+                        DownloadError::Retry(a) => a,
+                        _ => None,
+                    };
                     let wait = with_jitter(after.unwrap_or(DOWNLOAD_RETRY), jitter());
                     return Some(now + chrono::Duration::from_std(wait).unwrap_or_default());
                 }

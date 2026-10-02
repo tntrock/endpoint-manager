@@ -314,7 +314,13 @@ pub async fn deploy(t: &Target, devices: &[Device], concurrency: usize) -> (Repo
             loop {
                 match c.verify_package(&first.package).await {
                     Ok(()) => break,
-                    Err(DownloadError::Retry(after)) if tries < 100 => {
+                    Err(e @ (DownloadError::Retry(_) | DownloadError::Unreachable))
+                        if tries < 100 =>
+                    {
+                        let after = match e {
+                            DownloadError::Retry(a) => a,
+                            _ => None,
+                        };
                         tries += 1;
                         retries.fetch_add(1, Ordering::Relaxed);
                         tokio::time::sleep(after.unwrap_or(Duration::from_secs(10))).await;
