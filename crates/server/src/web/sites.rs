@@ -67,9 +67,10 @@ pub async fn list(
     AdminSession(s): AdminSession,
 ) -> Result<Response, Response> {
     platform(&s)?;
-    // 每台裝置只解析一次 IP（try_inet 有例外處理，不要對每個據點各算一次）
+    // 每台裝置只解析一次 IP（try_inet 有例外處理）。MATERIALIZED：否則 PostgreSQL 會把 CTE 內嵌到
+    // 每個據點的子查詢，變成據點數 × 裝置數次（30k 台、50 個據點：1.26 秒 → 0.21 秒）
     let rows: Vec<Row> = sqlx::query_as(
-        "WITH d AS (SELECT try_inet(last_ip) AS ip FROM devices \
+        "WITH d AS MATERIALIZED (SELECT try_inet(last_ip) AS ip FROM devices \
                     WHERE status = 'active' AND last_ip IS NOT NULL) \
          SELECT s.id, s.name, s.cidrs::text[], s.fallback_to_central, s.bandwidth_limit_mbps, \
                 s.disk_limit_gb, c.name, c.status, \

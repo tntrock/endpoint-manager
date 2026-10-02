@@ -166,15 +166,18 @@ Webhook 只接受 `https://`，不跟隨重新導向。簽章密鑰只放環境�
 以系統管理員的命令列執行（`enroll` 會把資料目錄 `%ProgramData%\EndpointManager\Cache` 限制為 SYSTEM 與 Administrators）：
 
 ```bat
-endpoint-cache.exe enroll --server https://em.example.com:8443 --root root.pem --token <快取金鑰> ^
-    --name 台北快取 --url https://cache-tp.example.com:8443 --dns cache-tp.example.com,10.1.2.3
-sc.exe create EndpointManagerCache binPath= "C:\Program Files\EndpointManager\endpoint-cache.exe service" start= auto
+mkdir "C:\Program Files\EndpointManager"
+copy endpoint-cache.exe "C:\Program Files\EndpointManager\"
+"C:\Program Files\EndpointManager\endpoint-cache.exe" enroll --server https://em.example.com:8443 --root root.pem ^
+    --token <快取金鑰> --name 台北快取 --url https://cache-tp.example.com:8443 --dns cache-tp.example.com,10.1.2.3
+sc.exe create EndpointManagerCache binPath= "\"C:\Program Files\EndpointManager\endpoint-cache.exe\" service" start= auto
 sc.exe failure EndpointManagerCache reset= 86400 actions= restart/60000/restart/60000/restart/60000
 sc.exe failureflag EndpointManagerCache 1
 sc.exe start EndpointManagerCache
 ```
 
 - `--url` 的主機必須在 `--dns` 裡，而且不能是中央伺服器的名稱。端點用這個網址連快取，並以快取憑證的名稱驗證。
+- `binPath` 裡的路徑要用 `\"…\"` 包起來：路徑有空白而沒加引號時，Windows 會先嘗試執行 `C:\Program.exe`（未加引號的服務路徑弱點）。
 - 核准前服務會每 30 秒詢問一次，核准後才開始提供下載。記錄檔在資料目錄的 `cache.log`。
 - `sc.exe failureflag … 1` 讓服務異常結束時也套用自動重新啟動。
 
