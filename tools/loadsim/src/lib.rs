@@ -393,6 +393,46 @@ pub async fn updates(t: &Target, devices: &[Device], concurrency: usize) -> (Rep
     (report, unmanaged.load(Ordering::Relaxed))
 }
 
+/// 每台：報到取得遠端指令 → 每一筆回報成功（輸出 "ok"）。回傳報告（含沒有指令的台數）與沒有收到指令的台數。
+pub async fn commands(t: &Target, devices: &[Device], concurrency: usize) -> (Report, usize) {
+    use protocol::command::{CommandResult, CommandStatus};
+    let sem = Arc::new(Semaphore::new(concurrency));
+    let without = Arc::new(AtomicUsize::new(0));
+    let start = Instant::now();
+    let mut set = JoinSet::new();
+    for d in devices {
+        let permit = sem.clone().acquire_owned().await.expect("semaphore open");
+        let (t, d, without) = (t.clone(), d.clone(), without.clone());
+        set.spawn(async move {
+            let _permit = permit;
+            let c = client(&t, Some(&d)).ok()?;
+            let s = Instant::now();
+            let resp = c.checkin(&checkin_req(BTreeMap::new())).await.ok()?;
+            // 不在目標群組的裝置：報到成功、沒有指令，不算錯誤
+            if resp.commands.is_empty() {
+                without.fetch_add(1, Ordering::Relaxed);
+                return Some(s.elapsed());
+            }
+            for cmd in &resp.commands {
+                c.command_result(
+                    cmd.id,
+                    &CommandResult {
+                        status: CommandStatus::Succeeded,
+                        exit_code: Some(0),
+                        output: "ok".into(),
+                    },
+                )
+                .await
+                .map_err(|e| eprintln!("command-result {}: {e}", d.device_id))
+                .ok()?;
+            }
+            Some(s.elapsed())
+        });
+    }
+    let report = collect(set, start).await;
+    (report, without.load(Ordering::Relaxed))
+}
+
 async fn collect(mut set: JoinSet<Option<Duration>>, start: Instant) -> Report {
     let (mut lat, mut errors) = (Vec::new(), 0);
     while let Some(r) = set.join_next().await {

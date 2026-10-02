@@ -147,4 +147,36 @@ async fn enroll_heartbeat_upload(pool: PgPool) {
             .await
             .unwrap();
     assert_eq!(applied, 5);
+
+    // 遠端指令：對每台下一個「重新收集」，每台報到後回報結果
+    use endpoint_server::commands::Actor;
+    use endpoint_server::commands::runs::{self, RunInput};
+    let admin = Actor {
+        username: "loadsim".into(),
+        platform: true,
+        groups: vec![],
+    };
+    for d in &devices {
+        runs::create_run(
+            &pool,
+            &RunInput {
+                action: "collect".into(),
+                target: runs::Target::Device(d.device_id),
+                delay_minutes: None,
+                script_id: None,
+                expires_hours: 24,
+            },
+            &admin,
+        )
+        .await
+        .unwrap();
+    }
+    let (cmd, without) = loadsim::commands(&t, &devices, 5).await;
+    assert_eq!((cmd.ok, cmd.errors, without), (5, 0, 0));
+    let done: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM command_targets WHERE status = 'succeeded'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(done, 5);
 }
