@@ -120,7 +120,8 @@ pub struct Cmd {
 
 /// 用完整路徑呼叫 msiexec，避免 PATH 劫持（系統目錄由 API 取得，不看可被改動的環境變數）
 fn msiexec() -> PathBuf {
-    system_dir().join("msiexec.exe")
+    // 以 \ 串接：非 Windows（測試）上 Path::join 會用 /
+    PathBuf::from(format!(r"{}\msiexec.exe", system_dir().display()))
 }
 
 #[cfg(windows)]
