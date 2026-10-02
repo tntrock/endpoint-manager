@@ -12,7 +12,7 @@ use chrono::{DateTime, Duration, Utc};
 use protocol::branch::{
     CacheAuthorize, CacheAuthorizeResponse, CacheCheckin, CacheCheckinResponse, CacheEnrollPoll,
     CacheEnrollPollResponse, CacheEnrollRequest, CacheEnrollResponse, CacheEnrollState,
-    CachePackage, MAX_STORED,
+    CachePackage, MAX_STORED, same_host,
 };
 use protocol::{RenewRequest, RenewResponse};
 use serde_json::json;
@@ -66,6 +66,16 @@ pub async fn enroll(
         return Err(AppError::TooManyRequests);
     }
     req.validate().map_err(|e| AppError::BadRequest(e.into()))?;
+    // 快取憑證有 serverAuth、由同一個 CA 簽發：拿到中央伺服器的名稱就能冒充中央
+    if req
+        .dns_names
+        .iter()
+        .any(|d| st.server_names.iter().any(|s| same_host(d, s)))
+    {
+        return Err(AppError::BadRequest(
+            "dns_names must not include the central server's names".into(),
+        ));
+    }
     // 只看 CSR 能不能解析；憑證要等核准時才簽發
     rcgen::CertificateSigningRequestParams::from_pem(&req.csr_pem)
         .map_err(|_| AppError::BadRequest("invalid CSR".into()))?;
@@ -155,15 +165,21 @@ pub async fn renew(
     if cache.cert_not_after - Utc::now() >= Duration::days(RENEW_BEFORE_DAYS) {
         return Err(AppError::BadRequest("renewal not due".into()));
     }
-    let dns: Vec<String> = sqlx::query_scalar("SELECT dns_names FROM caches WHERE id = $1")
-        .bind(cache.cache_id)
-        .fetch_one(&st.pool)
-        .await?;
+    let mut tx = st.pool.begin().await?;
+    // 鎖住快取列並重新確認狀態：與停用（撤銷所有憑證）互斥，停用後不會再多出一張有效憑證
+    let row: Option<(String, Vec<String>)> =
+        sqlx::query_as("SELECT status, dns_names FROM caches WHERE id = $1 FOR UPDATE")
+            .bind(cache.cache_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let dns = match row {
+        Some((status, dns)) if status == "active" => dns,
+        _ => return Err(AppError::Unauthorized),
+    };
     let issued = st
         .ca
         .sign_cache_csr(&req.csr_pem, cache.cache_id, &dns, Utc::now())
         .map_err(|e| AppError::BadRequest(format!("{e:#}")))?;
-    let mut tx = st.pool.begin().await?;
     super::caches::insert_cert(&mut tx, cache.cache_id, &issued).await?;
     // 之後重新啟用時用新的金鑰簽發
     sqlx::query("UPDATE caches SET csr_pem = $2 WHERE id = $1")

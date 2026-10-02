@@ -67,10 +67,44 @@ impl CacheEnrollRequest {
         if !self.dns_names.iter().all(|d| ok(d)) {
             return Err("dns_names must be host names or IP addresses");
         }
+        // 端點用 url 連線並以憑證 SAN 驗證主機：主機必須在 dns_names 裡
+        let host = url_host(&self.url).ok_or("url must be https://<host>[:<port>]")?;
+        if !self.dns_names.iter().any(|d| same_host(d, host)) {
+            return Err("url host must be one of dns_names");
+        }
         if self.csr_pem.len() > MAX_CSR || self.token.len() > 200 {
             return Err("request too large");
         }
         Ok(())
+    }
+}
+
+/// `https://<主機>[:<埠>]` 的主機（IPv6 去掉方括號）；有路徑、查詢、帳號或格式不對時回 None
+fn url_host(url: &str) -> Option<&str> {
+    let auth = url.strip_prefix("https://")?;
+    if auth.is_empty() || auth.contains(['/', '?', '#', '@']) || auth.contains(char::is_whitespace)
+    {
+        return None;
+    }
+    let (host, port) = match auth.strip_prefix('[') {
+        Some(rest) => {
+            let (h, after) = rest.split_once(']')?;
+            (
+                h,
+                after.strip_prefix(':').or(after.is_empty().then_some(""))?,
+            )
+        }
+        None => auth.split_once(':').unwrap_or((auth, "")),
+    };
+    let port_ok = port.is_empty() || port.parse::<u16>().is_ok_and(|p| p > 0);
+    (!host.is_empty() && port_ok).then_some(host)
+}
+
+/// 主機名稱不分大小寫；IP 依位址比較（`fd00::1` 與 `fd00:0::1` 相同）
+pub fn same_host(a: &str, b: &str) -> bool {
+    match (a.parse::<std::net::IpAddr>(), b.parse::<std::net::IpAddr>()) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => a.eq_ignore_ascii_case(b),
     }
 }
 
@@ -192,6 +226,42 @@ mod tests {
         assert_eq!(back.status, DeployStatus::Succeeded);
         let s: DownloadSource = serde_json::from_str(r#""peer""#).unwrap();
         assert_eq!(s, DownloadSource::Unknown);
+    }
+
+    #[test]
+    fn enroll_url_must_match_dns_names() {
+        for ok in [
+            "https://cache-tp.corp:8443",
+            "https://CACHE-TP.corp",
+            "https://10.1.2.3:8443",
+        ] {
+            let r = CacheEnrollRequest {
+                url: ok.into(),
+                ..enroll()
+            };
+            assert!(r.validate().is_ok(), "{ok}");
+        }
+        let v6 = CacheEnrollRequest {
+            url: "https://[fd00::1]:8443".into(),
+            dns_names: vec!["fd00::1".into()],
+            ..enroll()
+        };
+        assert!(v6.validate().is_ok());
+        for bad in [
+            "https://other.corp:8443",
+            "https://cache-tp.corp:8443/x",
+            "https://cache-tp.corp?a=1",
+            "https://user@cache-tp.corp",
+            "https://cache-tp.corp:84 43",
+            "https://cache-tp.corp:x",
+            "https://",
+        ] {
+            let r = CacheEnrollRequest {
+                url: bad.into(),
+                ..enroll()
+            };
+            assert!(r.validate().is_err(), "{bad}");
+        }
     }
 
     #[test]

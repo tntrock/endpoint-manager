@@ -254,6 +254,19 @@ async fn cache_enroll_approve_and_certificate(pool: PgPool) {
     assert_eq!(r.status(), 401, "快取金鑰不能註冊裝置");
     let r = cache_enroll(&s, &enroll_req(&cache_tok, "壞 CSR", "not a csr")).await;
     assert_eq!(r.status(), 400);
+    // 快取憑證也有 serverAuth：不能拿中央伺服器的名稱，否則可冒充中央
+    for names in [vec!["LOCALHOST"], vec!["cache-tp.test", "localhost"]] {
+        let r = cache_enroll(
+            &s,
+            &CacheEnrollRequest {
+                url: format!("https://{}:8443", names[0]),
+                dns_names: names.iter().map(|n| n.to_string()).collect(),
+                ..enroll_req(&cache_tok, "冒充中央", &csr)
+            },
+        )
+        .await;
+        assert_eq!(r.status(), 400, "{names:?}");
+    }
 
     let r = cache_enroll(&s, &enroll_req(&cache_tok, "台北快取", &csr)).await;
     assert_eq!(r.status(), 200);
