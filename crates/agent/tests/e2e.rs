@@ -782,6 +782,7 @@ mod deploy {
             server_url: e.url(),
             root_pem: e.root_pem(),
             identity_pem: a.state().identity_pem(),
+            package_source: None,
         }
     }
 
@@ -1015,6 +1016,463 @@ mod deploy {
         );
         assert_eq!(runner.runs.load(Ordering::SeqCst), 0);
         assert!(status(&e, d).await.is_none(), "忙碌不算嘗試、不回報");
+    }
+
+    // ── 分點快取：依來源下載 ─────────────────────────────────────────────
+
+    use protocol::branch::PackageSource;
+
+    #[derive(Clone)]
+    enum Stub {
+        Bytes(Vec<u8>),
+        Status(u16, Option<u64>),
+    }
+
+    /// 假的快取：用中央的伺服器憑證（含 127.0.0.1）提供 HTTPS，回傳固定內容或狀態碼；計算請求數
+    async fn stub(e: &Env, kind: Stub) -> (String, Arc<AtomicUsize>) {
+        use axum::http::{HeaderValue, StatusCode, header};
+        use axum::response::IntoResponse;
+        let hits = Arc::new(AtomicUsize::new(0));
+        let h = hits.clone();
+        let app = axum::Router::new().route(
+            "/v1/packages/{id}/content",
+            axum::routing::get(move || {
+                let (kind, h) = (kind.clone(), h.clone());
+                async move {
+                    h.fetch_add(1, Ordering::SeqCst);
+                    match kind {
+                        Stub::Bytes(b) => b.into_response(),
+                        Stub::Status(code, after) => {
+                            let mut r = StatusCode::from_u16(code).unwrap().into_response();
+                            if let Some(a) = after {
+                                r.headers_mut().insert(
+                                    header::RETRY_AFTER,
+                                    HeaderValue::from_str(&a.to_string()).unwrap(),
+                                );
+                            }
+                            r
+                        }
+                    }
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(tls::serve_mtls(
+            listener,
+            tls::server_config(e._pki.path()).unwrap(),
+            app,
+            tls::ConnLimits::default(),
+        ));
+        (format!("https://127.0.0.1:{port}"), hits)
+    }
+
+    fn dead_url() -> String {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        format!("https://127.0.0.1:{}", l.local_addr().unwrap().port())
+    }
+
+    fn via(w: &Work, url: &str, fallback: bool) -> Work {
+        Work {
+            package_source: Some(PackageSource {
+                cache_id: 1,
+                url: url.into(),
+                fallback_to_central: fallback,
+            }),
+            ..w.clone()
+        }
+    }
+
+    async fn source_of(e: &Env, d: i64) -> Option<String> {
+        sqlx::query_scalar("SELECT source FROM deployment_status WHERE deployment_id = $1")
+            .bind(d)
+            .fetch_one(&e.pool)
+            .await
+            .unwrap()
+    }
+
+    /// 讓中央的下載失敗：確認沒有向中央下載
+    fn break_central(e: &Env) {
+        for f in std::fs::read_dir(&e.state.package_dir).unwrap().flatten() {
+            std::fs::remove_file(f.path()).unwrap();
+        }
+    }
+
+    const INSTALLER: &[u8] = b"MZ installer";
+
+    #[sqlx::test(migrations = false)]
+    async fn downloads_from_cache(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let (_a, mut worker, _runner, w, d) = setup(&e, 0, true).await;
+        let (url, hits) = stub(&e, Stub::Bytes(INSTALLER.to_vec())).await;
+        break_central(&e);
+        worker.pass(&via(&w, &url, true)).await;
+        assert_eq!(status(&e, d).await.unwrap().0, "succeeded");
+        assert_eq!(source_of(&e, d).await.as_deref(), Some("cache"));
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn without_source_downloads_from_central(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let (_a, mut worker, _runner, w, d) = setup(&e, 0, true).await;
+        worker.pass(&w).await;
+        assert_eq!(source_of(&e, d).await.as_deref(), Some("central"));
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn cache_busy_waits_without_fallback(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let (_a, mut worker, runner, w, d) = setup(&e, 0, true).await;
+        let (url, _) = stub(&e, Stub::Status(503, Some(60))).await;
+        let before = chrono::Utc::now();
+        let next = worker.pass(&via(&w, &url, true)).await.expect("稍後再試");
+        // Retry-After 60 秒，加上 0.8～1.2 倍的隨機延遲（不是沒有 Retry-After 時的 5 分鐘）
+        assert!(next >= before + chrono::Duration::seconds(47), "{next}");
+        assert!(
+            next <= chrono::Utc::now() + chrono::Duration::seconds(73),
+            "{next}"
+        );
+        assert_eq!(runner.runs.load(Ordering::SeqCst), 0);
+        assert!(status(&e, d).await.is_none(), "沒有回報、沒有向中央下載");
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn unreachable_cache_falls_back_and_pauses(pool: PgPool) {
+        let e = env(pool, 1).await;
+        // install=false：兩個派送都會下載（偵測不到安裝結果）
+        let (_a, mut worker, _runner, _w, d1) = setup(&e, 0, false).await;
+        let d2 = deployment(&e, b"MZ second installer", "/S").await;
+        let c = ServerClient::new(&e.url(), &e.root_pem(), _a.state().identity_pem()).unwrap();
+        let w = work(&_a, &e, assignments(&c).await);
+        let (url, hits) = stub(&e, Stub::Status(500, None)).await;
+        worker.pass(&via(&w, &url, true)).await;
+        assert_eq!(hits.load(Ordering::SeqCst), 1, "暫停期內不再連快取");
+        assert_eq!(source_of(&e, d1).await.as_deref(), Some("central"));
+        assert_eq!(source_of(&e, d2).await.as_deref(), Some("central"));
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn unreachable_cache_without_fallback_retries_cache(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let (_a, mut worker, runner, w, d) = setup(&e, 0, true).await;
+        assert!(worker.pass(&via(&w, &dead_url(), false)).await.is_some());
+        assert_eq!(runner.runs.load(Ordering::SeqCst), 0);
+        assert!(status(&e, d).await.is_none(), "不算失敗、不向中央下載");
+        let (url, _) = stub(&e, Stub::Bytes(INSTALLER.to_vec())).await;
+        worker.pass(&via(&w, &url, false)).await;
+        assert_eq!(status(&e, d).await.unwrap().0, "succeeded");
+        assert_eq!(source_of(&e, d).await.as_deref(), Some("cache"));
+    }
+
+    async fn refused(pool: PgPool, code: u16) {
+        let e = env(pool, 1).await;
+        let (_a, mut worker, runner, w, d) = setup(&e, 0, true).await;
+        let (url, _) = stub(&e, Stub::Status(code, None)).await;
+        worker.pass(&via(&w, &url, true)).await;
+        let (st, _, attempts) = status(&e, d).await.unwrap();
+        assert_eq!((st.as_str(), attempts), ("failed", 1), "{code}");
+        assert_eq!(runner.runs.load(Ordering::SeqCst), 0);
+        assert_eq!(source_of(&e, d).await, None, "沒有向中央下載");
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn cache_forbidden_is_a_failure(pool: PgPool) {
+        refused(pool, 403).await;
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn cache_not_found_is_a_failure(pool: PgPool) {
+        refused(pool, 404).await;
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn corrupt_cache_file_falls_back(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let (_a, mut worker, _runner, w, d) = setup(&e, 0, true).await;
+        let (url, _) = stub(&e, Stub::Bytes(vec![b'X'; INSTALLER.len()])).await;
+        worker.pass(&via(&w, &url, true)).await;
+        assert_eq!(status(&e, d).await.unwrap().0, "succeeded");
+        assert_eq!(source_of(&e, d).await.as_deref(), Some("central"));
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn corrupt_cache_file_without_fallback_fails(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let (_a, mut worker, _runner, w, d) = setup(&e, 0, true).await;
+        let (url, _) = stub(&e, Stub::Bytes(vec![b'X'; INSTALLER.len()])).await;
+        worker.pass(&via(&w, &url, false)).await;
+        assert_eq!(status(&e, d).await.unwrap().0, "failed");
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn cache_server_error_falls_back(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let (_a, mut worker, _runner, w, d) = setup(&e, 0, true).await;
+        let (url, _) = stub(&e, Stub::Status(500, None)).await;
+        worker.pass(&via(&w, &url, true)).await;
+        assert_eq!(status(&e, d).await.unwrap().0, "succeeded");
+        assert_eq!(source_of(&e, d).await.as_deref(), Some("central"));
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn checkin_passes_package_source_to_worker(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let (tx, rx) = tokio::sync::watch::channel(None);
+        let mut a = Agent::new(e.dir.path(), Fake::new())
+            .unwrap()
+            .with_deploy(tx);
+        a.run_cycle().await;
+        let site = endpoint_server::branch::sites::create_site(
+            &e.pool,
+            &endpoint_server::branch::sites::SiteInput {
+                name: "總部".into(),
+                cidrs: vec!["10.0.0.0/8".into()],
+                fallback_to_central: false,
+                bandwidth_limit_mbps: None,
+                disk_limit_gb: 100,
+            },
+            "admin",
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO caches (name, site_id, url, dns_names, csr_pem, poll_secret_hash, status) \
+             VALUES ('c', $1, 'https://cache.corp:8443', ARRAY['cache.corp'], 'x', 'x', 'active')",
+        )
+        .bind(site)
+        .execute(&e.pool)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE branch_state SET generation = generation + 1")
+            .execute(&e.pool)
+            .await
+            .unwrap();
+        e.state.branch.invalidate();
+        deployment(&e, b"x", "/S").await;
+        a.run_cycle().await;
+        let src = rx
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .package_source
+            .clone()
+            .unwrap();
+        assert_eq!(src.url, "https://cache.corp:8443");
+        assert!(!src.fallback_to_central);
+    }
+
+    // ── 分點快取：真實中央 + 真實 endpoint-cache ──────────────────────────
+
+    struct RealCache {
+        url: String,
+        cache: Arc<endpoint_cache::run::Cache>,
+        serve: tokio::task::JoinHandle<anyhow::Result<()>>,
+        _dir: tempfile::TempDir,
+    }
+
+    /// 註冊、核准（據點 10.0.0.0/8，Fake 的 IP 是 10.1.1.1）、啟動快取並開始監聽
+    async fn real_cache(e: &Env) -> RealCache {
+        use endpoint_server::branch::{caches, sites};
+        let dir = tempfile::tempdir().unwrap();
+        let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        std_listener.set_nonblocking(true).unwrap();
+        let url = format!(
+            "https://127.0.0.1:{}",
+            std_listener.local_addr().unwrap().port()
+        );
+        let token = tokens::create_token(
+            &e.pool,
+            &tokens::NewToken {
+                name: "cache".into(),
+                group_id: None,
+                expires_at: None,
+                max_uses: 1,
+                created_by: "test".into(),
+                kind: tokens::TokenKind::Cache,
+            },
+        )
+        .await
+        .unwrap()
+        .1;
+        let id = endpoint_cache::run::enroll(
+            dir.path(),
+            &endpoint_cache::run::EnrollArgs {
+                server: e.url(),
+                root_pem_path: e.dir.path().join("root.pem"),
+                token,
+                name: "台北快取".into(),
+                url: url.clone(),
+                dns: vec!["127.0.0.1".into()],
+            },
+        )
+        .await
+        .unwrap();
+        let site = sites::create_site(
+            &e.pool,
+            &sites::SiteInput {
+                name: "台北".into(),
+                cidrs: vec!["10.0.0.0/8".into()],
+                fallback_to_central: true,
+                bandwidth_limit_mbps: None,
+                disk_limit_gb: 100,
+            },
+            "admin",
+        )
+        .await
+        .unwrap();
+        caches::approve(&e.pool, &e.state.ca, id, site, "admin")
+            .await
+            .unwrap();
+        let (_tx, rx) = tokio::sync::watch::channel(false);
+        let cache = Arc::new(
+            endpoint_cache::run::Cache::start_with(dir.path(), rx, Duration::from_millis(100))
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+        cache.checkin_once().await.unwrap();
+        let serve = tokio::spawn(endpoint_cache::server::serve(
+            TcpListener::from_std(std_listener).unwrap(),
+            cache.tls().unwrap(),
+            cache.router(),
+            100,
+        ));
+        RealCache {
+            url,
+            cache,
+            serve,
+            _dir: dir,
+        }
+    }
+
+    /// 另一台裝置（沒有 SMBIOS，不會被當成重灌）：回傳連快取用的身分 PEM
+    async fn other_device(e: &Env) -> String {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let csr = rcgen::CertificateParams::default()
+            .serialize_request(&key)
+            .unwrap()
+            .pem()
+            .unwrap();
+        let token = tokens::create_token(
+            &e.pool,
+            &tokens::NewToken {
+                name: "dev".into(),
+                group_id: None,
+                expires_at: None,
+                max_uses: 1,
+                created_by: "test".into(),
+                kind: tokens::TokenKind::Device,
+            },
+        )
+        .await
+        .unwrap()
+        .1;
+        let c = ServerClient::new(&e.url(), &e.root_pem(), None).unwrap();
+        let r = c
+            .enroll(&EnrollRequest {
+                schema_version: SCHEMA_VERSION,
+                enroll_token: token,
+                csr_pem: csr,
+                hostname: "PC-2".into(),
+                smbios_uuid: None,
+                bios_serial: None,
+                mac_addresses: vec![],
+            })
+            .await
+            .unwrap();
+        format!("{}{}", r.certificate_chain_pem, key.serialize_pem())
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn real_cache_serves_and_falls_back(pool: PgPool) {
+        let e = env(pool, 1).await;
+        // install=false：每個派送都會下載（偵測不到安裝結果，回報 failed 但會帶來源）
+        let (a, mut worker, _runner, _w, d1) = setup(&e, 0, false).await;
+        let rc = real_cache(&e).await;
+        let c = ServerClient::new(&e.url(), &e.root_pem(), a.state().identity_pem()).unwrap();
+        let w = work(&a, &e, assignments(&c).await);
+        worker.pass(&via(&w, &rc.url, true)).await;
+        assert_eq!(source_of(&e, d1).await.as_deref(), Some("cache"));
+        assert_eq!(rc.cache.state.central.downloads_started(), 1);
+
+        // 第二台從快取下載：快取不再向中央下載
+        let spec = w.assignments[0].package.clone();
+        let other = other_device(&e).await;
+        let oc = ServerClient::new(&rc.url, &e.root_pem(), Some(other.clone())).unwrap();
+        oc.verify_package(&spec).await.unwrap();
+        assert_eq!(rc.cache.state.central.downloads_started(), 1);
+
+        // 只派送給「高雄」群組的套件：沒有群組的裝置向快取要 → 403
+        let g = {
+            let mut conn = e.pool.acquire().await.unwrap();
+            endpoint_server::groups::find_or_create(&mut conn, "高雄")
+                .await
+                .unwrap()
+        };
+        let chunk: Result<bytes::Bytes, std::io::Error> =
+            Ok(bytes::Bytes::from_static(b"MZ kaohsiung only"));
+        let st = store::save(
+            &e.state.package_dir,
+            futures_util::stream::iter(vec![chunk]),
+        )
+        .await
+        .unwrap();
+        let pkg = admin::create_package(
+            &e.pool,
+            &e.state.package_dir,
+            &st,
+            "ks.exe",
+            None,
+            &admin::PackageInput {
+                name: "KS App".into(),
+                version: "1.0".into(),
+                kind: "exe".into(),
+                install_args: "/S".into(),
+                uninstall_args: String::new(),
+                success_codes: vec![],
+                detect_name: "KS App*".into(),
+                detect_publisher: String::new(),
+                detect_min_version: String::new(),
+            },
+            "admin",
+        )
+        .await
+        .unwrap();
+        admin::create_deployment(
+            &e.pool,
+            &admin::DeploymentInput {
+                name: "KS".into(),
+                package_id: pkg,
+                action: "install".into(),
+                include: vec![g],
+                exclude: vec![],
+                pilot_group_id: None,
+                max_failure_pct: 50,
+                min_samples: 100,
+            },
+            "admin",
+        )
+        .await
+        .unwrap();
+        e.state.deploy.invalidate();
+        let ks = PackageSpec {
+            id: pkg,
+            sha256: st.sha256.clone(),
+            size: st.size,
+            ..spec.clone()
+        };
+        assert!(matches!(
+            oc.verify_package(&ks).await,
+            Err(DownloadError::Forbidden)
+        ));
+
+        // 快取停機：第二個派送改向中央
+        rc.serve.abort();
+        let d2 = deployment(&e, b"MZ second installer", "/S").await;
+        let w = work(&a, &e, assignments(&c).await);
+        worker.pass(&via(&w, &rc.url, true)).await;
+        assert_eq!(source_of(&e, d2).await.as_deref(), Some("central"));
     }
 }
 

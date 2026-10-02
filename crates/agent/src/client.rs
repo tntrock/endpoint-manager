@@ -23,10 +23,17 @@ pub const DOWNLOAD_MAX: Duration = Duration::from_secs(24 * 60 * 60);
 
 #[derive(Debug, thiserror::Error)]
 pub enum DownloadError {
-    #[error("server busy or unreachable")]
+    /// 伺服器忙碌（503／429）：依 Retry-After 稍後再試
+    #[error("server busy")]
     Retry(Option<Duration>),
+    /// 連不上、逾時、中斷或 503 以外的 5xx
+    #[error("server unreachable")]
+    Unreachable,
     #[error("unauthorized")]
     Unauthorized,
+    /// 分點快取拒絕（這台不被允許下載這個套件）
+    #[error("下載被拒（這台已不在派送範圍內）")]
+    Forbidden,
     #[error("伺服器上找不到套件檔案（或這台已不在派送範圍內）")]
     NotFound,
     #[error("下載的檔案大小或 SHA-256 與伺服器提供的不符")]
@@ -188,18 +195,25 @@ impl ServerClient {
             Ok(Ok(r)) => r,
             Ok(Err(e)) => {
                 tracing::warn!(error = ?e, "package download failed");
-                return Err(DownloadError::Retry(None));
+                return Err(DownloadError::Unreachable);
             }
             Err(_) => {
                 tracing::warn!("package download: no response");
-                return Err(DownloadError::Retry(None));
+                return Err(DownloadError::Unreachable);
             }
         };
         match resp.status() {
             StatusCode::OK => {}
             StatusCode::NOT_FOUND => return Err(DownloadError::NotFound),
             StatusCode::UNAUTHORIZED => return Err(DownloadError::Unauthorized),
-            _ => return Err(DownloadError::Retry(retry_after_of(&resp))),
+            StatusCode::FORBIDDEN => return Err(DownloadError::Forbidden),
+            StatusCode::SERVICE_UNAVAILABLE | StatusCode::TOO_MANY_REQUESTS => {
+                return Err(DownloadError::Retry(retry_after_of(&resp)));
+            }
+            s => {
+                tracing::warn!(status = %s, "package download: unexpected status");
+                return Err(DownloadError::Unreachable);
+            }
         }
         let mut hasher = Sha256::new();
         let mut size: u64 = 0;
@@ -209,11 +223,11 @@ impl ServerClient {
                 Ok(Ok(None)) => break,
                 Ok(Err(e)) => {
                     tracing::warn!(error = ?e, "package download interrupted");
-                    return Err(DownloadError::Retry(None));
+                    return Err(DownloadError::Unreachable);
                 }
                 Err(_) => {
                     tracing::warn!("package download stalled");
-                    return Err(DownloadError::Retry(None));
+                    return Err(DownloadError::Unreachable);
                 }
             };
             size += chunk.len() as u64;

@@ -283,6 +283,8 @@ pub struct DeviceRow {
     pub status: &'static str,
     pub message: String,
     pub updated: String,
+    /// 套件從哪裡下載（快取／中央）
+    pub source: &'static str,
 }
 
 pub struct FilterLink {
@@ -331,6 +333,7 @@ type DeviceDbRow = (
     Option<String>,
     Option<String>,
     Option<DateTime<Utc>>,
+    Option<String>,
 );
 
 pub async fn detail(
@@ -378,8 +381,8 @@ pub async fn detail(
     let page = q.page.clamp(0, super::devices::MAX_PAGE);
     // 等待中＝範圍內但還沒有狀態列
     let rows: Vec<DeviceDbRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT v.id, v.hostname, ds.status, ds.message, ds.updated_at FROM deployments d \
-         JOIN devices v ON {TARGET} \
+        "SELECT v.id, v.hostname, ds.status, ds.message, ds.updated_at, ds.source \
+         FROM deployments d JOIN devices v ON {TARGET} \
          LEFT JOIN deployment_status ds ON ds.deployment_id = d.id AND ds.device_id = v.id \
          WHERE d.id = $3 AND CASE $4::text WHEN '' THEN TRUE \
            WHEN 'pending' THEN ds.device_id IS NULL ELSE ds.status = $4 END \
@@ -435,12 +438,17 @@ pub async fn detail(
         devices: rows
             .into_iter()
             .take(DEVICE_PAGE as usize)
-            .map(|(vid, hostname, ds, msg, at)| DeviceRow {
+            .map(|(vid, hostname, ds, msg, at, source)| DeviceRow {
                 id: vid.to_string(),
                 hostname,
                 status: status_label(ds.as_deref().unwrap_or("pending")),
                 message: msg.unwrap_or_default(),
                 updated: fmt_time(&st, at),
+                source: match source.as_deref() {
+                    Some("cache") => "快取",
+                    Some("central") => "中央",
+                    _ => "—",
+                },
             })
             .collect(),
         prev: (page > 0).then(|| url(status, page - 1)),

@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>{% if id.is_some() %}編輯據點{% else %}新增據點{% endif %}</h1>
+<p><a href="/sites">← 據點</a></p>
+{% if let Some(e) = error %}<p class="error">{{ e }}</p>{% endif %}
+<form method="post" action="{% if let Some(i) = id %}/sites/{{ i }}{% else %}/sites{% endif %}">
+  <input type="hidden" name="csrf" value="{{ nav.csrf }}">
+  <p><label>名稱 <input name="name" value="{{ f.name }}" required maxlength="100" size="40"></label></p>
+  <p><label>網段（每行一個，例如 10.1.0.0/16 或 fd00:1::/48）<br>
+    <textarea name="cidrs" rows="5" cols="40" required>{{ f.cidrs }}</textarea></label></p>
+  <p><label><input type="checkbox" name="fallback" value="1" {% if f.fallback %}checked{% endif %}> 快取無法使用時改向中央下載</label></p>
+  <p class="muted">不勾選時，快取停機期間端點會等快取恢復後再下載（適合 WAN 頻寬很小的據點）。</p>
+  <p><label>快取向中央下載的頻寬上限 <input name="bandwidth" value="{{ f.bandwidth }}" inputmode="numeric" size="6"> Mbps（空白＝不限，只限制預先下載）</label></p>
+  <p><label>快取磁碟上限 <input name="disk_gb" value="{{ f.disk_gb }}" inputmode="numeric" size="6" required> GB</label></p>
+  <p><button>{% if id.is_some() %}儲存{% else %}建立{% endif %}</button></p>
+</form>
+{% endblock %}

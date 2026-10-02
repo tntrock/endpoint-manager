@@ -615,8 +615,10 @@ name = "endpoint-agent"
 version = "0.6.0"
 dependencies = [
  "anyhow",
+ "axum",
  "bytes",
  "chrono",
+ "endpoint-cache",
  "endpoint-server",
  "flate2",
  "futures-util",
@@ -1369,6 +1371,7 @@ dependencies = [
  "bytes",
  "chrono",
  "endpoint-agent",
+ "endpoint-cache",
  "endpoint-server",
  "futures-util",
  "hex",

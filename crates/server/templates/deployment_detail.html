@@ -31,9 +31,9 @@
 {% endif %}
 <h2>裝置</h2>
 <table>
-  <tr><th>主機名稱</th><th>狀態</th><th>訊息</th><th>更新時間</th></tr>
+  <tr><th>主機名稱</th><th>狀態</th><th>來源</th><th>訊息</th><th>更新時間</th></tr>
   {% for d in devices %}
-  <tr><td><a href="/devices/{{ d.id }}">{{ d.hostname }}</a> <span class="muted">{{ d.id }}</span></td><td>{{ d.status }}</td><td>{{ d.message }}</td><td>{{ d.updated }}</td></tr>
+  <tr><td><a href="/devices/{{ d.id }}">{{ d.hostname }}</a> <span class="muted">{{ d.id }}</span></td><td>{{ d.status }}</td><td>{{ d.source }}</td><td>{{ d.message }}</td><td>{{ d.updated }}</td></tr>
   {% endfor %}
 </table>
 <p>{% if let Some(u) = prev %}<a href="{{ u }}">← 上一頁</a>{% endif %}　{% if let Some(u) = next %}<a href="{{ u }}">下一頁 →</a>{% endif %}</p>

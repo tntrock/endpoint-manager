@@ -32,3 +32,4 @@ button.danger { color: var(--bad); }
 progress { width: 12em; vertical-align: middle; }
 textarea { font: inherit; }
 .actions form { display: inline-block; margin-right: .5rem; }
+td.num { text-align: right; }

@@ -1,6 +1,9 @@
-# systemd：先以同一個資料目錄執行
+# systemd unit。安裝步驟見 README「安裝快取（Linux）」：
+#   sudo useradd --system --no-create-home endpoint-cache
+#   sudo install -d -o endpoint-cache -m 0700 /var/lib/endpoint-cache
 #   sudo -u endpoint-cache endpoint-cache enroll --data-dir /var/lib/endpoint-cache ...
-# 管理員核准後啟用：systemctl enable --now endpoint-cache
+#   sudo systemctl enable --now endpoint-cache   （核准前服務會每 30 秒詢問一次）
+# 自訂儲存目錄（config.json 的 storage_dir）時要加上 ReadWritePaths=<目錄>。
 [Unit]
 Description=Endpoint Manager branch cache
 After=network-online.target

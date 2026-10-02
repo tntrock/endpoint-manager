@@ -65,7 +65,8 @@ async fn page_for(
         "SELECT t.id, t.name, g.name, t.used_count, t.max_uses, t.expires_at, t.revoked_at, \
                 t.created_by, t.created_at \
          FROM enroll_tokens t LEFT JOIN device_groups g ON g.id = t.group_id \
-         WHERE ($1::bool OR t.group_id = ANY($2::bigint[])) ORDER BY t.id DESC",
+         WHERE t.kind = 'device' AND ($1::bool OR t.group_id = ANY($2::bigint[])) \
+         ORDER BY t.id DESC",
     )
     .bind(s.all_devices())
     .bind(&s.groups)
@@ -273,7 +274,8 @@ pub async fn revoke(
         return Err(forbidden());
     }
     let group: Option<Option<i64>> =
-        sqlx::query_scalar("SELECT group_id FROM enroll_tokens WHERE id = $1")
+        // 快取金鑰在 /caches 管理
+        sqlx::query_scalar("SELECT group_id FROM enroll_tokens WHERE id = $1 AND kind = 'device'")
             .bind(id)
             .fetch_optional(&st.pool)
             .await

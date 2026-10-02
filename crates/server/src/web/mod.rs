@@ -6,6 +6,7 @@
 pub mod accounts;
 pub mod audit;
 pub mod auth;
+pub mod caches;
 pub mod commands;
 pub mod compliance;
 pub mod dashboard;
@@ -19,6 +20,7 @@ pub mod password;
 pub mod registry;
 pub mod rules;
 pub mod scripts;
+pub mod sites;
 pub mod software;
 pub mod tokens;
 pub mod updates;
@@ -183,6 +185,18 @@ pub fn web_router(state: AppState) -> Router {
             get(rules::edit_form).post(rules::update),
         )
         .route("/compliance/rules/{id}/delete", post(rules::delete))
+        .route("/caches", get(caches::list))
+        .route("/caches/tokens", post(caches::create_token))
+        .route(
+            "/caches/tokens/{id}/revoke",
+            post(caches::revoke_cache_token),
+        )
+        .route("/caches/{id}/{action}", post(caches::act))
+        .route("/sites", get(sites::list).post(sites::create))
+        .route("/sites/new", get(sites::new_form))
+        .route("/sites/{id}", post(sites::update))
+        .route("/sites/{id}/edit", get(sites::edit_form))
+        .route("/sites/{id}/delete", post(sites::delete))
         .route("/tokens", get(tokens::list).post(tokens::create))
         .route("/tokens/{id}/revoke", post(tokens::revoke))
         .route("/groups", get(groups::list).post(groups::create))
