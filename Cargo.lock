@@ -643,6 +643,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "endpoint-cache"
+version = "0.6.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "chrono",
+ "endpoint-server",
+ "futures-util",
+ "hex",
+ "hyper",
+ "hyper-util",
+ "protocol",
+ "rcgen",
+ "reqwest",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "sqlx",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-rustls",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "windows-service",
+ "x509-parser",
+]
+
+[[package]]
 name = "endpoint-server"
 version = "0.6.0"
 dependencies = [
