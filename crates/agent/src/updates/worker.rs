@@ -183,9 +183,14 @@ impl<C: Collector, H: WuHost> UpdateWorker<C, H> {
 
 /// 依 decide 的結果操作登錄檔並更新 applied
 fn apply<H: WuHost>(host: &H, desired: Option<&UpdatePolicy>, applied: &mut super::logic::Applied) {
+    // 讀取失敗時當成「沒有值」讓決策繼續（不會因此刪或寫），但最後回報錯誤而不是衝突
+    let read_error: std::cell::RefCell<Option<String>> = Default::default();
     let current = |name: &str| -> Option<PolicyData> {
         host.read(name).unwrap_or_else(|e| {
             tracing::warn!(name, error = %e, "update policy: cannot read value");
+            read_error
+                .borrow_mut()
+                .get_or_insert_with(|| format!("讀取 {name} 失敗：{e}"));
             None
         })
     };
@@ -215,6 +220,9 @@ fn apply<H: WuHost>(host: &H, desired: Option<&UpdatePolicy>, applied: &mut supe
             (ApplyState::Applied, String::new())
         }
         Decision::Release { deletes } => 'release: {
+            // 已移出原則：刪除失敗時也不再回報舊原則
+            applied.policy_id = None;
+            applied.revision = None;
             for name in &deletes {
                 if let Err(e) = host.delete(name) {
                     break 'release failed("刪除", name, &e);
@@ -223,10 +231,12 @@ fn apply<H: WuHost>(host: &H, desired: Option<&UpdatePolicy>, applied: &mut supe
             }
             // 被別人改過的值不刪，也不再管
             applied.written.clear();
-            applied.policy_id = None;
-            applied.revision = None;
             (ApplyState::Unmanaged, String::new())
         }
+    };
+    let (state, detail) = match read_error.into_inner() {
+        Some(e) if state != ApplyState::Error => (ApplyState::Error, e),
+        _ => (state, detail),
     };
     applied.state = Some(state);
     applied.detail = detail;

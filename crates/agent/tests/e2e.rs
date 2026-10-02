@@ -1877,6 +1877,22 @@ mod updates {
 
     /// 移出範圍時刪除失敗：記為 error、保留 written，下次再刪
     #[sqlx::test(migrations = false)]
+    async fn read_failure_is_error_not_conflict(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let mut s = setup(&e).await;
+        let w = work(&s);
+        s.worker.pass(&w).await;
+        assert_eq!(row(&e, s.device).await.0, "applied");
+        let before = s.host.values.lock().unwrap().clone();
+        s.host.fail_reads.store(true, Ordering::SeqCst);
+        s.worker.pass(&w).await;
+        let (state, detail, _) = row(&e, s.device).await;
+        assert_eq!(state, "error", "{detail}");
+        assert!(detail.contains("讀取"), "{detail}");
+        assert_eq!(*s.host.values.lock().unwrap(), before, "不刪也不覆寫");
+    }
+
+    #[sqlx::test(migrations = false)]
     async fn release_failure_keeps_written_and_retries(pool: PgPool) {
         let e = env(pool, 1).await;
         let mut s = setup(&e).await;
@@ -1889,7 +1905,12 @@ mod updates {
         let w = work(&s);
         s.host.fail_writes.store(true, Ordering::SeqCst);
         s.worker.pass(&w).await;
-        assert_eq!(row(&e, s.device).await.0, "error");
+        let (state, _, revision) = row(&e, s.device).await;
+        assert_eq!(
+            (state.as_str(), revision),
+            ("error", None),
+            "已移出原則：不再回報舊原則"
+        );
         assert!(!s.worker.state().applied.written.is_empty());
         assert!(!s.host.values.lock().unwrap().is_empty());
         s.host.fail_writes.store(false, Ordering::SeqCst);
