@@ -47,11 +47,16 @@ impl CommandsState {
         )
     }
 
-    /// 刪掉已回報而且開始超過 30 天的紀錄；還沒回報的保留
+    /// 刪掉已回報而且開始超過 30 天的紀錄；還沒回報的保留到 31 天
+    /// （指令最長 30 天過期，之後伺服器不再接受結果，留著也送不出去）
     pub fn prune(&mut self, now: DateTime<Utc>) {
         let cutoff = now - chrono::Duration::days(FORGET_AFTER_DAYS);
-        self.entries
-            .retain(|_, e| !e.reported || e.started_at.is_none_or(|t| t >= cutoff));
+        let hard = now - chrono::Duration::days(FORGET_AFTER_DAYS + 1);
+        self.entries.retain(|_, e| match e.started_at {
+            None => true,
+            Some(t) if t < hard => false,
+            Some(t) => !e.reported || t >= cutoff,
+        });
     }
 }
 
@@ -79,8 +84,10 @@ mod tests {
         assert_eq!(CommandsState::load(dir.path()), CommandsState::default());
         let mut s = CommandsState::default();
         s.entries.insert(1, entry(31, true));
-        s.entries.insert(2, entry(31, false));
+        s.entries.insert(2, entry(10, false));
         s.entries.insert(3, entry(29, true));
+        // 沒回報出去的紀錄：指令最長 30 天過期，超過 31 天也清掉
+        s.entries.insert(4, entry(32, false));
         s.save(dir.path()).unwrap();
         assert_eq!(CommandsState::load(dir.path()), s);
         s.prune(Utc::now());
