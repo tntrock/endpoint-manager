@@ -11,6 +11,8 @@ const USAGE: &str = "usage:
   loadsim deploy    --server URL --root root.pem --devices devices.json [--concurrency 50] [--max-secs 3600]
   loadsim updates   --server URL --root root.pem --devices devices.json [--concurrency 60] [--max-secs 900]
   loadsim commands  --server URL --root root.pem --devices devices.json [--concurrency 60] [--max-secs 900]
+  loadsim cache-deploy --server URL --root root.pem --devices devices.json [--count 5000] [--concurrency 300] [--max-secs 3600]
+  （所有子命令都可加 --ip 10.0.0.1：報到回報的本機 IP，分點快取依此對應據點）
   loadsim make-package --out FILE [--size-mb 10]";
 
 fn arg(args: &[String], name: &str) -> Option<String> {
@@ -67,6 +69,7 @@ async fn main() -> anyhow::Result<()> {
     let t = Target {
         server: need(&args, "--server")?,
         root_pem: std::fs::read_to_string(need(&args, "--root")?).context("reading --root")?,
+        ip: arg(&args, "--ip").unwrap_or_else(|| "10.0.0.1".into()),
     };
     let load = || -> anyhow::Result<Vec<Device>> {
         Ok(serde_json::from_slice(&std::fs::read(need(
@@ -156,6 +159,26 @@ async fn main() -> anyhow::Result<()> {
             let max = Duration::from_secs(num(&args, "--max-secs", 900)?);
             if r.errors > 0 || r.elapsed > max {
                 bail!("FAIL: errors {} / elapsed {:?}", r.errors, r.elapsed);
+            }
+        }
+        "cache-deploy" => {
+            let devices = load()?;
+            let count = num(&args, "--count", 5000usize)?.min(devices.len());
+            let r = loadsim::cache_deploy(&t, &devices[..count], num(&args, "--concurrency", 300)?)
+                .await;
+            print(&r.report);
+            println!(
+                "busy retries {} unreachable {} fallback {} no source {}",
+                r.busy, r.unreachable, r.fallback, r.no_source
+            );
+            let max = Duration::from_secs(num(&args, "--max-secs", 3600)?);
+            if r.report.errors > 0 || r.no_source > 0 || r.report.elapsed > max {
+                bail!(
+                    "FAIL: errors {} / no source {} / elapsed {:?}",
+                    r.report.errors,
+                    r.no_source,
+                    r.report.elapsed
+                );
             }
         }
         "updates" => {

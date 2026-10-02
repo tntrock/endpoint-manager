@@ -19,6 +19,8 @@ use uuid::Uuid;
 pub struct Target {
     pub server: String,
     pub root_pem: String,
+    /// 報到回報的本機 IP（分點快取依 IP 對應據點）
+    pub ip: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -77,14 +79,14 @@ fn client(t: &Target, d: Option<&Device>) -> anyhow::Result<ServerClient> {
     ServerClient::new(&t.server, &t.root_pem, d.map(|d| d.identity_pem.clone()))
 }
 
-fn checkin_req(section_hashes: BTreeMap<Section, String>) -> CheckinRequest {
+fn checkin_req(ip: &str, section_hashes: BTreeMap<Section, String>) -> CheckinRequest {
     CheckinRequest {
         schema_version: SCHEMA_VERSION,
         // 模擬支援組態區段的 Agent（組態規則要求 0.3.0 以上）
         agent_version: "0.3.0".into(),
         boot_time: chrono::Utc::now() - chrono::Duration::hours(1),
         logged_on_user: Some(r"LOADSIM\user".into()),
-        ip_addresses: vec!["10.0.0.1".into()],
+        ip_addresses: vec![ip.to_string()],
         section_hashes,
         section_errors: BTreeMap::new(),
     }
@@ -150,7 +152,7 @@ pub async fn heartbeat(t: &Target, devices: &[Device], rate: u32, duration: Dura
         set.spawn(async move {
             let c = client(&t, Some(&d)).ok()?;
             let s = Instant::now();
-            c.checkin(&checkin_req(BTreeMap::new())).await.ok()?;
+            c.checkin(&checkin_req(&t.ip, BTreeMap::new())).await.ok()?;
             Some(s.elapsed())
         });
     }
@@ -184,7 +186,10 @@ pub async fn upload(
             .await
             .ok()?;
             let resp = c
-                .checkin(&checkin_req(BTreeMap::from([(Section::Software, hash)])))
+                .checkin(&checkin_req(
+                    &t.ip,
+                    BTreeMap::from([(Section::Software, hash)]),
+                ))
                 .await
                 .ok()?;
             if resp.request_sections.contains(&Section::Software) {
@@ -255,7 +260,7 @@ pub async fn config(t: &Target, devices: &[Device], concurrency: usize) -> (Repo
             let _permit = permit;
             let c = client(&t, Some(&d)).ok()?;
             let s = Instant::now();
-            let first = c.checkin(&checkin_req(BTreeMap::new())).await.ok()?;
+            let first = c.checkin(&checkin_req(&t.ip, BTreeMap::new())).await.ok()?;
             let mut hashes = BTreeMap::new();
             for payload in [
                 InventoryPayload::Security(security(n)),
@@ -269,7 +274,7 @@ pub async fn config(t: &Target, devices: &[Device], concurrency: usize) -> (Repo
                 .await
                 .ok()?;
             }
-            let resp = c.checkin(&checkin_req(hashes)).await.ok()?;
+            let resp = c.checkin(&checkin_req(&t.ip, hashes)).await.ok()?;
             if resp.request_sections.contains(&Section::Security)
                 || resp.request_sections.contains(&Section::Registry)
             {
@@ -305,7 +310,7 @@ pub async fn deploy(t: &Target, devices: &[Device], concurrency: usize) -> (Repo
             let _permit = permit;
             let c = client(&t, Some(&d)).ok()?;
             let s = Instant::now();
-            let resp = c.checkin(&checkin_req(BTreeMap::new())).await.ok()?;
+            let resp = c.checkin(&checkin_req(&t.ip, BTreeMap::new())).await.ok()?;
             let Some(first) = resp.deployments.first() else {
                 unassigned.fetch_add(1, Ordering::Relaxed);
                 return None;
@@ -376,7 +381,7 @@ pub async fn updates(t: &Target, devices: &[Device], concurrency: usize) -> (Rep
             let _permit = permit;
             let c = client(&t, Some(&d)).ok()?;
             let s = Instant::now();
-            let resp = c.checkin(&checkin_req(BTreeMap::new())).await.ok()?;
+            let resp = c.checkin(&checkin_req(&t.ip, BTreeMap::new())).await.ok()?;
             let Some(p) = resp.update_policy else {
                 unmanaged.fetch_add(1, Ordering::Relaxed);
                 return None;
@@ -414,7 +419,7 @@ pub async fn commands(t: &Target, devices: &[Device], concurrency: usize) -> (Re
             let _permit = permit;
             let c = client(&t, Some(&d)).ok()?;
             let s = Instant::now();
-            let resp = c.checkin(&checkin_req(BTreeMap::new())).await.ok()?;
+            let resp = c.checkin(&checkin_req(&t.ip, BTreeMap::new())).await.ok()?;
             // 不在目標群組的裝置：報到成功、沒有指令，不算錯誤
             if resp.commands.is_empty() {
                 without.fetch_add(1, Ordering::Relaxed);
@@ -486,5 +491,118 @@ mod tests {
         protocol::InventoryPayload::Security(security(2))
             .validate()
             .unwrap();
+    }
+}
+
+/// 透過分點快取下載的結果
+#[derive(Debug)]
+pub struct CacheReport {
+    pub report: Report,
+    /// 快取忙碌（503）後依 Retry-After 重試的次數
+    pub busy: usize,
+    /// 快取連不上的台數
+    pub unreachable: usize,
+    /// 改向中央下載的台數
+    pub fallback: usize,
+    /// 報到沒有拿到 package_source 的台數
+    pub no_source: usize,
+}
+
+/// 依 Retry-After 重試（最多 100 次）的下載驗證；連不上時回 Unreachable
+async fn verify_with_retry(
+    c: &ServerClient,
+    spec: &protocol::deploy::PackageSpec,
+    busy: &AtomicUsize,
+) -> Result<(), endpoint_agent::client::DownloadError> {
+    use endpoint_agent::client::DownloadError;
+    let mut tries = 0;
+    loop {
+        match c.verify_package(spec).await {
+            Err(DownloadError::Retry(after)) if tries < 100 => {
+                tries += 1;
+                busy.fetch_add(1, Ordering::Relaxed);
+                tokio::time::sleep(after.unwrap_or(Duration::from_secs(10))).await;
+            }
+            r => return r,
+        }
+    }
+}
+
+/// 每台：報到取得指派與 package_source → 向快取下載並驗證第一個套件
+/// （快取連不上且據點允許時改向中央）→ 回報第一個指派，帶上實際來源。
+pub async fn cache_deploy(t: &Target, devices: &[Device], concurrency: usize) -> CacheReport {
+    use endpoint_agent::client::DownloadError;
+    use protocol::branch::DownloadSource;
+    use protocol::deploy::{DeployResult, DeployStatus};
+    let sem = Arc::new(Semaphore::new(concurrency));
+    let busy = Arc::new(AtomicUsize::new(0));
+    let unreachable = Arc::new(AtomicUsize::new(0));
+    let fallback = Arc::new(AtomicUsize::new(0));
+    let no_source = Arc::new(AtomicUsize::new(0));
+    let start = Instant::now();
+    let mut set = JoinSet::new();
+    for d in devices {
+        let permit = sem.clone().acquire_owned().await.expect("semaphore open");
+        let (t, d) = (t.clone(), d.clone());
+        let (busy, unreachable, fallback, no_source) = (
+            busy.clone(),
+            unreachable.clone(),
+            fallback.clone(),
+            no_source.clone(),
+        );
+        set.spawn(async move {
+            let _permit = permit;
+            let c = client(&t, Some(&d)).ok()?;
+            let s = Instant::now();
+            let resp = c.checkin(&checkin_req(&t.ip, BTreeMap::new())).await.ok()?;
+            let first = resp.deployments.first()?;
+            let Some(src) = resp.package_source.clone() else {
+                no_source.fetch_add(1, Ordering::Relaxed);
+                return None;
+            };
+            let cache =
+                ServerClient::new(&src.url, &t.root_pem, Some(d.identity_pem.clone())).ok()?;
+            let source = match verify_with_retry(&cache, &first.package, &busy).await {
+                Ok(()) => DownloadSource::Cache,
+                Err(DownloadError::Unreachable) => {
+                    unreachable.fetch_add(1, Ordering::Relaxed);
+                    if !src.fallback_to_central {
+                        return None;
+                    }
+                    if let Err(e) = verify_with_retry(&c, &first.package, &busy).await {
+                        eprintln!("central download {}: {e}", d.device_id);
+                        return None;
+                    }
+                    fallback.fetch_add(1, Ordering::Relaxed);
+                    DownloadSource::Central
+                }
+                Err(e) => {
+                    eprintln!("cache download {}: {e}", d.device_id);
+                    return None;
+                }
+            };
+            c.report(
+                first.deployment_id,
+                &DeployResult {
+                    revision: first.revision,
+                    status: DeployStatus::Succeeded,
+                    exit_code: Some(0),
+                    message: String::new(),
+                    attempts: 1,
+                    source: Some(source),
+                },
+            )
+            .await
+            .ok()?;
+            Some(s.elapsed())
+        });
+    }
+    let report = collect(set, start).await;
+    CacheReport {
+        report,
+        busy: busy.load(Ordering::Relaxed),
+        unreachable: unreachable.load(Ordering::Relaxed),
+        fallback: fallback.load(Ordering::Relaxed),
+        no_source: no_source.load(Ordering::Relaxed),
     }
 }
