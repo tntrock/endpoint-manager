@@ -39,7 +39,7 @@ async fn ensure_many(
         .map(|_| {
             let f = f.clone();
             let p = p.clone();
-            tokio::spawn(async move { f.ensure(&p, None).await })
+            tokio::spawn(async move { f.ensure(&p, None, None).await })
         })
         .collect();
     let mut out = vec![];
@@ -89,14 +89,49 @@ async fn unreachable_central_fails_fast_on_retry(pool: PgPool) {
     let dead = format!("https://127.0.0.1:{}", l.local_addr().unwrap().port());
     drop(l);
     let central = Arc::new(Central::new(&dead, &e.root_pem, Some(&id)).unwrap());
-    let f = Fetcher::new(central.clone(), store);
+    let f = Arc::new(Fetcher::new(central.clone(), store));
     assert_eq!(
-        f.ensure(&p, None).await.unwrap_err(),
+        f.ensure(&p, None, None).await.unwrap_err(),
         FetchError::Unavailable
     );
     assert_eq!(
-        f.ensure(&p, None).await.unwrap_err(),
+        f.ensure(&p, None, None).await.unwrap_err(),
         FetchError::Unavailable
     );
     assert_eq!(central.downloads_started(), 1, "30 秒內不再送出請求");
+}
+
+/// 請求的一方取消（端點逾時斷線）時，下載仍繼續完成，不會從頭再下載一次
+#[sqlx::test(migrations = false)]
+async fn cancelled_request_does_not_restart_download(pool: PgPool) {
+    let e = common::central(pool).await;
+    let data = vec![3u8; 8 * 1024 * 1024];
+    let (_dir, central, store, p) = setup(&e, &data).await;
+    let f = Arc::new(Fetcher::new(central.clone(), store.clone()));
+    let first = tokio::time::timeout(
+        std::time::Duration::from_millis(5),
+        f.ensure(&p, None, None),
+    )
+    .await;
+    assert!(first.is_err(), "第一個請求在下載完成前就放棄");
+    let path = f.ensure(&p, None, None).await.unwrap();
+    assert_eq!(std::fs::metadata(path).unwrap().len(), data.len() as u64);
+    assert_eq!(central.downloads_started(), 1, "沒有因為取消而重新下載");
+}
+
+/// 等待上限：下載還沒完成就先回 Unavailable（端點稍後重試），下載在背景繼續
+#[sqlx::test(migrations = false)]
+async fn wait_limit_returns_unavailable_while_download_continues(pool: PgPool) {
+    let e = common::central(pool).await;
+    let data = vec![4u8; 8 * 1024 * 1024];
+    let (_dir, central, store, p) = setup(&e, &data).await;
+    let f = Arc::new(Fetcher::new(central.clone(), store.clone()));
+    assert_eq!(
+        f.ensure(&p, None, Some(std::time::Duration::from_millis(1)))
+            .await
+            .unwrap_err(),
+        FetchError::Unavailable
+    );
+    f.ensure(&p, None, None).await.unwrap();
+    assert_eq!(central.downloads_started(), 1);
 }

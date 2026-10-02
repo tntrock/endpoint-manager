@@ -218,3 +218,75 @@ async fn disabled_cache_recovers_after_enable(pool: PgPool) {
     assert!(c.recover().await.unwrap());
     c.checkin_once().await.unwrap();
 }
+
+fn serve_cache(c: &Cache) -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+    tokio::spawn(endpoint_cache::server::serve(
+        listener,
+        c.tls().unwrap(),
+        c.router(),
+        10,
+    ));
+    port
+}
+
+/// 中央斷線時重新啟動快取：清單是空的，不能回 404（Agent 會當成不再指派），要回 503
+#[sqlx::test(migrations = false)]
+async fn restart_while_central_down_returns_503(pool: PgPool) {
+    let e = common::central(pool).await;
+    let (dir, _, c) = started(&e).await;
+    let (pkg, _) = common::package(&e, b"stored before outage").await;
+    c.checkin_once().await.unwrap();
+    assert_eq!(c.prefetch().await, 1);
+    drop(c);
+
+    let mut cfg = endpoint_cache::config::Config::load(dir.path()).unwrap();
+    cfg.server_url = common::dead_url();
+    cfg.save(dir.path()).unwrap();
+    let (_tx, rx) = watch::channel(false);
+    let c = Cache::start_with(dir.path(), rx, Duration::from_millis(100))
+        .await
+        .unwrap()
+        .unwrap();
+    let port = serve_cache(&c);
+    let dev = common::device(&e).await;
+    let r = common::client(&e, Some(&dev))
+        .get(format!(
+            "https://127.0.0.1:{port}/v1/packages/{pkg}/content"
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 503);
+    assert_eq!(r.headers()["retry-after"], "60");
+}
+
+/// 限速的預先下載進行中也能立即停止（服務停止、關機），不必等下載完成
+#[sqlx::test(migrations = false)]
+async fn stop_during_paced_prefetch(pool: PgPool) {
+    let e = common::central(pool).await;
+    let (dir, _, c) = started(&e).await;
+    drop(c);
+    let mut cfg = endpoint_cache::config::Config::load(dir.path()).unwrap();
+    cfg.listen = "127.0.0.1:0".into();
+    cfg.save(dir.path()).unwrap();
+    sqlx::query("UPDATE sites SET bandwidth_limit_mbps = 1")
+        .execute(&e.pool)
+        .await
+        .unwrap();
+    // 1 Mbps 下 2 MB 約需 16 秒
+    common::package(&e, &vec![5u8; 2 * 1024 * 1024]).await;
+    let (tx, rx) = watch::channel(false);
+    let path = dir.path().to_path_buf();
+    let task = tokio::spawn(async move { run::run(&path, rx).await });
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    tx.send(true).unwrap();
+    tokio::time::timeout(Duration::from_secs(3), task)
+        .await
+        .expect("停止訊號後很快結束")
+        .unwrap()
+        .unwrap();
+}

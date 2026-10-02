@@ -305,7 +305,7 @@ pub async fn start_cache(e: &Env, dir: &std::path::Path, opts: Opts) -> Running 
         Arc::new(move || {
             let (c, cat) = (c.clone(), cat.clone());
             Box::pin(async move {
-                if let Ok(r) = c
+                match c
                     .checkin(&protocol::branch::CacheCheckin {
                         version: "t".into(),
                         disk_used_bytes: 0,
@@ -313,12 +313,16 @@ pub async fn start_cache(e: &Env, dir: &std::path::Path, opts: Opts) -> Running 
                     })
                     .await
                 {
-                    cat.replace(&r);
+                    Ok(r) => {
+                        cat.replace(&r);
+                        true
+                    }
+                    Err(_) => false,
                 }
             })
         })
     } else {
-        Arc::new(|| Box::pin(async {}))
+        Arc::new(|| Box::pin(async { true }))
     };
     let st = server::CacheState {
         fetcher: Arc::new(fetch::Fetcher::new(central.clone(), store.clone())),

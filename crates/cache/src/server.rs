@@ -38,11 +38,13 @@ use crate::store::Store;
 const CHUNK: usize = 64 * 1024;
 const HANDSHAKE: Duration = Duration::from_secs(10);
 const HEADER_READ: Duration = Duration::from_secs(10);
+/// 按需下載時，端點請求最多等多久（低於 Agent 的 DOWNLOAD_IDLE 2 分鐘）
+const ENSURE_WAIT: Duration = Duration::from_secs(90);
 /// 單一連線最長存活時間：大檔案在慢速線路上要夠長
 const MAX_LIFETIME: Duration = Duration::from_secs(2 * 60 * 60);
 
-/// 清單過時時立即報到一次
-pub type Refresh = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+/// 清單過時時立即報到一次；回傳清單是否為最新（報到成功）
+pub type Refresh = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = bool> + Send>> + Send + Sync>;
 
 #[derive(Clone)]
 pub struct CacheState {
@@ -137,7 +139,10 @@ async fn content(
     let pkg = match st.catalog.get(id) {
         Some(p) => p,
         None => {
-            (st.refresh)().await;
+            // 刷新失敗（中央連不上）時不能回 404：Agent 會當成不再指派
+            if !(st.refresh)().await {
+                return busy();
+            }
             match st.catalog.get(id) {
                 Some(p) => p,
                 None => return StatusCode::NOT_FOUND.into_response(),
@@ -167,17 +172,18 @@ async fn content(
     if !allowed {
         return StatusCode::FORBIDDEN.into_response();
     }
-    // 許可跟著串流，串流結束或中斷時歸還
-    let Ok(permit) = st.downloads.clone().try_acquire_owned() else {
-        return busy();
-    };
     // 先標記使用中再確保檔案在本機：清除工作不會在兩者之間把檔案刪掉
     let in_use = st.store.use_file(&pkg.sha256);
-    let path = match st.fetcher.ensure(&pkg, None).await {
+    // 等待上限低於 Agent 的閒置逾時（2 分鐘）：還沒下載完就回 503，Agent 稍後重試快取
+    let path = match st.fetcher.ensure(&pkg, None, Some(ENSURE_WAIT)).await {
         Ok(p) => p,
         Err(FetchError::Mismatch) => return StatusCode::BAD_GATEWAY.into_response(),
         Err(FetchError::NotListed) => return StatusCode::NOT_FOUND.into_response(),
         Err(FetchError::Unavailable | FetchError::Disk) => return busy(),
+    };
+    // 檔案備妥才佔用下載數：等待中央的請求不會擋住本機已有的檔案。許可跟著串流歸還
+    let Ok(permit) = st.downloads.clone().try_acquire_owned() else {
+        return busy();
     };
     st.store.touch(&pkg.sha256);
     let file = match tokio::fs::File::open(&path).await {

@@ -117,17 +117,38 @@ impl Fetcher {
             .clone()
     }
 
-    /// 確保套件在本機。同一個套件同時只有一個下載，其他人等它完成；
+    /// 確保套件在本機。同一個檔案同時只有一個下載，其他人等它完成；
     /// 下載寫在暫存檔，等待者只會看到驗證過、改名完成的檔案。
+    ///
+    /// 下載在獨立的 task 執行：呼叫端放棄（端點逾時斷線）不會中斷下載。
+    /// `wait` 有值時最多等這麼久，還沒完成就回 Unavailable（端點稍後重試），下載繼續進行。
     pub async fn ensure(
+        self: &Arc<Self>,
+        p: &CachePackage,
+        limit_mbps: Option<u32>,
+        wait: Option<Duration>,
+    ) -> Result<PathBuf, FetchError> {
+        if self.store.has(&p.sha256, p.size) {
+            return Ok(self.store.path(&p.sha256));
+        }
+        let (me, p) = (self.clone(), p.clone());
+        let task = tokio::spawn(async move { me.ensure_locked(&p, limit_mbps).await });
+        let joined = match wait {
+            Some(w) => match tokio::time::timeout(w, task).await {
+                Ok(j) => j,
+                Err(_) => return Err(FetchError::Unavailable),
+            },
+            None => task.await,
+        };
+        joined.unwrap_or(Err(FetchError::Unavailable))
+    }
+
+    async fn ensure_locked(
         &self,
         p: &CachePackage,
         limit_mbps: Option<u32>,
     ) -> Result<PathBuf, FetchError> {
         let path = self.store.path(&p.sha256);
-        if self.store.has(&p.sha256, p.size) {
-            return Ok(path);
-        }
         let slot = self.slot(&p.sha256);
         let mut last_failure = slot.lock().await;
         // 等鎖期間別人可能已下載完成

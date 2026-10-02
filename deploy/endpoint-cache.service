@@ -10,6 +10,8 @@ Wants=network-online.target
 ExecStart=/usr/local/bin/endpoint-cache run --data-dir /var/lib/endpoint-cache
 Restart=on-failure
 RestartSec=10
+# 每個端點下載是一條連線；預設 1024 個檔案描述元不夠
+LimitNOFILE=65536
 User=endpoint-cache
 StateDirectory=endpoint-cache
 StateDirectoryMode=0700

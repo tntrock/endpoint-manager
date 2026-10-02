@@ -178,7 +178,8 @@ impl Cache {
         let central = Arc::new(Central::new(&config.server_url, &root_pem, Some(&id))?);
         let store = Arc::new(Store::open(&config.storage(dir), dir)?);
         let catalog = Arc::new(Catalog::default());
-        let last_refresh: Arc<Mutex<Option<Instant>>> = Arc::default();
+        // 上次刷新完成的時間與結果
+        let last_refresh: Arc<Mutex<Option<(Instant, bool)>>> = Arc::default();
         let refresh: Refresh = {
             let (central, catalog, store) = (central.clone(), catalog.clone(), store.clone());
             Arc::new(move || {
@@ -189,16 +190,26 @@ impl Cache {
                     last_refresh.clone(),
                 );
                 Box::pin(async move {
-                    // 同時多個請求只報到一次；10 秒內不重複
+                    // 同時多個請求只報到一次；完成後 10 秒內直接沿用結果（成功或失敗），
+                    // 中央卡住時等鎖的請求不會一個接一個再等一次逾時
                     let mut last = last.lock().await;
-                    if last.is_some_and(|t| t.elapsed() < REFRESH_MIN_INTERVAL) {
-                        return;
+                    if let Some((t, ok)) = *last
+                        && t.elapsed() < REFRESH_MIN_INTERVAL
+                    {
+                        return ok;
                     }
-                    *last = Some(Instant::now());
-                    match central.checkin(&checkin_request(&catalog, &store)).await {
-                        Ok(r) => catalog.replace(&r),
-                        Err(e) => tracing::warn!(error = %e, "refreshing package list failed"),
-                    }
+                    let ok = match central.checkin(&checkin_request(&catalog, &store)).await {
+                        Ok(r) => {
+                            catalog.replace(&r);
+                            true
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "refreshing package list failed");
+                            false
+                        }
+                    };
+                    *last = Some((Instant::now(), ok));
+                    ok
                 })
             })
         };
@@ -311,7 +322,7 @@ impl Cache {
             if st.store.has(&p.sha256, p.size) {
                 continue;
             }
-            match st.fetcher.ensure(&p, limit).await {
+            match st.fetcher.ensure(&p, limit, None).await {
                 Ok(_) => n += 1,
                 Err(e) => tracing::warn!(package_id = p.id, error = ?e, "prefetch failed"),
             }
@@ -325,6 +336,7 @@ pub async fn run(dir: &Path, mut stop: watch::Receiver<bool>) -> anyhow::Result<
     let Some(cache) = Cache::start(dir, stop.clone()).await? else {
         return Ok(());
     };
+    let cache = Arc::new(cache);
     let listener = tokio::net::TcpListener::bind(&cache.config.listen)
         .await
         .with_context(|| format!("listening on {}", cache.config.listen))?;
@@ -335,11 +347,21 @@ pub async fn run(dir: &Path, mut stop: watch::Receiver<bool>) -> anyhow::Result<
         cache.router(),
         MAX_CONNS,
     ));
+    // 預先下載在自己的 task：限速下載可能很久，報到、換發、清除照常進行，停止時立即中斷
+    let wake = Arc::new(tokio::sync::Notify::new());
+    let prefetch = {
+        let (cache, wake) = (cache.clone(), wake.clone());
+        tokio::spawn(async move {
+            loop {
+                wake.notified().await;
+                cache.prefetch().await;
+            }
+        })
+    };
     loop {
-        if let Err(e) = cache.checkin_once().await {
-            tracing::warn!(error = %format!("{e:#}"), "checkin failed");
-        } else {
-            cache.prefetch().await;
+        match cache.checkin_once().await {
+            Ok(()) => wake.notify_one(),
+            Err(e) => tracing::warn!(error = %format!("{e:#}"), "checkin failed"),
         }
         tokio::select! {
             _ = tokio::time::sleep(CHECKIN_EVERY) => {}
@@ -349,6 +371,8 @@ pub async fn run(dir: &Path, mut stop: watch::Receiver<bool>) -> anyhow::Result<
             break;
         }
     }
+    prefetch.abort();
     server.abort();
+    tracing::info!("cache stopped");
     Ok(())
 }

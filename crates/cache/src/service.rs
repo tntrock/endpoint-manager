@@ -71,7 +71,14 @@ fn run_service(dir: PathBuf) -> anyhow::Result<()> {
     handle.set_service_status(status(ServiceState::Running, ServiceExitCode::Win32(0)))?;
     let result = tokio::runtime::Runtime::new()
         .map_err(anyhow::Error::from)
-        .and_then(|rt| rt.block_on(crate::run::run(&dir, rx)));
+        .and_then(|rt| {
+            let r = rt.block_on(crate::run::run(&dir, rx));
+            let _ = handle
+                .set_service_status(status(ServiceState::StopPending, ServiceExitCode::Win32(0)));
+            // 進行中的下載 task 不等它結束
+            rt.shutdown_timeout(Duration::from_secs(5));
+            r
+        });
     // 失敗時回報非 0，讓 SCM 的復原動作重新啟動服務
     let exit = match &result {
         Ok(()) => ServiceExitCode::Win32(0),
