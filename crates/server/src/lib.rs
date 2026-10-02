@@ -158,6 +158,12 @@ pub fn agent_router(state: AppState) -> Router {
         .route("/v1/cache/enroll", post(branch::api::enroll))
         .route("/v1/cache/enroll/poll", post(branch::api::poll))
         .route("/v1/cache/renew", post(branch::api::renew))
+        .route("/v1/cache/checkin", post(branch::api::checkin))
+        .route(
+            "/v1/cache/packages/{id}/content",
+            get(branch::api::package_content),
+        )
+        .route("/v1/cache/authorize", post(branch::api::authorize))
         .route("/v1/packages/{id}/content", get(deploy::api::download))
         .route("/v1/deployments/{id}/result", post(deploy::api::result))
         .route("/v1/update-status", put(updates::api::status))

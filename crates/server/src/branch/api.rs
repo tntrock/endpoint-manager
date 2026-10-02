@@ -1,18 +1,22 @@
 //! 分點快取呼叫的 API：註冊（金鑰）、輪詢核准結果（poll_secret）、換發憑證（mTLS）。
 
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::time::Instant;
 
 use axum::Json;
-use axum::extract::{ConnectInfo, FromRequestParts, State};
+use axum::extract::{ConnectInfo, FromRequestParts, Path, State};
 use axum::http::request::Parts;
+use axum::response::Response;
 use chrono::{DateTime, Duration, Utc};
 use protocol::branch::{
-    CacheEnrollPoll, CacheEnrollPollResponse, CacheEnrollRequest, CacheEnrollResponse,
-    CacheEnrollState,
+    CacheAuthorize, CacheAuthorizeResponse, CacheCheckin, CacheCheckinResponse, CacheEnrollPoll,
+    CacheEnrollPollResponse, CacheEnrollRequest, CacheEnrollResponse, CacheEnrollState,
+    CachePackage, MAX_STORED,
 };
 use protocol::{RenewRequest, RenewResponse};
 use serde_json::json;
+use uuid::Uuid;
 
 use crate::AppState;
 use crate::checkin::RENEW_BEFORE_DAYS;
@@ -172,4 +176,127 @@ pub async fn renew(
     Ok(Json(RenewResponse {
         certificate_chain_pem: format!("{}{}", issued.pem, st.ca.chain_pem()),
     }))
+}
+
+const DEFAULT_DISK_LIMIT_GB: u32 = 100;
+
+pub async fn checkin(
+    State(st): State<AppState>,
+    cache: AuthedCache,
+    Json(req): Json<CacheCheckin>,
+) -> Result<Json<CacheCheckinResponse>, AppError> {
+    if req.stored.len() > MAX_STORED {
+        return Err(AppError::BadRequest("too many stored packages".into()));
+    }
+    if req.version.chars().count() > 50 || req.version.chars().any(char::is_control) {
+        return Err(AppError::BadRequest("invalid version".into()));
+    }
+    // 同一個套件回報兩次時取最後一筆（ON CONFLICT 不能在同一句更新同一列兩次）
+    let stored: BTreeMap<i64, i64> = req
+        .stored
+        .iter()
+        .map(|p| (p.package_id, i64::try_from(p.size).unwrap_or(i64::MAX)))
+        .collect();
+    let (ids, sizes): (Vec<i64>, Vec<i64>) = stored.into_iter().unzip();
+
+    let mut tx = st.pool.begin().await?;
+    sqlx::query(
+        "UPDATE caches SET last_seen = now(), version = $2, disk_used_bytes = $3 WHERE id = $1",
+    )
+    .bind(cache.cache_id)
+    .bind(&req.version)
+    .bind(i64::try_from(req.disk_used_bytes).unwrap_or(i64::MAX))
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("DELETE FROM cache_packages WHERE cache_id = $1 AND package_id <> ALL($2)")
+        .bind(cache.cache_id)
+        .bind(&ids)
+        .execute(&mut *tx)
+        .await?;
+    // JOIN packages：已刪除或不存在的套件直接略過，不會因外鍵失敗
+    sqlx::query(
+        "INSERT INTO cache_packages (cache_id, package_id, size) \
+         SELECT $1, u.id, u.size FROM UNNEST($2::bigint[], $3::bigint[]) AS u(id, size) \
+         JOIN packages p ON p.id = u.id \
+         ON CONFLICT (cache_id, package_id) DO UPDATE SET size = EXCLUDED.size, updated_at = now() \
+         WHERE cache_packages.size <> EXCLUDED.size",
+    )
+    .bind(cache.cache_id)
+    .bind(&ids)
+    .bind(&sizes)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    let packages: Vec<(i64, String, i64)> = sqlx::query_as(
+        // 未停止的派送用到的套件：快取應預先下載，也只提供這些
+        "SELECT DISTINCT p.id, p.sha256, p.size FROM packages p \
+         JOIN deployments d ON d.package_id = p.id WHERE d.stage <> 'stopped' ORDER BY p.id",
+    )
+    .fetch_all(&st.pool)
+    .await?;
+    let limits: Option<(Option<i32>, i32)> = match cache.site_id {
+        Some(site) => {
+            sqlx::query_as("SELECT bandwidth_limit_mbps, disk_limit_gb FROM sites WHERE id = $1")
+                .bind(site)
+                .fetch_optional(&st.pool)
+                .await?
+        }
+        None => None,
+    };
+    let (bandwidth, disk) = limits.unwrap_or((None, DEFAULT_DISK_LIMIT_GB as i32));
+    Ok(Json(CacheCheckinResponse {
+        packages: packages
+            .into_iter()
+            .map(|(id, sha256, size)| CachePackage {
+                id,
+                sha256,
+                size: size.max(0) as u64,
+            })
+            .collect(),
+        bandwidth_limit_mbps: bandwidth.map(|b| b.max(1) as u32),
+        disk_limit_gb: disk.max(1) as u32,
+        renew_certificate: cache.cert_not_after - Utc::now() < Duration::days(RENEW_BEFORE_DAYS),
+    }))
+}
+
+pub async fn package_content(
+    State(st): State<AppState>,
+    _cache: AuthedCache,
+    Path(id): Path<i64>,
+) -> Result<Response, AppError> {
+    let sha: Option<String> = sqlx::query_scalar(
+        "SELECT p.sha256 FROM packages p WHERE p.id = $1 AND EXISTS \
+         (SELECT 1 FROM deployments d WHERE d.package_id = p.id AND d.stage <> 'stopped')",
+    )
+    .bind(id)
+    .fetch_optional(&st.pool)
+    .await?;
+    let sha = sha.ok_or(AppError::NotFound)?;
+    crate::deploy::api::stream_package(&st, id, &sha).await
+}
+
+pub async fn authorize(
+    State(st): State<AppState>,
+    _cache: AuthedCache,
+    Json(req): Json<CacheAuthorize>,
+) -> Result<Json<CacheAuthorizeResponse>, AppError> {
+    let fp = &req.device_cert_fingerprint;
+    if fp.len() != 64 || !fp.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(AppError::BadRequest("invalid fingerprint".into()));
+    }
+    let device: Option<Uuid> = sqlx::query_scalar(
+        "SELECT device_id FROM device_certs \
+         WHERE fingerprint = $1 AND revoked_at IS NULL AND not_after > now()",
+    )
+    .bind(fp.to_ascii_lowercase())
+    .fetch_optional(&st.pool)
+    .await?;
+    let allowed = match device {
+        Some(d) => crate::deploy::api::device_may_download(&st, d, req.package_id)
+            .await?
+            .is_some(),
+        None => false,
+    };
+    Ok(Json(CacheAuthorizeResponse { allowed }))
 }

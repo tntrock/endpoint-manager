@@ -62,11 +62,15 @@
 - `site_id`：可為 NULL（尚未指定）。UNIQUE（一個據點一台）。外鍵設 ON DELETE SET NULL。
 - `url`：對端點提供服務的網址，`https://<主機>:<埠>`。
 - `dns_names TEXT[]`：CSR 裡的主機名稱與 IP。
-- `status`：`pending`／`active`／`disabled`。
-- `cert_serial`、`cert_not_after`
+- `status`：`pending`／`active`／`disabled`／`rejected`。
+- `csr_pem`（核准、重新啟用時用來簽發）、`poll_secret_hash`（輪詢核准結果用，只存 SHA-256）、`enroll_token_id`
 - `last_seen`、`version`
 - `disk_used_bytes`
 - `created_at`
+
+**`cache_certs`**（比照 `device_certs`，以指紋辨識）：
+- 欄位：`serial`（主鍵）、`fingerprint`（唯一）、`cache_id`、`not_after`、`revoked_at`、`pem`、`created_at`。
+- 換發時新增一筆，舊的保留到原本到期日；停用快取時全部撤銷，重新啟用時用存下的 CSR 簽發新的一筆。
 
 **`cache_packages`**（快取回報）：
 - 欄位：`cache_id`、`package_id`、`size`、`updated_at`。
@@ -104,7 +108,7 @@
   - EKU 同時包含 serverAuth 與 clientAuth。
   - 有效期比照裝置憑證。
   - 憑證主體標示為快取，與裝置憑證區分。
-- 快取以 `POST /v1/cache/enroll/status` 輪詢，核准後取得憑證鏈。
+- 快取以 `POST /v1/cache/enroll/poll`（`cache_id` 加 `poll_secret`）輪詢，核准後取得憑證鏈。
 - 換發比照 Agent：剩 30 天時，中央在快取報到回應中要求換發。
 - 停用的快取：
   - 中央拒絕它的所有請求。
@@ -112,7 +116,7 @@
 
 ### 2.5 給快取的 API
 
-快取以自己的憑證用 mTLS 連線；只接受狀態是 `active`、而且憑證序號與 `caches.cert_serial` 相符的快取。
+快取以自己的憑證用 mTLS 連線；只接受狀態是 `active`、而且憑證指紋在 `cache_certs` 裡（未撤銷、未過期）的快取。
 
 - **`POST /v1/cache/checkin`**
   - 請求內容：`CacheCheckin { version, disk_used_bytes, stored: Vec<(package_id, size)> }`。
@@ -123,10 +127,10 @@
   - 下載套件。只允許下載出現在 `packages` 清單裡的套件，其他回 404。
   - 共用既有的下載同時上限 `EM_DOWNLOAD_CONCURRENCY`，額滿時回 503 並帶 `Retry-After`。
 - **`POST /v1/cache/authorize`**：
-  - 請求內容：`{ device_id, cert_serial, package_id }`。
+  - 請求內容：`{ device_cert_fingerprint, package_id }`（端點用戶端憑證的 SHA-256 hex；格式錯誤回 400）。
   - 回應內容：`{ allowed: bool }`。允許的條件：
     - 裝置是使用中。
-    - `cert_serial` 是裝置目前有效的憑證，而且沒被撤銷。
+    - 指紋對應到裝置目前有效的憑證（`device_certs`），而且沒被撤銷。
     - 這台裝置目前被指派這個套件。判斷與端點直接向中央下載共用同一個函式，包括暫停中的派送仍允許。
 
 ## 3. 快取程式 `endpoint-cache`
@@ -149,10 +153,10 @@
 
 1. **mTLS 驗證端點憑證**：
    - 信任錨是中央 CA。
-   - 從憑證取出裝置 id 與序號，解析方式與中央的 `AuthedDevice` 相同，抽成共用函式。
+   - 計算端點憑證的指紋（與中央的 `AuthedDevice` 相同），交給中央 `authorize` 判斷。
    - 快取憑證不能當作裝置憑證使用。
 2. **授權**：
-   - 向中央 `authorize`，結果（允許或拒絕）以 `(device_id, cert_serial, package_id)` 為鍵快取 5 分鐘。
+   - 向中央 `authorize`，結果（允許或拒絕）以 `(端點憑證指紋, package_id)` 為鍵快取 5 分鐘。
    - 中央連不上時：5 分鐘內曾允許的組合繼續允許；其他請求回 503，並帶 `Retry-After: 60`。
    - 拒絕回 403。
 3. **同時連線上限**：額滿時回 503，並帶 `Retry-After: 60`。
@@ -226,7 +230,7 @@
   - 快取註冊流程：金鑰種類、待核准、核准後簽發的憑證有正確的 SAN 與 EKU。
   - 報到下發 `package_source`：使用中與停用的快取、沒有對應的據點。
   - 快取 API：
-    - 非使用中的快取被拒絕；序號不符被拒絕。
+    - 非使用中的快取被拒絕；憑證已撤銷或不在 `cache_certs` 被拒絕。
     - `packages` 清單內容。
     - 下載限制只能下載清單內的套件。
     - `authorize` 的各種情況：未指派、已撤銷、非使用中、暫停中的派送。
