@@ -142,6 +142,10 @@ pub fn web_router(state: AppState) -> Router {
             get(updates::edit_form).post(updates::update),
         )
         .route("/updates/{id}/{action}", post(updates::act))
+        .route("/commands", get(commands::list).post(commands::create))
+        .route("/commands/{id}", get(commands::detail))
+        .route("/commands/{id}/cancel", post(commands::cancel))
+        .route("/devices/{id}/commands", post(commands::create_for_device))
         .route("/scripts", get(scripts::list).post(scripts::create))
         .route("/scripts/new", get(scripts::new_form))
         .route("/scripts/settings", post(scripts::settings))
