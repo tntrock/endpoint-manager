@@ -357,6 +357,9 @@ pub struct DeviceView {
     pub build: String,
     pub user: String,
     pub ip: String,
+    /// 依最後回報的 IP 對應的據點與快取
+    pub site: String,
+    pub cache: String,
     pub model: String,
     pub cpu: String,
     pub ram: String,
@@ -464,6 +467,7 @@ pub async fn detail(
         ),
         None => Default::default(),
     };
+    let (site, cache) = super::sites::site_of(&st, ip.as_deref()).await?;
     let current_group = group_id
         .map(|g| g.to_string())
         .unwrap_or_else(|| "none".into());
@@ -483,6 +487,8 @@ pub async fn detail(
             build: o(build),
             user: o(user),
             ip: o(ip),
+            site,
+            cache,
             model,
             cpu,
             ram,

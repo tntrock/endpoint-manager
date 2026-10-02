@@ -19,6 +19,7 @@ pub mod password;
 pub mod registry;
 pub mod rules;
 pub mod scripts;
+pub mod sites;
 pub mod software;
 pub mod tokens;
 pub mod updates;
@@ -183,6 +184,11 @@ pub fn web_router(state: AppState) -> Router {
             get(rules::edit_form).post(rules::update),
         )
         .route("/compliance/rules/{id}/delete", post(rules::delete))
+        .route("/sites", get(sites::list).post(sites::create))
+        .route("/sites/new", get(sites::new_form))
+        .route("/sites/{id}", post(sites::update))
+        .route("/sites/{id}/edit", get(sites::edit_form))
+        .route("/sites/{id}/delete", post(sites::delete))
         .route("/tokens", get(tokens::list).post(tokens::create))
         .route("/tokens/{id}/revoke", post(tokens::revoke))
         .route("/groups", get(groups::list).post(groups::create))

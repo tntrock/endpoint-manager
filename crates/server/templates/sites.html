@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>據點</h1>
+<p><a href="/sites/new">新增據點</a> · <a href="/caches">快取</a></p>
+<p class="muted">端點報到時依回報的本機 IP 對應據點（網段重疊時前綴最長的優先），並向該據點使用中的快取下載派送套件。裝置數依每台最後回報的 IP 計算；網段重疊時兩個據點都會計入。</p>
+<table>
+  <tr><th>名稱</th><th>網段</th><th>快取</th><th>快取無法使用時</th><th>頻寬上限</th><th>磁碟上限</th><th>裝置數</th><th></th></tr>
+  {% for r in rows %}
+  <tr>
+    <td>{{ r.name }}</td>
+    <td>{% for c in r.cidrs %}{{ c }}<br>{% endfor %}</td>
+    <td>{{ r.cache }}</td>
+    <td>{% if r.fallback %}改向中央{% else %}等快取恢復{% endif %}</td>
+    <td>{{ r.bandwidth }}</td>
+    <td>{{ r.disk_gb }} GB</td>
+    <td class="num">{{ r.devices }}</td>
+    <td><a href="/sites/{{ r.id }}/edit">編輯</a>
+      <form class="inline" method="post" action="/sites/{{ r.id }}/delete" onsubmit="return confirm('刪除據點？這個據點的端點會改向中央下載。')"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="danger">刪除</button></form></td>
+  </tr>
+  {% endfor %}
+</table>
+{% endblock %}
