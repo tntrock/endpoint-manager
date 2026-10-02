@@ -2,4 +2,6 @@
 
 pub mod central;
 pub mod config;
+pub mod fetch;
 pub mod identity;
+pub mod store;
