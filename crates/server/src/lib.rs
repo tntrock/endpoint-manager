@@ -2,6 +2,7 @@
 
 pub mod accounts;
 pub mod audit;
+pub mod branch;
 pub mod ca;
 pub mod checkin;
 pub mod commands;
@@ -69,6 +70,8 @@ pub struct AppState {
     pub downloads: Arc<tokio::sync::Semaphore>,
     /// 更新原則快取
     pub updates: Arc<updates::assign::UpdatePolicyCache>,
+    /// 據點與快取（報到時下發 package_source）
+    pub branch: Arc<branch::assign::BranchCache>,
 }
 
 impl AppState {
@@ -95,6 +98,7 @@ impl AppState {
             package_dir: "packages".into(),
             downloads: Arc::new(tokio::sync::Semaphore::new(DOWNLOAD_CONCURRENCY)),
             updates: Arc::new(updates::assign::UpdatePolicyCache::default()),
+            branch: Arc::new(branch::assign::BranchCache::default()),
         }
     }
 
@@ -151,6 +155,15 @@ pub fn agent_router(state: AppState) -> Router {
         .route("/v1/checkin", post(checkin::checkin))
         .route("/v1/inventory/{section}", put(inventory::upload))
         .route("/v1/renew", post(renew::renew))
+        .route("/v1/cache/enroll", post(branch::api::enroll))
+        .route("/v1/cache/enroll/poll", post(branch::api::poll))
+        .route("/v1/cache/renew", post(branch::api::renew))
+        .route("/v1/cache/checkin", post(branch::api::checkin))
+        .route(
+            "/v1/cache/packages/{id}/content",
+            get(branch::api::package_content),
+        )
+        .route("/v1/cache/authorize", post(branch::api::authorize))
         .route("/v1/packages/{id}/content", get(deploy::api::download))
         .route("/v1/deployments/{id}/result", post(deploy::api::result))
         .route("/v1/update-status", put(updates::api::status))

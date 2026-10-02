@@ -506,6 +506,7 @@ async fn result(
             exit_code: Some(1603),
             message: "boom".into(),
             attempts: 1,
+            source: None,
         })
         .send()
         .await

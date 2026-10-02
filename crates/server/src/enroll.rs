@@ -99,9 +99,10 @@ pub async fn enroll(
     ))?;
 
     let mut tx = st.pool.begin().await?;
-    let (token_id, group_id) = tokens::consume_token(&mut tx, &req.enroll_token)
-        .await?
-        .ok_or(AppError::Unauthorized)?;
+    let (token_id, group_id) =
+        tokens::consume_token(&mut tx, &req.enroll_token, tokens::TokenKind::Device)
+            .await?
+            .ok_or(AppError::Unauthorized)?;
 
     let smbios = normalize_smbios(req.smbios_uuid.as_deref());
     let serial = normalize_serial(req.bios_serial.as_deref());

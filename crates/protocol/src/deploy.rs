@@ -99,6 +99,9 @@ pub struct DeployResult {
     pub message: String,
     #[serde(default)]
     pub attempts: i32,
+    /// 套件從哪裡下載（分點快取或中央）；舊版 Agent 沒有
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<crate::branch::DownloadSource>,
 }
 
 impl DeployResult {
@@ -188,6 +191,7 @@ mod tests {
             exit_code: Some(1603),
             message: "x".repeat(1000),
             attempts: 3,
+            source: None,
         };
         assert!(ok.validate().is_ok());
         let long = DeployResult {

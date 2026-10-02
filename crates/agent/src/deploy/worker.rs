@@ -371,6 +371,7 @@ impl<C: Collector, R: Runner> Worker<C, R> {
             exit_code,
             message: truncate(message),
             attempts,
+            source: None,
         };
         self.send(client, a.deployment_id, a.revision, r).await;
     }

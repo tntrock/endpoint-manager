@@ -35,6 +35,7 @@ async fn enroll_heartbeat_upload(pool: PgPool) {
             expires_at: None,
             max_uses: 5,
             created_by: "test".into(),
+            kind: tokens::TokenKind::Device,
         },
     )
     .await

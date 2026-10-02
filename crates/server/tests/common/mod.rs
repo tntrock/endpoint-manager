@@ -175,6 +175,7 @@ impl TestServer {
                 expires_at: None,
                 max_uses,
                 created_by: "test".into(),
+                kind: tokens::TokenKind::Device,
             },
         )
         .await
@@ -193,6 +194,7 @@ impl TestServer {
                 expires_at: None,
                 max_uses,
                 created_by: "test".into(),
+                kind: tokens::TokenKind::Device,
             },
         )
         .await

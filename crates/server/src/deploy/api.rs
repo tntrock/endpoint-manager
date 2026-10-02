@@ -5,9 +5,10 @@ use axum::body::{Body, Bytes};
 use axum::extract::{Path, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use protocol::deploy::{DeployResult, DeployStatus};
+use protocol::deploy::{DeployResult, DeployStatus, PackageSpec};
 use serde_json::json;
 use tokio::io::AsyncReadExt;
+use uuid::Uuid;
 
 use super::store::file_path;
 use crate::AppState;
@@ -17,16 +18,32 @@ use crate::identity::AuthedDevice;
 const CHUNK: usize = 64 * 1024;
 
 /// (群組, 是否使用中)
-async fn device_scope(
-    st: &AppState,
-    device: &AuthedDevice,
-) -> Result<(Option<i64>, bool), AppError> {
+async fn device_scope(st: &AppState, device_id: Uuid) -> Result<(Option<i64>, bool), AppError> {
     let (group, status): (Option<i64>, String) =
         sqlx::query_as("SELECT group_id, status FROM devices WHERE id = $1")
-            .bind(device.device_id)
+            .bind(device_id)
             .fetch_one(&st.pool)
             .await?;
     Ok((group, status == "active"))
+}
+
+/// 裝置能否下載這個套件：使用中、在某個派送的範圍內。
+/// 暫停中的派送仍允許（安裝可能在暫停前就開始了）。中央下載與分點快取授權共用。
+pub async fn device_may_download(
+    st: &AppState,
+    device_id: Uuid,
+    package_id: i64,
+) -> Result<Option<PackageSpec>, AppError> {
+    let (group, active) = device_scope(st, device_id).await?;
+    if !active {
+        return Ok(None);
+    }
+    let set = st.deploy.get_throttled(&st.pool).await?;
+    Ok(set
+        .deployments
+        .iter()
+        .find(|d| d.package.id == package_id && d.targets(group))
+        .map(|d| d.package.clone()))
 }
 
 pub async fn download(
@@ -34,24 +51,21 @@ pub async fn download(
     device: AuthedDevice,
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
-    let (group, active) = device_scope(&st, &device).await?;
-    let set = st.deploy.get_throttled(&st.pool).await?;
-    let spec = active
-        .then(|| {
-            set.assignments_for(group)
-                .into_iter()
-                .find(|a| a.package.id == id)
-                .map(|a| a.package)
-        })
-        .flatten()
+    let spec = device_may_download(&st, device.device_id, id)
+        .await?
         .ok_or(AppError::NotFound)?;
+    stream_package(&st, id, &spec.sha256).await
+}
+
+/// 串流套件檔案（端點向中央下載、分點快取補抓都用這個），共用同時下載數上限
+pub async fn stream_package(st: &AppState, id: i64, sha256: &str) -> Result<Response, AppError> {
     // 先取許可再開檔：許可跟著串流，串流結束或中斷（連線斷掉）時歸還
     let permit = st
         .downloads
         .clone()
         .try_acquire_owned()
         .map_err(|_| AppError::Busy)?;
-    let path = file_path(&st.package_dir, &spec.sha256);
+    let path = file_path(&st.package_dir, sha256);
     let file = match tokio::fs::File::open(&path).await {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -97,7 +111,7 @@ pub async fn result(
     Json(r): Json<DeployResult>,
 ) -> Result<StatusCode, AppError> {
     r.validate().map_err(|e| AppError::BadRequest(e.into()))?;
-    let (group, active) = device_scope(&st, &device).await?;
+    let (group, active) = device_scope(&st, device.device_id).await?;
     let set = st.deploy.get_throttled(&st.pool).await?;
     // 暫停中的派送仍接受回報：安裝可能在暫停前就開始了
     let dep = set
@@ -113,11 +127,12 @@ pub async fn result(
     let mut tx = st.pool.begin().await?;
     sqlx::query(
         "INSERT INTO deployment_status \
-           (deployment_id, device_id, status, exit_code, message, attempts, revision) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7) \
+           (deployment_id, device_id, status, exit_code, message, attempts, revision, source) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
          ON CONFLICT (deployment_id, device_id) DO UPDATE SET status = EXCLUDED.status, \
            exit_code = EXCLUDED.exit_code, message = EXCLUDED.message, \
-           attempts = EXCLUDED.attempts, revision = EXCLUDED.revision, updated_at = now() \
+           attempts = EXCLUDED.attempts, revision = EXCLUDED.revision, \
+           source = EXCLUDED.source, updated_at = now() \
          WHERE deployment_status.revision <= EXCLUDED.revision",
     )
     .bind(dep.id)
@@ -127,6 +142,7 @@ pub async fn result(
     .bind(&message)
     .bind(r.attempts)
     .bind(r.revision)
+    .bind(r.source.and_then(|s| s.as_str()))
     .execute(&mut *tx)
     .await
     .map_err(|e| match &e {

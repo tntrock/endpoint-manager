@@ -1,5 +1,6 @@
 //! Agent 與伺服器之間的共用訊息格式。
 
+pub mod branch;
 pub mod command;
 pub mod deploy;
 pub mod matcher;
@@ -140,6 +141,9 @@ pub struct CheckinResponse {
     /// 這台待執行的遠端指令（收到結果前每次報到都會重送）
     #[serde(default)]
     pub commands: Vec<command::Command>,
+    /// 這台該向哪台分點快取下載套件；None 表示直接向中央下載
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package_source: Option<branch::PackageSource>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

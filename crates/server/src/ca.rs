@@ -170,17 +170,48 @@ impl Ca {
         device_id: Uuid,
         now: DateTime<Utc>,
     ) -> anyhow::Result<IssuedCert> {
+        let mut params = CertificateParams::default();
+        params.distinguished_name = cn(&device_id.to_string());
+        params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+        params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
+        self.sign(params, csr_pem, now)
+    }
+
+    /// 分點快取：同一張憑證當 HTTPS 伺服器（給端點連）也當用戶端（連中央）。
+    /// SAN 是快取對外的主機名稱與 IP（rcgen 會把 IP 字串寫成 IP 類型）。
+    pub fn sign_cache_csr(
+        &self,
+        csr_pem: &str,
+        cache_id: i64,
+        dns_names: &[String],
+        now: DateTime<Utc>,
+    ) -> anyhow::Result<IssuedCert> {
+        let mut params = CertificateParams::new(dns_names.to_vec()).context("invalid DNS name")?;
+        params.distinguished_name = cn(&format!("cache-{cache_id}"));
+        params.key_usages = vec![
+            KeyUsagePurpose::DigitalSignature,
+            KeyUsagePurpose::KeyEncipherment,
+        ];
+        params.extended_key_usages = vec![
+            ExtendedKeyUsagePurpose::ServerAuth,
+            ExtendedKeyUsagePurpose::ClientAuth,
+        ];
+        self.sign(params, csr_pem, now)
+    }
+
+    /// 只取 CSR 的公鑰，序號與效期由這裡決定
+    fn sign(
+        &self,
+        mut params: CertificateParams,
+        csr_pem: &str,
+        now: DateTime<Utc>,
+    ) -> anyhow::Result<IssuedCert> {
         let csr = CertificateSigningRequestParams::from_pem(csr_pem).context("invalid CSR")?;
         let serial = random_serial();
         let not_after = now + Duration::days(DEVICE_CERT_DAYS);
-
-        let mut params = CertificateParams::default();
-        params.distinguished_name = cn(&device_id.to_string());
         params.serial_number = Some(SerialNumber::from_slice(&serial));
         params.not_before = to_time(now - Duration::minutes(5));
         params.not_after = to_time(not_after);
-        params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
-        params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
         params.use_authority_key_identifier_extension = true;
 
         let cert = params.signed_by(&csr.public_key, &self.issuer)?;

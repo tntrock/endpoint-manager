@@ -13,6 +13,8 @@ pub enum AppError {
     TooManyRequests,
     #[error("not found")]
     NotFound,
+    #[error("conflict: {0}")]
+    Conflict(String),
     /// 伺服器忙碌（例如同時下載數用完），附 Retry-After
     #[error("busy")]
     Busy,
@@ -75,6 +77,7 @@ impl IntoResponse for AppError {
             AppError::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE.into_response(),
             AppError::TooManyRequests => with_retry_after(StatusCode::TOO_MANY_REQUESTS),
             AppError::NotFound => StatusCode::NOT_FOUND.into_response(),
+            AppError::Conflict(m) => (StatusCode::CONFLICT, m).into_response(),
             AppError::Busy => with_retry_after(StatusCode::SERVICE_UNAVAILABLE),
             AppError::Db(e) if db_unavailable(&e) => {
                 tracing::error!(error = %e, "database unavailable");

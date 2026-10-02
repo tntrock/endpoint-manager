@@ -5,19 +5,37 @@ use sha2::{Digest, Sha256};
 use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
+/// 金鑰用途：註冊裝置或註冊分點快取，彼此不能混用
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TokenKind {
+    #[default]
+    Device,
+    Cache,
+}
+
+impl TokenKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TokenKind::Device => "device",
+            TokenKind::Cache => "cache",
+        }
+    }
+}
+
 pub struct NewToken {
     pub name: String,
     pub group_id: Option<i64>,
     pub expires_at: Option<DateTime<Utc>>,
     pub max_uses: i32,
     pub created_by: String,
+    pub kind: TokenKind,
 }
 
 pub fn hash_token(token: &str) -> String {
     hex::encode(Sha256::digest(token.as_bytes()))
 }
 
-fn generate_token() -> String {
+pub fn generate_token() -> String {
     format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
 }
 
@@ -54,8 +72,9 @@ pub async fn create_token_in(
 ) -> Result<(i64, String), sqlx::Error> {
     let token = generate_token();
     let id: i64 = sqlx::query_scalar(
-        "INSERT INTO enroll_tokens (name, token_hash, group_id, expires_at, max_uses, created_by) \
-         VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
+        "INSERT INTO enroll_tokens \
+         (name, token_hash, group_id, expires_at, max_uses, created_by, kind) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
     )
     .bind(&t.name)
     .bind(hash_token(&token))
@@ -63,6 +82,7 @@ pub async fn create_token_in(
     .bind(t.expires_at)
     .bind(t.max_uses)
     .bind(&t.created_by)
+    .bind(t.kind.as_str())
     .fetch_one(conn)
     .await?;
     Ok((id, token))
@@ -72,15 +92,17 @@ pub async fn create_token_in(
 pub async fn consume_token(
     conn: &mut PgConnection,
     token: &str,
+    kind: TokenKind,
 ) -> Result<Option<(i64, Option<i64>)>, sqlx::Error> {
     sqlx::query_as(
         "UPDATE enroll_tokens SET used_count = used_count + 1 \
          WHERE token_hash = $1 AND revoked_at IS NULL \
            AND (expires_at IS NULL OR expires_at > now()) \
-           AND used_count < max_uses \
+           AND used_count < max_uses AND kind = $2 \
          RETURNING id, group_id",
     )
     .bind(hash_token(token))
+    .bind(kind.as_str())
     .fetch_optional(conn)
     .await
 }
@@ -135,6 +157,7 @@ mod tests {
             expires_at,
             max_uses,
             created_by: "test".into(),
+            kind: TokenKind::Device,
         }
     }
 
@@ -143,8 +166,18 @@ mod tests {
         crate::db::migrate(&pool).await.unwrap();
         let (id, tok) = create_token(&pool, &new_token(1, None)).await.unwrap();
         let mut c = pool.acquire().await.unwrap();
-        assert_eq!(consume_token(&mut c, &tok).await.unwrap(), Some((id, None)));
-        assert_eq!(consume_token(&mut c, &tok).await.unwrap(), None);
+        assert_eq!(
+            consume_token(&mut c, &tok, TokenKind::Device)
+                .await
+                .unwrap(),
+            Some((id, None))
+        );
+        assert_eq!(
+            consume_token(&mut c, &tok, TokenKind::Device)
+                .await
+                .unwrap(),
+            None
+        );
     }
 
     #[sqlx::test(migrations = false)]
@@ -161,9 +194,24 @@ mod tests {
             .await
             .unwrap();
         let mut c = pool.acquire().await.unwrap();
-        assert_eq!(consume_token(&mut c, &expired).await.unwrap(), None);
-        assert_eq!(consume_token(&mut c, &revoked).await.unwrap(), None);
-        assert_eq!(consume_token(&mut c, "nope").await.unwrap(), None);
+        assert_eq!(
+            consume_token(&mut c, &expired, TokenKind::Device)
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            consume_token(&mut c, &revoked, TokenKind::Device)
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            consume_token(&mut c, "nope", TokenKind::Device)
+                .await
+                .unwrap(),
+            None
+        );
     }
 
     #[sqlx::test(migrations = false)]
