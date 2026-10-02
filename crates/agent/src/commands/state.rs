@@ -48,11 +48,13 @@ impl CommandsState {
     }
 
     /// 刪掉已回報而且開始超過 30 天的紀錄；還沒回報的保留到 31 天
-    /// （指令最長 30 天過期，之後伺服器不再接受結果，留著也送不出去）
-    pub fn prune(&mut self, now: DateTime<Utc>) {
+    /// （指令最長 30 天過期，之後伺服器不再接受結果，留著也送不出去）。
+    /// 仍在下發清單（active）中的一律保留：清掉會被當成新指令重跑
+    pub fn prune(&mut self, active: &[i64], now: DateTime<Utc>) {
         let cutoff = now - chrono::Duration::days(FORGET_AFTER_DAYS);
         let hard = now - chrono::Duration::days(FORGET_AFTER_DAYS + 1);
-        self.entries.retain(|_, e| match e.started_at {
+        self.entries.retain(|id, e| match e.started_at {
+            _ if active.contains(id) => true,
             None => true,
             Some(t) if t < hard => false,
             Some(t) => !e.reported || t >= cutoff,
@@ -90,8 +92,16 @@ mod tests {
         s.entries.insert(4, entry(32, false));
         s.save(dir.path()).unwrap();
         assert_eq!(CommandsState::load(dir.path()), s);
-        s.prune(Utc::now());
+        s.prune(&[], Utc::now());
         assert_eq!(s.entries.keys().copied().collect::<Vec<_>>(), vec![2, 3]);
+        // 仍在伺服器下發清單中的指令一律保留：清掉會被當成新指令重跑
+        s.entries.insert(5, entry(40, false));
+        s.entries.insert(6, entry(40, true));
+        s.prune(&[5, 6], Utc::now());
+        assert_eq!(
+            s.entries.keys().copied().collect::<Vec<_>>(),
+            vec![2, 3, 5, 6]
+        );
         std::fs::write(dir.path().join(FILE), b"{oops").unwrap();
         assert_eq!(CommandsState::load(dir.path()), CommandsState::default());
     }

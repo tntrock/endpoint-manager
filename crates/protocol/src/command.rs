@@ -138,7 +138,9 @@ fn is_format_char(c: char) -> bool {
             | 0x0890..=0x0891
             | 0x08E2
             | 0x180E
-            | 0x200B..=0x200F
+            // 200C／200D（ZWNJ／ZWJ）是 emoji 序列與部分文字的一部分，保留
+            | 0x200B
+            | 0x200E..=0x200F
             | 0x202A..=0x202E
             | 0x2060..=0x2064
             | 0x2066..=0x206F
@@ -149,8 +151,8 @@ fn is_format_char(c: char) -> bool {
             | 0x13430..=0x1343F
             | 0x1BCA0..=0x1BCA3
             | 0x1D173..=0x1D17A
+            // E0020–E007F（tag）組成地區旗幟 emoji，保留
             | 0xE0001
-            | 0xE0020..=0xE007F
     )
 }
 
@@ -171,6 +173,14 @@ mod tests {
         );
         let keep = "第一行\n\t中文 😀 é";
         assert_eq!(strip_format_chars(keep), keep);
+        // ZWJ／ZWNJ 與 tag 字元是 emoji 序列與部分文字的一部分，要保留
+        for keep in [
+            "👨\u{200D}👩\u{200D}👧",
+            "می\u{200C}خواهم",
+            "🏴\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}",
+        ] {
+            assert_eq!(strip_format_chars(keep), keep);
+        }
     }
 
     fn result(status: CommandStatus, output: String) -> CommandResult {

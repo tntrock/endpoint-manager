@@ -143,7 +143,8 @@ impl<H: CommandHost> CommandWorker<H> {
             }
         }
         let before = self.state.clone();
-        self.state.prune(Utc::now());
+        let ids: Vec<i64> = w.commands.iter().map(|c| c.id).collect();
+        self.state.prune(&ids, Utc::now());
         if self.state != before {
             self.save();
         }
