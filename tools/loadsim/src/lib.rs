@@ -339,6 +339,7 @@ pub async fn deploy(t: &Target, devices: &[Device], concurrency: usize) -> (Repo
                         exit_code: Some(0),
                         message: String::new(),
                         attempts: 1,
+                        source: None,
                     },
                 )
                 .await

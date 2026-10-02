@@ -731,6 +731,7 @@ mod deploy {
                 exit_code: Some(0),
                 message: String::new(),
                 attempts: 1,
+                source: None,
             },
         )
         .await

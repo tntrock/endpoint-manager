@@ -179,6 +179,7 @@ async fn fail_result(s: &TestServer, a: &common::TestAgent, d: i64, msg: &str) {
             exit_code: Some(1603),
             message: msg.into(),
             attempts: 1,
+            source: None,
         })
         .send()
         .await

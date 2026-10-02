@@ -93,6 +93,7 @@ pub async fn checkin(
         update_policy_hash: Some(protocol::update::update_policy_hash(update_policy.as_ref())),
         update_policy,
         commands,
+        package_source: None,
     }))
 }
 
