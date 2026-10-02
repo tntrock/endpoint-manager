@@ -6,6 +6,7 @@
 pub mod accounts;
 pub mod audit;
 pub mod auth;
+pub mod commands;
 pub mod compliance;
 pub mod dashboard;
 pub mod deployments;
@@ -17,6 +18,7 @@ pub mod packages;
 pub mod password;
 pub mod registry;
 pub mod rules;
+pub mod scripts;
 pub mod software;
 pub mod tokens;
 pub mod updates;
@@ -140,6 +142,15 @@ pub fn web_router(state: AppState) -> Router {
             get(updates::edit_form).post(updates::update),
         )
         .route("/updates/{id}/{action}", post(updates::act))
+        .route("/scripts", get(scripts::list).post(scripts::create))
+        .route("/scripts/new", get(scripts::new_form))
+        .route("/scripts/settings", post(scripts::settings))
+        .route("/scripts/{id}", get(scripts::detail))
+        .route(
+            "/scripts/{id}/edit",
+            get(scripts::edit_form).post(scripts::update),
+        )
+        .route("/scripts/{id}/{action}", post(scripts::act))
         .route("/packages", get(packages::list))
         .route(
             "/packages/upload",

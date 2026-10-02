@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>{% if id.is_some() %}編輯腳本{% else %}建立腳本{% endif %}</h1>
+<p><a href="/scripts">← 腳本</a></p>
+{% if let Some(e) = error %}<p class="error">{{ e }}</p>{% endif %}
+<form method="post" action="{% if let Some(i) = id %}/scripts/{{ i }}/edit{% else %}/scripts{% endif %}">
+  <input type="hidden" name="csrf" value="{{ nav.csrf }}">
+  <p><label>名稱 <input name="name" value="{{ f.name }}" required maxlength="100" size="40"></label></p>
+  <p><label>說明<br><textarea name="description" rows="3" cols="80" maxlength="1000">{{ f.description }}</textarea></label></p>
+  <p><label>內容（PowerShell，以 SYSTEM 執行，最多 64 KiB）<br><textarea name="content" rows="20" cols="100" style="font-family: monospace" required>{{ f.content }}</textarea></label></p>
+  <p><label>逾時 <input name="timeout_minutes" value="{{ f.timeout_minutes }}" inputmode="numeric" size="4"> 分鐘（1–120）</label></p>
+  <p class="muted">改了內容或逾時就要重新核准。腳本可能因 Agent 狀態檔遺失而重跑，請設計成可以重複執行。</p>
+  <p><button>{% if id.is_some() %}儲存{% else %}建立{% endif %}</button></p>
+</form>
+{% endblock %}
