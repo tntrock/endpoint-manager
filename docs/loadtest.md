@@ -120,6 +120,18 @@
 
 每次上傳狀態都會重新評估這台（和盤點上傳相同）；`loadsim updates` 量到的每台耗時（報到＋上傳狀態，含評估）p99 為 114ms，僅供參考。三種新規則只讀 `update_policy_status` 一列，重算成本可忽略。
 
+## 遠端指令（第六期，2026-10-02）
+
+30,000 台；用 `tools/loadsim/commands_setup.sql` 把前 5,000 台放進群組「load cmd」，對這個群組下一個「重新收集」（與 `commands::runs::create_run` 相同的兩個 INSERT），再以 `loadsim commands`（並行 60）讓三萬台報到，收到指令的 5,000 台回報成功。
+
+| 項目 | 標準 | 結果 | |
+|---|---|---|---|
+| 對 5,000 台的群組展開指令 | ≤ 5 秒 | INSERT 56.6ms＋COMMIT 1.7ms | ✅ |
+| 有 5,000 筆待下發時，心跳 500 次／秒，持續 120 秒 | p99 < 100ms | p50 8.5ms、**p99 25.6ms**、0 錯誤（沒有指令時 p99 24.7ms） | ✅ |
+| 三萬台報到，5,000 台回報結果 | 0 錯誤、結果全部寫入 | **24.3 秒**，0 錯誤；`command_targets` 5,000 筆 succeeded；伺服器日誌沒有 ERROR | ✅ |
+
+報到時查詢待下發指令走部分索引 `command_targets_open_idx`，沒有指令的裝置只多一次索引查詢、不寫入，所以報到延遲與沒有指令時相同。
+
 ## 測試環境與限制
 
 - Intel Core i5-12400（6 核 12 緒）、24GB、Windows 11 Home。
@@ -177,6 +189,14 @@ cp pkg.bin packages/<sha256>                                  # 伺服器的 EM_
 docker exec -i em-postgres psql -U postgres -d em_load -v sha=<sha256> -v size=<大小> < ../../tools/loadsim/deploy_setup.sql
 ./loadsim heartbeat --server https://127.0.0.1:18443 --root pki/root.pem --devices devices.json --rate 500 --secs 60 --max-p99-ms 100
 ./loadsim deploy    --server https://127.0.0.1:18443 --root pki/root.pem --devices devices.json --concurrency 60
+```
+
+遠端指令部分（`enroll` 之後即可）：
+
+```bash
+docker exec -i em-postgres psql -U postgres -d em_load -v ON_ERROR_STOP=1 < ../../tools/loadsim/commands_setup.sql   # 印出展開時間
+./loadsim heartbeat --server https://127.0.0.1:18443 --root pki/root.pem --devices devices.json --rate 500 --secs 120 --max-p99-ms 100
+./loadsim commands  --server https://127.0.0.1:18443 --root pki/root.pem --devices devices.json --concurrency 60
 ```
 
 Windows Update 部分：在完成 `upload` 與 `rules.sql` 的重算後執行下面的指令：

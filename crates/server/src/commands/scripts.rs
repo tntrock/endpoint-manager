@@ -6,7 +6,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use sqlx::{PgConnection, PgPool};
 
-use super::Actor;
+use super::{Actor, Forbidden};
 use crate::audit;
 
 pub const MAX_NAME_LEN: usize = 100;
@@ -28,7 +28,9 @@ struct Valid {
 }
 
 fn platform(actor: &Actor) -> anyhow::Result<()> {
-    ensure!(actor.platform, "只有平台管理員能管理腳本");
+    if !actor.platform {
+        return Err(Forbidden("只有平台管理員能管理腳本".into()).into());
+    }
     Ok(())
 }
 
@@ -250,13 +252,25 @@ pub async fn approve_script(
     expected_sha256: &str,
     actor: &Actor,
 ) -> anyhow::Result<()> {
+    approve_version(pool, id, expected_sha256, None, actor).await
+}
+
+/// 網頁核准：除了內容雜湊，也比對核准者看到的逾時（逾時改了也要重新核准，雜湊卻不變）
+pub async fn approve_version(
+    pool: &PgPool,
+    id: i64,
+    expected_sha256: &str,
+    expected_timeout: Option<i32>,
+    actor: &Actor,
+) -> anyhow::Result<()> {
     platform(actor)?;
     let second = require_second_approver(pool).await?;
     let mut tx = pool.begin().await?;
     let s = lock(&mut tx, id).await?;
     let (name, sha) = (s.name.clone(), s.sha256.clone());
     ensure!(
-        sha == expected_sha256.to_ascii_lowercase(),
+        sha == expected_sha256.to_ascii_lowercase()
+            && expected_timeout.is_none_or(|t| t == s.timeout),
         "腳本內容已變更，請重新檢視後再核准"
     );
     // 雙人核准下，自己核准過的（例如單人模式時）可以由另一位重新核准
@@ -267,10 +281,9 @@ pub async fn approve_script(
         s.status == "pending" || reapprove,
         "只有待核准的腳本可以核准"
     );
-    ensure!(
-        !second || !s.editors.contains(&actor.username),
-        "不能核准自己修改的腳本，請由另一位平台管理員核准"
-    );
+    if second && s.editors.contains(&actor.username) {
+        return Err(Forbidden("不能核准自己修改的腳本，請由另一位平台管理員核准".into()).into());
+    }
     sqlx::query(
         "UPDATE scripts SET status = 'approved', approved_by = $2, approved_at = now() \
          WHERE id = $1",

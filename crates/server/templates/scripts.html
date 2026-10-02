@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>腳本</h1>
+<form method="post" action="/scripts/settings">
+  <input type="hidden" name="csrf" value="{{ nav.csrf }}">
+  <label><input type="checkbox" name="require" value="1" {% if require_second %}checked{% endif %}> 腳本需要第二位平台管理員核准</label>
+  <button>儲存</button>
+  <span class="muted">開啟時，上次核准後修改過內容的人都不能核准；建議保持開啟。</span>
+</form>
+<p><a href="/scripts/new">建立腳本</a>　<a href="/commands">遠端指令</a></p>
+<table>
+  <tr><th>名稱</th><th>狀態</th><th>SHA-256</th><th>最後修改</th><th>核准者</th></tr>
+  {% for r in rows %}
+  <tr><td><a href="/scripts/{{ r.id }}">{{ r.name }}</a></td><td>{{ r.status }}</td><td><code>{{ r.sha_short }}</code></td><td>{{ r.updated_by }}</td><td>{{ r.approved_by }}</td></tr>
+  {% endfor %}
+</table>
+{% if rows.is_empty() %}<p class="muted">還沒有腳本。</p>{% endif %}
+{% endblock %}

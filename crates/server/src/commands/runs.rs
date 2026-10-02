@@ -7,7 +7,7 @@ use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::Actor;
+use super::{Actor, Forbidden};
 use crate::audit;
 
 pub const DEFAULT_DELAY_MINUTES: i32 = 10;
@@ -52,10 +52,9 @@ pub async fn create_run(pool: &PgPool, i: &RunInput, actor: &Actor) -> anyhow::R
         (1..=MAX_EXPIRES_HOURS).contains(&i.expires_hours),
         "過期時間必須是 1 小時到 30 天"
     );
-    ensure!(
-        action != CommandAction::Script || actor.platform,
-        "只有平台管理員能執行腳本"
-    );
+    if action == CommandAction::Script && !actor.platform {
+        return Err(Forbidden("只有平台管理員能執行腳本".into()).into());
+    }
     let second = super::scripts::require_second_approver(pool).await?;
     let mut tx = pool.begin().await?;
 
@@ -92,7 +91,9 @@ pub async fn create_run(pool: &PgPool, i: &RunInput, actor: &Actor) -> anyhow::R
             .fetch_optional(&mut *tx)
             .await?;
             let (hostname, group) = row.context("裝置不存在或未啟用")?;
-            ensure!(in_scope(group), "這台裝置不在你的管理範圍");
+            if !in_scope(group) {
+                return Err(Forbidden("這台裝置不在你的管理範圍".into()).into());
+            }
             format!("裝置 {hostname}")
         }
         Target::Group(g) => {
@@ -102,7 +103,9 @@ pub async fn create_run(pool: &PgPool, i: &RunInput, actor: &Actor) -> anyhow::R
                     .fetch_optional(&mut *tx)
                     .await?;
             let name = name.context("群組不存在")?;
-            ensure!(in_scope(Some(g)), "這個群組不在你的管理範圍");
+            if !in_scope(Some(g)) {
+                return Err(Forbidden("這個群組不在你的管理範圍".into()).into());
+            }
             format!("群組 {name}")
         }
     };
@@ -173,10 +176,9 @@ pub async fn cancel_run(pool: &PgPool, id: i64, actor: &Actor) -> anyhow::Result
     .fetch_optional(&mut *tx)
     .await?;
     let (label, created_by, canceled) = row.context("指令不存在")?;
-    ensure!(
-        actor.platform || created_by == actor.username,
-        "只有建立者或平台管理員能取消"
-    );
+    if !actor.platform && created_by != actor.username {
+        return Err(Forbidden("只有建立者或平台管理員能取消".into()).into());
+    }
     ensure!(!canceled, "指令已取消");
     sqlx::query("UPDATE command_runs SET canceled_at = now(), canceled_by = $2 WHERE id = $1")
         .bind(id)

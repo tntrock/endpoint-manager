@@ -744,3 +744,78 @@ async fn canceled_while_checking_in_is_not_delivered(pool: PgPool) {
     let (r, _) = tokio::join!(checkin, commit);
     assert!(r.commands.is_empty(), "{:?}", r.commands);
 }
+
+/// 權限錯誤是 Forbidden（網頁回 403），輸入或狀態錯誤不是
+#[sqlx::test(migrations = false)]
+async fn permission_errors_are_typed(pool: PgPool) {
+    use endpoint_server::commands::is_forbidden;
+    let s = TestServer::start(pool).await;
+    let f = fleet(&s).await;
+    let (alice, bob) = (platform("alice"), platform("bob"));
+    let gary = Actor {
+        username: "gary".into(),
+        platform: false,
+        groups: vec![f.tp],
+    };
+    let e = scripts::create_script(&s.pool, &input("dir"), &gary)
+        .await
+        .unwrap_err();
+    assert!(is_forbidden(&e), "{e:#}");
+    let id = scripts::create_script(&s.pool, &input("dir"), &alice)
+        .await
+        .unwrap();
+    let h = sha_of(&s.pool, id).await;
+    let e = scripts::approve_script(&s.pool, id, &h, &alice)
+        .await
+        .unwrap_err();
+    assert!(is_forbidden(&e), "{e:#}");
+    let e = scripts::approve_script(&s.pool, id, &"0".repeat(64), &bob)
+        .await
+        .unwrap_err();
+    assert!(!is_forbidden(&e), "內容已變更是狀態錯誤：{e:#}");
+    let e = runs::create_run(&s.pool, &run("collect", Target::Group(f.ks)), &gary)
+        .await
+        .unwrap_err();
+    assert!(is_forbidden(&e), "{e:#}");
+    let e = runs::create_run(
+        &s.pool,
+        &RunInput {
+            script_id: Some(id),
+            ..run("script", Target::Group(f.tp))
+        },
+        &gary,
+    )
+    .await
+    .unwrap_err();
+    assert!(is_forbidden(&e), "{e:#}");
+    let e = runs::create_run(
+        &s.pool,
+        &RunInput {
+            delay_minutes: Some(61),
+            ..run("reboot", Target::Group(f.tp))
+        },
+        &alice,
+    )
+    .await
+    .unwrap_err();
+    assert!(!is_forbidden(&e), "{e:#}");
+    let (rid, _) = runs::create_run(&s.pool, &run("collect", Target::Group(f.tp)), &alice)
+        .await
+        .unwrap();
+    let e = runs::cancel_run(&s.pool, rid, &gary).await.unwrap_err();
+    assert!(is_forbidden(&e), "{e:#}");
+}
+
+/// 裝置分頁依 device_id 查最近的指令：要有對應的索引（否則每次都掃整張表）
+#[sqlx::test(migrations = false)]
+async fn device_targets_index_exists(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let n: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM pg_indexes WHERE tablename = 'command_targets' \
+         AND indexdef LIKE '%(device_id, id DESC)%'",
+    )
+    .fetch_one(&s.pool)
+    .await
+    .unwrap();
+    assert_eq!(n, 1);
+}
