@@ -145,6 +145,68 @@ Webhook 只接受 `https://`，不跟隨重新導向。簽章密鑰只放環境�
   - `EM_DOWNLOAD_CONCURRENCY`：同時下載的上限（預設 50）；超過時回 503，Agent 稍後再試。
 - 派送需要 Agent 0.4.0 以上；舊版 Agent 會忽略派送。
 
+## 分點快取
+
+端點分散在多個據點時，可以在每個據點放一台**快取主機**（`endpoint-cache`），由它向中央取得派送套件、就近提供給該據點的端點，WAN 只傳一次。
+
+- **據點**（`/sites`，平台管理員）：名稱與網段（每行一個 CIDR）。端點報到時依回報的本機 IP 對應據點，網段重疊時前綴最長的優先。
+  - 「快取無法使用時改向中央下載」：勾選時快取停機的期間端點改向中央（並在 5 分鐘內都直接向中央下載）；不勾選時端點等快取恢復，適合 WAN 頻寬很小的據點。
+  - 頻寬上限只限制快取的預先下載；磁碟上限超過時從最久沒用的套件開始刪除。
+- **快取**（`/caches`，平台管理員）：建立快取註冊金鑰 → 在快取主機上 `enroll` → 在這頁核准並指定據點（一個據點一台快取）。可以停用、啟用、改據點、刪除，並看到最後回報時間、磁碟用量與預先下載進度。
+- **端點的行為**（Agent 0.7.0 以上）：
+  - 快取回 503（忙碌）：照 `Retry-After` 稍後再試，不改向中央。
+  - 快取回 403／404：照下載失敗處理。
+  - 快取連不上或 5xx：依據點設定改向中央或稍後再試（不算失敗次數）。
+  - 派送詳情的「來源」欄顯示每台是從快取還是中央下載。
+- **快取的行為**：每 60 秒向中央報到並依序預先下載所有進行中派送用到的套件；端點要的套件不在本機時立即向中央下載（同一個檔案只下載一次）。每個下載請求都向中央確認這台端點是否被指派，結果保存 5 分鐘；中央連不上時，5 分鐘內允許過的端點繼續服務，其他回 503。
+- **防火牆**：端點 → 快取 TCP 8443（`config.json` 的 `listen` 可改）；快取 → 中央的 Agent API（8443）。
+
+### 安裝快取（Windows）
+
+以系統管理員的命令列執行（`enroll` 會把資料目錄 `%ProgramData%\EndpointManager\Cache` 限制為 SYSTEM 與 Administrators）：
+
+```bat
+endpoint-cache.exe enroll --server https://em.example.com:8443 --root root.pem --token <快取金鑰> ^
+    --name 台北快取 --url https://cache-tp.example.com:8443 --dns cache-tp.example.com,10.1.2.3
+sc.exe create EndpointManagerCache binPath= "C:\Program Files\EndpointManager\endpoint-cache.exe service" start= auto
+sc.exe failure EndpointManagerCache reset= 86400 actions= restart/60000/restart/60000/restart/60000
+sc.exe failureflag EndpointManagerCache 1
+sc.exe start EndpointManagerCache
+```
+
+- `--url` 的主機必須在 `--dns` 裡，而且不能是中央伺服器的名稱。端點用這個網址連快取，並以快取憑證的名稱驗證。
+- 核准前服務會每 30 秒詢問一次，核准後才開始提供下載。記錄檔在資料目錄的 `cache.log`。
+- `sc.exe failureflag … 1` 讓服務異常結束時也套用自動重新啟動。
+
+### 安裝快取（Linux）
+
+```bash
+sudo useradd --system --no-create-home endpoint-cache
+sudo install -d -o endpoint-cache -m 0700 /var/lib/endpoint-cache
+sudo install -m 0755 endpoint-cache /usr/local/bin/
+sudo -u endpoint-cache endpoint-cache enroll --data-dir /var/lib/endpoint-cache \
+    --server https://em.example.com:8443 --root root.pem --token <快取金鑰> \
+    --name 台北快取 --url https://cache-tp.example.com:8443 --dns cache-tp.example.com
+sudo install -m 0644 deploy/endpoint-cache.service /etc/systemd/system/
+sudo systemctl enable --now endpoint-cache
+```
+
+- 在 `config.json` 指定其他儲存目錄（`storage_dir`）時，要在 unit 加上 `ReadWritePaths=<目錄>`（unit 使用 `ProtectSystem=strict`）。
+- 監聽 1024 以下的埠時，取消 unit 中 `AmbientCapabilities=CAP_NET_BIND_SERVICE` 的註解。
+
+### 安裝快取（Docker）
+
+```bash
+docker build -f deploy/cache.Dockerfile -t endpoint-cache .
+docker volume create endpoint-cache-data
+docker run --rm -v endpoint-cache-data:/data -v "$PWD/root.pem:/root.pem:ro" endpoint-cache \
+    enroll --data-dir /data --server https://em.example.com:8443 --root /root.pem --token <快取金鑰> \
+    --name 台北快取 --url https://cache-tp.example.com:8443 --dns cache-tp.example.com
+docker run -d --restart unless-stopped -p 8443:8443 -v endpoint-cache-data:/data endpoint-cache
+```
+
+容器以 uid 65532 執行；改用主機目錄時先 `sudo chown 65532:65532 <目錄>`，並設為 0700。
+
 ## Windows Update 控制
 
 管理網頁的「更新原則」頁（`/updates`）依群組設定 Windows Update for Business 原則，Agent 寫入 `HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate` 並回報結果。更新本身仍由 Windows Update（或 WSUS）提供，本系統負責控制與稽核。

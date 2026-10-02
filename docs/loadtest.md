@@ -132,6 +132,23 @@
 
 報到時查詢待下發指令走部分索引 `command_targets_open_idx`，沒有指令的裝置只多一次索引查詢、不寫入，所以報到延遲與沒有指令時相同。
 
+## 分點快取（第七期，2026-10-02）
+
+30,000 台；用 `tools/loadsim/cache_setup.sql` 建立據點 `10.0.0.0/8`（loadsim 回報 `10.0.0.1`）、1 個 10 MB 套件與 1 個派送（全部裝置）。一台 `endpoint-cache`（同一台電腦，`max_downloads` 200）註冊並核准到這個據點。`loadsim cache-deploy` 讓前 N 台報到取得 `package_source`，向快取下載並驗證第一個套件的大小與 SHA-256（不寫磁碟），再回報結果與來源。
+
+| 項目 | 標準 | 結果 | |
+|---|---|---|---|
+| 5,000 台從快取下載（loadsim 並行 300） | 快取從中央只下載 1 次；全部驗證成功；除了同時連線上限的 503 外沒有 5xx | **64.6 秒**，0 錯誤；快取向中央下載 **1 次**（預先下載）；`deployment_status` 5,000 筆 `source = cache`；快取與伺服器日誌沒有 ERROR／WARN | ✅ |
+| 同上期間，報到 500 次／秒 | p99 < 100ms | p50 916ms、**p99 2.60 秒**、0 錯誤 | ❌ |
+| 同上，loadsim 並行 60（參考） | — | 下載 83.9 秒；報到 p50 188ms、p99 546ms | |
+| 沒有下載時的報到 500 次／秒（基準） | — | p50 8.7ms、p99 28.0ms | |
+| 再跑一次並行 300（檔案已在快取） | 超過同時下載上限只回 503 | 73.1 秒，0 錯誤；503 重試 29 次，全部依 Retry-After 成功 | ✅ |
+| 快取停機、據點允許改向中央（500 台） | 全部改向中央完成 | 500 台全部改向中央成功（`source = central`），0 錯誤 | ✅ |
+| 快取停機、據點不允許改向中央（100 台） | 快取恢復後完成 | 停機時 100 台都是「連不上」，沒有向中央下載、沒有回報失敗；重新啟動快取後 100 台全部從快取完成，快取沒有再向中央下載 | ✅ |
+| 未被指派的裝置得到 403；撤銷的裝置最晚 5 分鐘失去存取 | — | 由整合測試涵蓋：`crates/agent/tests/e2e.rs` 的 `real_cache_serves_and_falls_back`、`crates/cache/tests/serve.rs` 的 `revoked_device_loses_access_after_ttl` | ✅ |
+
+報到延遲未達標的原因是**同一台電腦**：下載期間快取以 TLS 送出約 50 GB、loadsim 解密並計算 SHA-256，CPU 使用率 99～100%（12 個邏輯處理器全滿），中央的報到處理只能分到很少的 CPU。降低下載並行數後延遲隨之下降（並行 60 時 p99 546ms），沒有下載時 p99 28ms，與之前各期相同。第四期直接向中央下載時同樣的量測是 p99 1.35 秒。實際部署時快取在各據點自己的主機上，下載流量不經過中央；依規則照實記錄，不調整目標。
+
 ## 測試環境與限制
 
 - Intel Core i5-12400（6 核 12 緒）、24GB、Windows 11 Home。
@@ -208,4 +225,21 @@ docker exec -i em-postgres psql -U postgres -d em_load -v ON_ERROR_STOP=1 < ../.
 # 重算比較：先只 bump generation 量基準，再加入 3 條更新規則量一次
 docker exec em-postgres psql -U postgres -d em_load -c "UPDATE compliance_state SET generation = generation + 1"
 grep -a "compliance recompute finished" server.log
+```
+
+分點快取部分（`enroll` 之後即可；需要 `endpoint-cache` 的 release 版）：
+
+```bash
+./loadsim make-package --out pkg.bin --size-mb 10            # 印出 sha256 與大小
+cp pkg.bin packages/<sha256>
+docker exec -i em-postgres psql -U postgres -d em_load -v sha=<sha256> -v size=<大小> -v token=<自訂快取金鑰> < ../../tools/loadsim/cache_setup.sql
+# 註冊快取（url 的主機不能是中央憑證的名稱，所以用 localhost）。
+# Windows 上 enroll 會把資料目錄限制為 SYSTEM 與 Administrators，請在系統管理員的命令列執行
+./endpoint-cache enroll --data-dir cache-data --server https://127.0.0.1:18443 --root pki/root.pem \
+    --token <自訂快取金鑰> --name loadsim --url https://localhost:18445 --dns localhost
+# 在管理網頁的「快取」頁核准並選擇據點 loadsim，把 cache-data/config.json 的 listen 改成 127.0.0.1:18445
+./endpoint-cache run --data-dir cache-data > cache.log 2>&1 &
+./loadsim heartbeat --server https://127.0.0.1:18443 --root pki/root.pem --devices devices.json --rate 500 --secs 120 --max-p99-ms 100 &
+./loadsim cache-deploy --server https://127.0.0.1:18443 --root pki/root.pem --devices devices.json --count 5000 --concurrency 300
+grep -c "package downloaded from central" cache.log            # 應為 1
 ```
