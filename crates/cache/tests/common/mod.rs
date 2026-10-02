@@ -253,3 +253,122 @@ pub fn corrupt(e: &Env, sha: &str) {
     }
     std::fs::write(&p, b).unwrap();
 }
+
+pub struct Opts {
+    /// 快取向中央連線用的網址（None = 真實中央；可指向已關閉的埠模擬中央斷線）
+    pub central_url: Option<String>,
+    pub auth_ttl: std::time::Duration,
+    pub max_downloads: usize,
+    /// 清單過時時是否立即報到
+    pub refresh: bool,
+}
+
+impl Default for Opts {
+    fn default() -> Self {
+        Opts {
+            central_url: None,
+            auth_ttl: endpoint_cache::auth::AUTH_TTL,
+            max_downloads: 200,
+            refresh: true,
+        }
+    }
+}
+
+pub struct Running {
+    pub addr: std::net::SocketAddr,
+    pub st: endpoint_cache::server::CacheState,
+    pub slot: std::sync::Arc<endpoint_cache::server::CertSlot>,
+}
+
+/// 啟動快取：先用真實中央報到一次填好清單，再以 opts 建立狀態並監聽
+pub async fn start_cache(e: &Env, dir: &std::path::Path, opts: Opts) -> Running {
+    use endpoint_cache::{auth, fetch, server, store};
+    use std::sync::Arc;
+    let id = identity::load_identity(dir).unwrap().unwrap();
+    let live = Central::new(&e.url, &e.root_pem, Some(&id)).unwrap();
+    let catalog = Arc::new(fetch::Catalog::default());
+    catalog.replace(
+        &live
+            .checkin(&protocol::branch::CacheCheckin {
+                version: "t".into(),
+                disk_used_bytes: 0,
+                stored: vec![],
+            })
+            .await
+            .unwrap(),
+    );
+    let url = opts.central_url.clone().unwrap_or_else(|| e.url.clone());
+    let central = Arc::new(Central::new(&url, &e.root_pem, Some(&id)).unwrap());
+    let store = Arc::new(store::Store::open(&dir.join("packages"), dir).unwrap());
+    let refresh: server::Refresh = if opts.refresh {
+        let (c, cat) = (central.clone(), catalog.clone());
+        Arc::new(move || {
+            let (c, cat) = (c.clone(), cat.clone());
+            Box::pin(async move {
+                if let Ok(r) = c
+                    .checkin(&protocol::branch::CacheCheckin {
+                        version: "t".into(),
+                        disk_used_bytes: 0,
+                        stored: vec![],
+                    })
+                    .await
+                {
+                    cat.replace(&r);
+                }
+            })
+        })
+    } else {
+        Arc::new(|| Box::pin(async {}))
+    };
+    let st = server::CacheState {
+        fetcher: Arc::new(fetch::Fetcher::new(central.clone(), store.clone())),
+        central,
+        store,
+        catalog,
+        auth: Arc::new(auth::AuthCache::new(opts.auth_ttl)),
+        downloads: Arc::new(tokio::sync::Semaphore::new(opts.max_downloads)),
+        refresh,
+    };
+    let slot = server::CertSlot::new(&id).unwrap();
+    let cfg = server::tls_config(&e.root_pem, slot.clone()).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(server::serve(
+        listener,
+        cfg,
+        server::router(st.clone()),
+        100,
+    ));
+    Running { addr, st, slot }
+}
+
+/// 以某個身分（裝置或快取憑證）連快取的 client；None 表示不帶用戶端憑證
+pub fn client(e: &Env, id: Option<&Identity>) -> reqwest::Client {
+    let mut b = reqwest::Client::builder()
+        .tls_certs_only([reqwest::Certificate::from_pem(e.root_pem.as_bytes()).unwrap()]);
+    if let Some(id) = id {
+        let pem = format!("{}{}", id.chain_pem, id.key_pem);
+        b = b.identity(reqwest::Identity::from_pem(pem.as_bytes()).unwrap());
+    }
+    b.build().unwrap()
+}
+
+pub async fn get(
+    e: &Env,
+    r: &Running,
+    id: Option<&Identity>,
+    package_id: i64,
+) -> reqwest::Result<reqwest::Response> {
+    client(e, id)
+        .get(format!(
+            "https://127.0.0.1:{}/v1/packages/{package_id}/content",
+            r.addr.port()
+        ))
+        .send()
+        .await
+}
+
+pub fn dead_url() -> String {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    format!("https://127.0.0.1:{}", l.local_addr().unwrap().port())
+}
