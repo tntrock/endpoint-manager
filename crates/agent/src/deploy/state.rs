@@ -26,6 +26,9 @@ pub struct Entry {
     /// 最後一次出現在指派清單的時間：暫停期間指派會消失，不能立刻清掉紀錄
     #[serde(default)]
     pub last_seen: Option<DateTime<Utc>>,
+    /// 這個 revision 安裝成功的時間（最近 24 小時）：被其他工具一再移除時不再重裝
+    #[serde(default)]
+    pub installs: Vec<DateTime<Utc>>,
 }
 
 /// 多久沒出現在指派清單才清掉紀錄

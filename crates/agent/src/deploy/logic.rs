@@ -13,6 +13,8 @@ use super::state::Entry;
 pub const MAX_ATTEMPTS: i32 = 3;
 /// 失敗後多久再試
 pub const RETRY_AFTER_HOURS: i64 = 24;
+/// 24 小時內安裝成功幾次後（又被移除）不再重裝
+pub const MAX_REINSTALLS: usize = 3;
 
 /// 名稱與發行者樣式相符，且版本 ≥ 最低版本（有設定時）
 pub fn is_installed(d: &Detect, items: &[SoftwareItem]) -> bool {
@@ -39,6 +41,8 @@ pub enum Plan {
     Execute,
     /// 上次失敗，等到這個時間再試
     Wait(DateTime<Utc>),
+    /// 24 小時內已安裝 MAX_REINSTALLS 次又被移除：回報失敗一次，不再重裝
+    Removed,
 }
 
 pub fn decide(a: &Assignment, installed: bool, e: &Entry, now: DateTime<Utc>) -> Plan {
@@ -61,6 +65,19 @@ pub fn decide(a: &Assignment, installed: bool, e: &Entry, now: DateTime<Utc>) ->
             Plan::Nothing
         } else {
             Plan::ReportCompliant
+        };
+    }
+    if a.action == DeployAction::Install
+        && e.installs
+            .iter()
+            .filter(|t| **t > now - Duration::hours(RETRY_AFTER_HOURS))
+            .count()
+            >= MAX_REINSTALLS
+    {
+        return if e.reported == Some(DeployStatus::Failed) {
+            Plan::Nothing
+        } else {
+            Plan::Removed
         };
     }
     if e.attempts >= MAX_ATTEMPTS {
@@ -101,10 +118,27 @@ pub struct Cmd {
     pub args: String,
 }
 
-/// 用完整路徑呼叫 msiexec，避免 PATH 劫持
+/// 用完整路徑呼叫 msiexec，避免 PATH 劫持（系統目錄由 API 取得，不看可被改動的環境變數）
 fn msiexec() -> PathBuf {
-    let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
-    PathBuf::from(format!(r"{root}\System32\msiexec.exe"))
+    system_dir().join("msiexec.exe")
+}
+
+#[cfg(windows)]
+fn system_dir() -> PathBuf {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
+    let mut buf = [0u16; 260];
+    // SAFETY: 緩衝區長度正確；回傳寫入的字元數（不含結尾 0），失敗或太長時為 0 或大於長度
+    let n = unsafe { GetSystemDirectoryW(buf.as_mut_ptr(), buf.len() as u32) } as usize;
+    if n == 0 || n >= buf.len() {
+        return PathBuf::from(r"C:\Windows\System32");
+    }
+    PathBuf::from(std::ffi::OsString::from_wide(&buf[..n]))
+}
+
+#[cfg(not(windows))]
+fn system_dir() -> PathBuf {
+    PathBuf::from(r"C:\Windows\System32")
 }
 
 fn join(base: String, extra: &str) -> String {
@@ -310,6 +344,34 @@ mod tests {
     }
 
     #[test]
+    fn reinstall_limit() {
+        let now = Utc.with_ymd_and_hms(2026, 9, 30, 12, 0, 0).unwrap();
+        let a = assignment(DeployAction::Install, 1);
+        let removed = Entry {
+            revision: 1,
+            reported: Some(DeployStatus::Succeeded),
+            installs: vec![now - Duration::hours(1); 3],
+            ..Entry::default()
+        };
+        assert_eq!(decide(&a, false, &removed, now), Plan::Removed);
+        let told = Entry {
+            reported: Some(DeployStatus::Failed),
+            ..removed.clone()
+        };
+        assert_eq!(decide(&a, false, &told, now), Plan::Nothing, "只回報一次");
+        let old = Entry {
+            installs: vec![now - Duration::hours(25); 3],
+            ..removed.clone()
+        };
+        assert_eq!(decide(&a, false, &old, now), Plan::Execute, "24 小時後再試");
+        assert_eq!(
+            decide(&assignment(DeployAction::Install, 2), false, &removed, now),
+            Plan::Execute,
+            "重試失敗（新 revision）重新計算"
+        );
+    }
+
+    #[test]
     fn exit_codes() {
         let s = spec(PackageKind::Exe);
         assert_eq!(outcome(0, &s), Outcome::Status(DeployStatus::Succeeded));
@@ -334,7 +396,8 @@ mod tests {
         assert!(
             c.program
                 .to_string_lossy()
-                .ends_with(r"System32\msiexec.exe"),
+                .to_ascii_lowercase()
+                .ends_with(r"system32\msiexec.exe"),
             "{:?}",
             c.program
         );

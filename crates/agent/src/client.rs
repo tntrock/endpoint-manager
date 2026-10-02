@@ -245,10 +245,10 @@ impl ServerClient {
         Ok(())
     }
 
+    /// 回報派送結果；404（派送已刪除）也算完成
     pub async fn report(&self, deployment_id: i64, r: &DeployResult) -> Result<(), ClientError> {
-        let url = self.url(&format!("/v1/deployments/{deployment_id}/result"));
-        self.send(self.http.post(url).json(r)).await?;
-        Ok(())
+        self.post_result(&format!("/v1/deployments/{deployment_id}/result"), r)
+            .await
     }
 
     pub async fn update_status(
@@ -266,12 +266,17 @@ impl ServerClient {
         id: i64,
         r: &protocol::command::CommandResult,
     ) -> Result<(), ClientError> {
-        let resp = self
-            .http
-            .post(self.url(&format!("/v1/commands/{id}/result")))
-            .json(r)
-            .send()
-            .await?;
+        self.post_result(&format!("/v1/commands/{id}/result"), r)
+            .await
+    }
+
+    /// 送出結果；404（伺服器已沒有這筆）視為完成，不再重送
+    async fn post_result(
+        &self,
+        path: &str,
+        body: &impl serde::Serialize,
+    ) -> Result<(), ClientError> {
+        let resp = self.http.post(self.url(path)).json(body).send().await?;
         let status = resp.status();
         if status.is_success() || status == StatusCode::NOT_FOUND {
             return Ok(());
