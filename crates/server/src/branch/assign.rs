@@ -49,6 +49,9 @@ impl BranchSet {
     }
 }
 
+/// (據點, 網段, 改向中央, 快取 id, 快取網址)
+type SiteRow = (i64, Vec<String>, bool, Option<i64>, Option<String>);
+
 async fn load(pool: &PgPool) -> Result<BranchSet, sqlx::Error> {
     let mut tx = pool.begin().await?;
     // 和資料一起讀 generation：讀到一半有人改也不會把舊資料記成新 generation
@@ -58,7 +61,7 @@ async fn load(pool: &PgPool) -> Result<BranchSet, sqlx::Error> {
     let generation: i64 = sqlx::query_scalar("SELECT generation FROM branch_state")
         .fetch_one(&mut *tx)
         .await?;
-    let rows: Vec<(i64, Vec<String>, bool, Option<i64>, Option<String>)> = sqlx::query_as(
+    let rows: Vec<SiteRow> = sqlx::query_as(
         "SELECT s.id, s.cidrs::text[], s.fallback_to_central, c.id, c.url FROM sites s \
          LEFT JOIN caches c ON c.site_id = s.id AND c.status = 'active' ORDER BY s.id",
     )
