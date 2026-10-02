@@ -8,6 +8,15 @@ use chrono::{DateTime, Utc};
 
 use super::auth::{AdminSession, Nav, Session, check_csrf};
 use super::commands::{actor, command_error};
+use crate::commands::{CmdError, cmd_error_kind};
+
+/// 輸入或狀態問題：重新顯示表單；權限與其他錯誤交給 command_error
+fn is_form_error(e: &anyhow::Error) -> bool {
+    matches!(
+        cmd_error_kind(e),
+        Some(CmdError::Invalid(_) | CmdError::Conflict(_) | CmdError::NotFound(_))
+    )
+}
 use super::devices::db_error;
 use super::{fmt_time, forbidden, not_found, render};
 use crate::AppState;
@@ -97,7 +106,7 @@ pub async fn settings(
     platform(&s)?;
     scripts::set_require_second_approver(&st.pool, require, &actor(&s))
         .await
-        .map_err(|e| command_error(e, StatusCode::CONFLICT))?;
+        .map_err(command_error)?;
     Ok(Redirect::to("/scripts").into_response())
 }
 
@@ -193,8 +202,8 @@ pub async fn create(
     };
     match scripts::create_script(&st.pool, &input, &actor(&s)).await {
         Ok(id) => Ok(Redirect::to(&format!("/scripts/{id}")).into_response()),
-        Err(e) if crate::commands::is_forbidden(&e) => Err(forbidden()),
-        Err(e) => Ok(invalid(&s, None, f, format!("{e:#}"))),
+        Err(e) if is_form_error(&e) => Ok(invalid(&s, None, f, format!("{e:#}"))),
+        Err(e) => Err(command_error(e)),
     }
 }
 
@@ -331,8 +340,8 @@ pub async fn update(
     };
     match scripts::update_script(&st.pool, id, &input, &actor(&s)).await {
         Ok(()) => Ok(Redirect::to(&format!("/scripts/{id}")).into_response()),
-        Err(e) if crate::commands::is_forbidden(&e) => Err(forbidden()),
-        Err(e) => Ok(invalid(&s, Some(id), f, format!("{e:#}"))),
+        Err(e) if is_form_error(&e) => Ok(invalid(&s, Some(id), f, format!("{e:#}"))),
+        Err(e) => Err(command_error(e)),
     }
 }
 
@@ -361,18 +370,18 @@ pub async fn act(
         // 核准畫面上看到的版本：內容雜湊與逾時都要相符（表單沒帶逾時就不核准）
         "approve" => match timeout {
             Some(t) => scripts::approve_version(pool, id, &sha, Some(t), &a).await,
-            None => Err(anyhow::anyhow!("腳本內容已變更，請重新檢視後再核准")),
+            None => Err(CmdError::Conflict("腳本內容已變更，請重新檢視後再核准".into()).into()),
         },
         "disable" => scripts::set_disabled(pool, id, true, &a).await,
         "enable" => scripts::set_disabled(pool, id, false, &a).await,
         "delete" => {
             scripts::delete_script(pool, id, &a)
                 .await
-                .map_err(|e| command_error(e, StatusCode::CONFLICT))?;
+                .map_err(command_error)?;
             return Ok(Redirect::to("/scripts").into_response());
         }
         _ => return Err(not_found()),
     };
-    r.map_err(|e| command_error(e, StatusCode::CONFLICT))?;
+    r.map_err(command_error)?;
     Ok(Redirect::to(&format!("/scripts/{id}")).into_response())
 }

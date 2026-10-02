@@ -40,10 +40,12 @@ pub fn script_args(path: &Path) -> String {
 }
 
 impl CommandHost for WindowsHost {
-    fn collect_all(&self) {
+    async fn collect_all(&self) {
         for s in Section::ALL {
-            // 通道滿了代表已有大量觸發排隊，丟掉也會在下一輪收集
-            let _ = self.triggers.try_send(s);
+            // 等待送出：佇列滿時不丟掉區段；通道關閉（Agent 正在停止）時略過
+            if self.triggers.send(s).await.is_err() {
+                return;
+            }
         }
     }
 

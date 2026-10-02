@@ -19,3 +19,7 @@ WHERE d.status = 'active' AND d.group_id = (SELECT id FROM device_groups WHERE n
 COMMIT;
 \timing off
 SELECT count(*) AS targets FROM command_targets;
+-- 量完後把裝置移回原本的群組（這裡把它們改回未分組；原本有群組的話請自行調整）：
+--   UPDATE devices SET group_id = NULL WHERE group_id = (SELECT id FROM device_groups WHERE name = 'load cmd');
+--   DELETE FROM device_groups WHERE name = 'load cmd';
+-- 執行 loadsim commands 時用 --expect 5000 確認回報成功的台數。

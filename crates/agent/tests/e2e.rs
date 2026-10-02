@@ -1798,7 +1798,7 @@ mod commands {
     }
 
     impl CommandHost for FakeHost {
-        fn collect_all(&self) {
+        async fn collect_all(&self) {
             self.calls.lock().unwrap().push("collect".into());
         }
         fn apply_now(&self) {
@@ -1978,6 +1978,47 @@ mod commands {
             .await
             .unwrap();
         id
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn immediate_reboot_runs_after_scripts_in_the_same_batch(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let mut s = setup(&e).await;
+        runs::create_run(
+            &e.pool,
+            &RunInput {
+                action: "reboot".into(),
+                target: Target::Device(s.device),
+                delay_minutes: Some(0),
+                script_id: None,
+                expires_hours: 24,
+            },
+            &admin("admin"),
+        )
+        .await
+        .unwrap();
+        let sid = approved_script(&e, "Write-Output before reboot").await;
+        command(&e, s.device, "script", Some(sid)).await;
+        let w = work(&mut s).await;
+        assert_eq!(w.commands.len(), 2);
+        CommandWorker::new(e.dir.path(), s.host.clone())
+            .pass(&w)
+            .await;
+        let c = calls(&s);
+        assert_eq!(c.len(), 2, "{c:?}");
+        assert!(c[0].starts_with("script "), "腳本先執行：{c:?}");
+        assert!(c[1].starts_with("shutdown /r /t 0 "), "{c:?}");
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn leftover_scripts_are_removed_on_start(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let s = setup(&e).await;
+        let dir = e.dir.path().join("scripts");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("42.ps1"), "Remove-Item C:\\").unwrap();
+        let _worker = CommandWorker::new(e.dir.path(), s.host.clone());
+        assert!(!dir.join("42.ps1").exists());
     }
 
     #[sqlx::test(migrations = false)]

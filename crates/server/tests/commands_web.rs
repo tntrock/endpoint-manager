@@ -475,3 +475,250 @@ async fn command_list_paginates(pool: PgPool) {
     assert_eq!(html.matches("<a href=\"/commands/").count(), 5);
     assert!(html.contains("第1筆<") && html.contains("第5筆<"), "{html}");
 }
+
+/// 讓某張表的 INSERT 一定失敗（模擬資料庫錯誤；錯誤訊息含內部細節）
+async fn break_inserts(s: &TestServer, table: &str) {
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "CREATE OR REPLACE FUNCTION fail_insert() RETURNS trigger LANGUAGE plpgsql AS $$ \
+         BEGIN RAISE EXCEPTION 'internal secret detail'; END $$; \
+         CREATE TRIGGER fail_insert BEFORE INSERT ON {table} \
+         FOR EACH ROW EXECUTE FUNCTION fail_insert();"
+    )))
+    .execute(&s.pool)
+    .await
+    .unwrap();
+}
+
+#[sqlx::test(migrations = false)]
+async fn internal_errors_are_500_and_input_errors_422(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    s.enroll_ok(&s.create_group_token("台北", 1).await, None, None)
+        .await;
+    let tp = s.group_id("台北").await.to_string();
+    let admin = s.admin_client().await;
+    let csrf = csrf_from(&s.page(&admin, "/commands").await.1);
+    // 延遲不是整數
+    let (st, _, body) = post(
+        &s,
+        &admin,
+        "/commands",
+        &[
+            ("csrf", &csrf),
+            ("action", "reboot"),
+            ("group_id", &tp),
+            ("delay_minutes", "abc"),
+            ("expires_hours", "24"),
+        ],
+    )
+    .await;
+    assert_eq!(st, 422, "{body}");
+    assert!(body.contains("延遲"), "{body}");
+    // 資料庫錯誤：500，不顯示內部細節
+    break_inserts(&s, "command_runs").await;
+    let (st, _, body) = post(
+        &s,
+        &admin,
+        "/commands",
+        &[
+            ("csrf", &csrf),
+            ("action", "collect"),
+            ("group_id", &tp),
+            ("expires_hours", "24"),
+        ],
+    )
+    .await;
+    assert_eq!(st, 500, "{body}");
+    assert!(!body.contains("secret"), "{body}");
+    break_inserts(&s, "scripts").await;
+    let (st, _, body) = post(
+        &s,
+        &admin,
+        "/scripts",
+        &[
+            ("csrf", &csrf),
+            ("name", "x"),
+            ("description", ""),
+            ("content", "dir"),
+            ("timeout_minutes", "30"),
+        ],
+    )
+    .await;
+    assert_eq!(st, 500, "{body}");
+    assert!(!body.contains("secret"), "{body}");
+}
+
+async fn report(s: &TestServer, a: &common::TestAgent, target: i64, output: &str) {
+    let st = s
+        .client(Some(a))
+        .post(s.url(&format!("/v1/commands/{target}/result")))
+        .json(&serde_json::json!({"status": "succeeded", "exit_code": 0, "output": output}))
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(st, 204);
+}
+
+async fn target_of(s: &TestServer, run: i64, device: uuid::Uuid) -> i64 {
+    sqlx::query_scalar("SELECT id FROM command_targets WHERE run_id = $1 AND device_id = $2")
+        .bind(run)
+        .bind(device)
+        .fetch_one(&s.pool)
+        .await
+        .unwrap()
+}
+
+#[sqlx::test(migrations = false)]
+async fn detail_filters_cancel_and_scope(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_group_token("台北", 3).await;
+    let mut devs = vec![];
+    for _ in 0..3 {
+        devs.push(s.enroll_ok(&tok, None, None).await);
+    }
+    let tp = s.group_id("台北").await.to_string();
+    let admin = s.admin_client().await;
+    let csrf = csrf_from(&s.page(&admin, "/commands").await.1);
+    let (_, loc, _) = post(
+        &s,
+        &admin,
+        "/commands",
+        &[
+            ("csrf", &csrf),
+            ("action", "collect"),
+            ("group_id", &tp),
+            ("expires_hours", "24"),
+        ],
+    )
+    .await;
+    let run: i64 = loc.rsplit('/').next().unwrap().parse().unwrap();
+    // 一台回報成功（輸出含 <script>）
+    let t0 = target_of(&s, run, devs[0].device_id).await;
+    report(&s, &devs[0], t0, "<script>alert(1)</script>").await;
+    // 等待中篩選：只列另外兩台
+    let (_, html) = s.page(&admin, &format!("{loc}?status=waiting")).await;
+    assert!(html.contains("等待中：2"), "{html}");
+    assert!(!html.contains(&devs[0].device_id.to_string()), "{html}");
+    assert!(html.contains(&devs[1].device_id.to_string()));
+    let (_, html) = s.page(&admin, &format!("{loc}?status=succeeded")).await;
+    assert!(
+        html.contains("&#60;script&#62;alert(1)") && !html.contains("<script>alert(1)"),
+        "輸出要跳脫：{html}"
+    );
+    // 混合範圍：一台移到高雄後，台北的群組管理員只看到 2 台
+    let kg = s.group_id("高雄").await;
+    sqlx::query("UPDATE devices SET group_id = $1 WHERE id = $2")
+        .bind(kg)
+        .bind(devs[2].device_id)
+        .execute(&s.pool)
+        .await
+        .unwrap();
+    let gary = s.login_as("gary", Role::GroupAdmin, &["台北"]).await;
+    let (_, html) = s.page(&gary, &loc).await;
+    assert!(html.contains("全部：2"), "{html}");
+    assert!(!html.contains(&devs[2].device_id.to_string()), "{html}");
+    let (_, html) = s.page(&admin, &loc).await;
+    assert!(html.contains("全部：3"), "{html}");
+    // 全部完成後沒有取消按鈕，POST 取消 409
+    sqlx::query(
+        "UPDATE command_targets SET status = 'succeeded', finished_at = now() WHERE run_id = $1",
+    )
+    .bind(run)
+    .execute(&s.pool)
+    .await
+    .unwrap();
+    let (_, html) = s.page(&admin, &loc).await;
+    assert!(!html.contains("/cancel"), "{html}");
+    let (st, _, _) = post(&s, &admin, &format!("{loc}/cancel"), &[("csrf", &csrf)]).await;
+    assert_eq!(st, 409);
+}
+
+#[sqlx::test(migrations = false)]
+async fn list_shows_canceled_and_runs_without_devices(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_group_token("台北", 2).await;
+    let a = s.enroll_ok(&tok, None, None).await;
+    let b = s.enroll_ok(&tok, None, None).await;
+    let admin = s.admin_client().await;
+    let csrf = csrf_from(&s.page(&admin, "/commands").await.1);
+    let mut runs = vec![];
+    for d in [&a, &b] {
+        let (st, loc, _) = post(
+            &s,
+            &admin,
+            &format!("/devices/{}/commands", d.device_id),
+            &[
+                ("csrf", &csrf),
+                ("action", "collect"),
+                ("expires_hours", "24"),
+            ],
+        )
+        .await;
+        assert_eq!(st, 303, "{loc}");
+        runs.push(run_of_target_device(&s, d.device_id).await);
+    }
+    // 取消第一個：清單標示已取消
+    let (st, _, _) = post(
+        &s,
+        &admin,
+        &format!("/commands/{}/cancel", runs[0]),
+        &[("csrf", &csrf)],
+    )
+    .await;
+    assert_eq!(st, 303);
+    let (_, html) = s.page(&admin, "/commands").await;
+    assert!(html.contains("（已取消）"), "{html}");
+    // 第二個的裝置被刪除：平台管理員仍看得到，群組管理員看不到
+    // 產品中只有核准重灌時會刪除裝置（憑證先移給原裝置）
+    for q in [
+        "DELETE FROM device_certs WHERE device_id = $1",
+        "DELETE FROM devices WHERE id = $1",
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(q))
+            .bind(b.device_id)
+            .execute(&s.pool)
+            .await
+            .unwrap();
+    }
+    let (_, html) = s.page(&admin, "/commands").await;
+    assert!(html.contains(&format!("/commands/{}\"", runs[1])), "{html}");
+    assert_eq!(
+        s.page(&admin, &format!("/commands/{}", runs[1])).await.0,
+        200
+    );
+    let gary = s.login_as("gary", Role::GroupAdmin, &["台北"]).await;
+    assert_eq!(
+        s.page(&gary, &format!("/commands/{}", runs[1])).await.0,
+        404
+    );
+}
+
+#[sqlx::test(migrations = false)]
+async fn script_content_keeps_leading_newline(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let admin = s.admin_client().await;
+    let csrf = csrf_from(&s.page(&admin, "/scripts/new").await.1);
+    let (st, loc, _) = post(
+        &s,
+        &admin,
+        "/scripts",
+        &[
+            ("csrf", &csrf),
+            ("name", "開頭換行"),
+            ("description", ""),
+            ("content", "\nWrite-Output hi"),
+            ("timeout_minutes", "30"),
+        ],
+    )
+    .await;
+    assert_eq!(st, 303);
+    let (_, html) = s.page(&admin, &format!("{loc}/edit")).await;
+    // 瀏覽器會忽略 <textarea> 後的第一個換行：範本多放一個，內容開頭的換行才保留
+    let start = html.find("<textarea name=\"content\"").unwrap();
+    let after = &html[html[start..].find('>').unwrap() + start + 1..];
+    assert!(
+        after.starts_with("\n\nWrite-Output hi"),
+        "{:?}",
+        &after[..30]
+    );
+}

@@ -819,3 +819,155 @@ async fn device_targets_index_exists(pool: PgPool) {
     .unwrap();
     assert_eq!(n, 1);
 }
+
+fn kind(e: &anyhow::Error) -> &'static str {
+    use endpoint_server::commands::{CmdError, cmd_error_kind};
+    match cmd_error_kind(e) {
+        Some(CmdError::Forbidden(_)) => "forbidden",
+        Some(CmdError::Invalid(_)) => "invalid",
+        Some(CmdError::NotFound(_)) => "not_found",
+        Some(CmdError::Conflict(_)) => "conflict",
+        None => "other",
+    }
+}
+
+/// 權限先於驗證與存在檢查；錯誤有型別（網頁依此決定狀態碼）
+#[sqlx::test(migrations = false)]
+async fn errors_are_typed_and_scope_comes_first(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let f = fleet(&s).await;
+    let admin = platform("admin");
+    let gary = Actor {
+        username: "gary".into(),
+        platform: false,
+        groups: vec![f.tp],
+    };
+    // 群組管理員送腳本：不論其他欄位，一律 403
+    let e = runs::create_run(
+        &s.pool,
+        &RunInput {
+            script_id: Some(99_999),
+            expires_hours: 0,
+            ..run("script", Target::Group(99_999))
+        },
+        &gary,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(kind(&e), "forbidden", "{e:#}");
+    // 不存在與範圍外的群組：同樣的 403 與訊息
+    let missing = runs::create_run(&s.pool, &run("collect", Target::Group(99_999)), &gary)
+        .await
+        .unwrap_err();
+    let outside = runs::create_run(&s.pool, &run("collect", Target::Group(f.ks)), &gary)
+        .await
+        .unwrap_err();
+    assert_eq!((kind(&missing), kind(&outside)), ("forbidden", "forbidden"));
+    assert_eq!(err(missing), err(outside), "訊息不洩漏群組是否存在");
+    let e = runs::create_run(
+        &s.pool,
+        &run("collect", Target::Device(uuid::Uuid::new_v4())),
+        &gary,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(kind(&e), "forbidden");
+    // 平台管理員才看得到「不存在」
+    let e = runs::create_run(&s.pool, &run("collect", Target::Group(99_999)), &admin)
+        .await
+        .unwrap_err();
+    assert_eq!(kind(&e), "not_found", "{e:#}");
+    // 輸入錯誤
+    let e = runs::create_run(
+        &s.pool,
+        &RunInput {
+            delay_minutes: Some(61),
+            ..run("reboot", Target::Group(f.tp))
+        },
+        &admin,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(kind(&e), "invalid", "{e:#}");
+    // 全部完成的指令不能取消
+    let (id, _) = runs::create_run(&s.pool, &run("collect", Target::Group(f.tp)), &admin)
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE command_targets SET status = 'succeeded', finished_at = now() WHERE run_id = $1",
+    )
+    .bind(id)
+    .execute(&s.pool)
+    .await
+    .unwrap();
+    let e = runs::cancel_run(&s.pool, id, &admin).await.unwrap_err();
+    assert_eq!(kind(&e), "conflict", "{e:#}");
+    // 腳本：找不到是 not_found，內容格式是 invalid
+    let e = scripts::update_script(&s.pool, 99_999, &input("dir"), &admin)
+        .await
+        .unwrap_err();
+    assert_eq!(kind(&e), "not_found", "{e:#}");
+    let e = scripts::create_script(&s.pool, &input(""), &admin)
+        .await
+        .unwrap_err();
+    assert_eq!(kind(&e), "invalid", "{e:#}");
+}
+
+#[sqlx::test(migrations = false)]
+async fn data_integrity_audit_and_format_chars(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let f = fleet(&s).await;
+    let admin = platform("admin");
+    // CHECK：延遲只用於重新開機／關機；腳本快照欄位只用於腳本
+    let bad = sqlx::query(
+        "INSERT INTO command_runs (action, delay_minutes, target_label, created_by, expires_at) \
+         VALUES ('collect', 5, 'x', 'admin', now() + interval '1 day')",
+    )
+    .execute(&s.pool)
+    .await;
+    assert!(bad.is_err(), "collect 不能有延遲");
+    // 稽核：更新腳本記錄舊的 sha256；切換雙人核准記錄舊值
+    let id = scripts::create_script(&s.pool, &input("dir"), &admin)
+        .await
+        .unwrap();
+    scripts::update_script(&s.pool, id, &input("dir C:\\"), &admin)
+        .await
+        .unwrap();
+    let detail: serde_json::Value = sqlx::query_scalar(
+        "SELECT detail FROM audit_log WHERE action = 'script_update' ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&s.pool)
+    .await
+    .unwrap();
+    assert_eq!(detail["old_sha256"], sha("dir"), "{detail}");
+    scripts::set_require_second_approver(&s.pool, false, &admin)
+        .await
+        .unwrap();
+    let detail: serde_json::Value = sqlx::query_scalar(
+        "SELECT detail FROM audit_log WHERE action = 'setting_scripts_second_approver' ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&s.pool)
+    .await
+    .unwrap();
+    assert_eq!(detail["old"], true, "{detail}");
+    // Agent 回報的輸出移除格式字元（例如 U+202E 反轉方向）
+    let a = &f.tp_dev[0];
+    let (_rid, _) = runs::create_run(
+        &s.pool,
+        &run("collect", Target::Device(a.device_id)),
+        &admin,
+    )
+    .await
+    .unwrap();
+    let cmd = checkin(&s, a).await.commands[0].id;
+    let st = report(
+        &s,
+        a,
+        cmd,
+        serde_json::json!({"status": "succeeded", "exit_code": 0, "output": "ok\u{202E}txt.exe\n第二行\t😀"}),
+    )
+    .await;
+    assert_eq!(st, 204);
+    let (_, _, output) = target_state(&s.pool, cmd).await;
+    assert_eq!(output, "oktxt.exe\n第二行\t😀");
+}

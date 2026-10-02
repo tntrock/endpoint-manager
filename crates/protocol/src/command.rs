@@ -126,9 +126,62 @@ pub fn tail_utf8(s: &str, max: usize) -> &str {
     &s[start..]
 }
 
+/// Unicode 格式字元（類別 Cf），例如 U+202E 會反轉之後文字的顯示方向，可用來偽裝檔名或指令
+fn is_format_char(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x00AD
+            | 0x0600..=0x0605
+            | 0x061C
+            | 0x06DD
+            | 0x070F
+            | 0x0890..=0x0891
+            | 0x08E2
+            | 0x180E
+            // 200C／200D（ZWNJ／ZWJ）是 emoji 序列與部分文字的一部分，保留
+            | 0x200B
+            | 0x200E..=0x200F
+            | 0x202A..=0x202E
+            | 0x2060..=0x2064
+            | 0x2066..=0x206F
+            | 0xFEFF
+            | 0xFFF9..=0xFFFB
+            | 0x110BD
+            | 0x110CD
+            | 0x13430..=0x1343F
+            | 0x1BCA0..=0x1BCA3
+            | 0x1D173..=0x1D17A
+            // E0020–E007F（tag）組成地區旗幟 emoji，保留
+            | 0xE0001
+    )
+}
+
+/// 移除 Unicode 格式字元；換行、Tab 與一般文字（含中文、emoji）不受影響
+pub fn strip_format_chars(s: &str) -> String {
+    s.chars().filter(|c| !is_format_char(*c)).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn format_chars_are_stripped() {
+        assert_eq!(
+            strip_format_chars("a\u{202E}b\u{200B}c\u{FEFF}d\u{2066}e"),
+            "abcde"
+        );
+        let keep = "第一行\n\t中文 😀 é";
+        assert_eq!(strip_format_chars(keep), keep);
+        // ZWJ／ZWNJ 與 tag 字元是 emoji 序列與部分文字的一部分，要保留
+        for keep in [
+            "👨\u{200D}👩\u{200D}👧",
+            "می\u{200C}خواهم",
+            "🏴\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}",
+        ] {
+            assert_eq!(strip_format_chars(keep), keep);
+        }
+    }
 
     fn result(status: CommandStatus, output: String) -> CommandResult {
         CommandResult {

@@ -9,7 +9,7 @@ use chrono::Utc;
 use protocol::command::{Command, CommandAction, CommandResult, CommandStatus};
 use tokio::sync::watch;
 
-use super::logic::{INTERRUPTED, Step, shutdown_args, step, verify_script};
+use super::logic::{INTERRUPTED, Step, order, shutdown_args, step, timeout_output, verify_script};
 use super::state::{CommandsState, Entry};
 use crate::client::{ClientError, ServerClient};
 use crate::deploy::worker::{RunOutput, RunResult};
@@ -29,7 +29,7 @@ pub struct CommandWork {
 /// 指令實際作用的對象（Windows 實作在 `windows::commands`；測試用假的）
 pub trait CommandHost: Send + Sync + 'static {
     /// 要求報到迴圈下一輪重新收集所有區段
-    fn collect_all(&self);
+    fn collect_all(&self) -> impl Future<Output = ()> + Send;
     /// 喚醒派送與更新原則的背景工作
     fn apply_now(&self);
     /// 執行 shutdown.exe（參數由 `logic::shutdown_args` 產生）
@@ -66,6 +66,14 @@ fn failed(output: impl Into<String>) -> CommandResult {
 
 impl<H: CommandHost> CommandWorker<H> {
     pub fn new(dir: &Path, host: Arc<H>) -> Self {
+        // 上次執行到一半（服務停止、重新開機）留下的腳本檔：那筆指令已記為執行中斷，不會再用到
+        if let Ok(entries) = std::fs::read_dir(dir.join("scripts")) {
+            for e in entries.flatten() {
+                if let Err(err) = std::fs::remove_file(e.path()) {
+                    tracing::warn!(error = %err, path = %e.path().display(), "commands: removing leftover script failed");
+                }
+            }
+        }
         CommandWorker {
             dir: dir.to_path_buf(),
             host,
@@ -120,7 +128,7 @@ impl<H: CommandHost> CommandWorker<H> {
         let client = ServerClient::new(&w.server_url, &w.root_pem, w.identity_pem.clone())
             .map_err(|e| tracing::warn!(error = %format!("{e:#}"), "commands: no client"))
             .ok();
-        for c in &w.commands {
+        for c in order(&w.commands) {
             match step(self.state.entries.get(&c.id)) {
                 Step::Done => {}
                 Step::Report(r) => {
@@ -135,7 +143,8 @@ impl<H: CommandHost> CommandWorker<H> {
             }
         }
         let before = self.state.clone();
-        self.state.prune(Utc::now());
+        let ids: Vec<i64> = w.commands.iter().map(|c| c.id).collect();
+        self.state.prune(&ids, Utc::now());
         if self.state != before {
             self.save();
         }
@@ -162,7 +171,7 @@ impl<H: CommandHost> CommandWorker<H> {
         }
         let r = match c.action {
             CommandAction::Collect => {
-                self.host.collect_all();
+                self.host.collect_all().await;
                 ok("已要求重新收集盤點")
             }
             CommandAction::Apply => {
@@ -228,13 +237,7 @@ impl<H: CommandHost> CommandWorker<H> {
             Ok(RunOutput {
                 result: RunResult::TimedOut,
                 output,
-            }) => {
-                let text = format!("逾時（{minutes} 分鐘）\n{output}");
-                failed(protocol::command::tail_utf8(
-                    &text,
-                    protocol::command::MAX_OUTPUT_BYTES,
-                ))
-            }
+            }) => failed(timeout_output(minutes, &output)),
             Err(e) => failed(format!("無法執行 PowerShell：{e}")),
         }
     }
