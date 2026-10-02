@@ -6,7 +6,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use sqlx::{PgConnection, PgPool};
 
-use super::Actor;
+use super::{Actor, Forbidden};
 use crate::audit;
 
 pub const MAX_NAME_LEN: usize = 100;
@@ -28,7 +28,9 @@ struct Valid {
 }
 
 fn platform(actor: &Actor) -> anyhow::Result<()> {
-    ensure!(actor.platform, "只有平台管理員能管理腳本");
+    if !actor.platform {
+        return Err(Forbidden("只有平台管理員能管理腳本".into()).into());
+    }
     Ok(())
 }
 
@@ -267,10 +269,9 @@ pub async fn approve_script(
         s.status == "pending" || reapprove,
         "只有待核准的腳本可以核准"
     );
-    ensure!(
-        !second || !s.editors.contains(&actor.username),
-        "不能核准自己修改的腳本，請由另一位平台管理員核准"
-    );
+    if second && s.editors.contains(&actor.username) {
+        return Err(Forbidden("不能核准自己修改的腳本，請由另一位平台管理員核准".into()).into());
+    }
     sqlx::query(
         "UPDATE scripts SET status = 'approved', approved_by = $2, approved_at = now() \
          WHERE id = $1",
