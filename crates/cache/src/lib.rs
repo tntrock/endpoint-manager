@@ -5,5 +5,9 @@ pub mod central;
 pub mod config;
 pub mod fetch;
 pub mod identity;
+pub mod logfile;
+pub mod run;
 pub mod server;
+#[cfg(windows)]
+pub mod service;
 pub mod store;
