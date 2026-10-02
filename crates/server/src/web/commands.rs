@@ -198,9 +198,13 @@ async fn list_page(
     error: Option<String>,
 ) -> Result<ListPage, sqlx::Error> {
     let page = page.clamp(0, super::devices::MAX_PAGE);
-    let rows: Vec<RunDbRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "{} LIMIT $3 OFFSET $4",
-        runs_sql("")
+    // 先挑出這一頁的指令（範圍內至少有一台），再只對這些指令計數：不必每次彙總整張表
+    let rows: Vec<RunDbRow> = sqlx::query_as(sqlx::AssertSqlSafe(runs_sql(
+        "AND r.id IN (SELECT p.id FROM command_runs p \
+           WHERE $1::bool OR EXISTS (SELECT 1 FROM command_targets pt \
+             JOIN devices pv ON pv.id = pt.device_id \
+             WHERE pt.run_id = p.id AND pv.group_id = ANY($2::bigint[])) \
+           ORDER BY p.id DESC LIMIT $3 OFFSET $4)",
     )))
     .bind(s.all_devices())
     .bind(&s.groups)

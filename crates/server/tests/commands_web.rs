@@ -115,7 +115,7 @@ async fn scripts_two_person_flow(pool: PgPool) {
         &s,
         &bob,
         &format!("/scripts/{id}/approve"),
-        &[("csrf", &bcsrf), ("sha256", &page_sha(&html))],
+        &[("csrf", &bcsrf), ("sha256", &page_sha(&html)), ("timeout_minutes", "30")],
     )
     .await;
     assert_eq!(st, 303);
@@ -140,7 +140,7 @@ async fn scripts_two_person_flow(pool: PgPool) {
         &s,
         &alice,
         &format!("/scripts/{id}/approve"),
-        &[("csrf", &csrf), ("sha256", &page_sha(&html))],
+        &[("csrf", &csrf), ("sha256", &page_sha(&html)), ("timeout_minutes", "30")],
     )
     .await;
     assert_eq!(st, 403);
@@ -388,4 +388,82 @@ async fn command_pages_scope_and_actions(pool: PgPool) {
     )
     .await;
     assert!(st >= 400, "{st}");
+}
+
+/// 核准者看到逾時 30，別人在核准前改成 120（內容雜湊不變）：不能核准沒看過的版本
+#[sqlx::test(migrations = false)]
+async fn approve_rejects_changed_timeout(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let alice = s.login_as("alice", Role::Platform, &[]).await;
+    let bob = s.login_as("bob", Role::Platform, &[]).await;
+    let (_, html) = s.page(&alice, "/scripts/new").await;
+    let csrf = csrf_from(&html);
+    let form = |timeout: &'static str| {
+        vec![
+            ("csrf", csrf.clone()),
+            ("name", "清暫存".to_string()),
+            ("description", String::new()),
+            ("content", "dir".to_string()),
+            ("timeout_minutes", timeout.to_string()),
+        ]
+    };
+    let f = form("30");
+    let f: Vec<(&str, &str)> = f.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let (_, loc, _) = post(&s, &alice, "/scripts", &f).await;
+    let id = loc.rsplit('/').next().unwrap().to_string();
+    let (_, html) = s.page(&bob, &loc).await;
+    let bcsrf = csrf_from(&html);
+    let seen_sha = page_sha(&html);
+    assert!(
+        html.contains("name=\"timeout_minutes\" value=\"30\""),
+        "核准表單帶上顯示的逾時：{html}"
+    );
+    let f = form("120");
+    let f: Vec<(&str, &str)> = f.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let (st, _, _) = post(&s, &alice, &format!("/scripts/{id}/edit"), &f).await;
+    assert_eq!(st, 303);
+    let (st, _, body) = post(
+        &s,
+        &bob,
+        &format!("/scripts/{id}/approve"),
+        &[
+            ("csrf", &bcsrf),
+            ("sha256", &seen_sha),
+            ("timeout_minutes", "30"),
+        ],
+    )
+    .await;
+    assert_eq!(st, 409, "{body}");
+    assert!(body.contains("內容已變更"), "{body}");
+    assert_eq!(script_status(&s, &id).await, "pending");
+}
+
+/// 指令清單分頁：先挑出這一頁的指令再計數，結果與逐筆相同
+#[sqlx::test(migrations = false)]
+async fn command_list_paginates(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let a = s
+        .enroll_ok(&s.create_group_token("台北", 1).await, None, None)
+        .await;
+    sqlx::query(
+        "WITH r AS (INSERT INTO command_runs (action, target_label, created_by, expires_at) \
+           SELECT 'collect', '第' || i || '筆', 'admin', now() + interval '1 day' \
+           FROM generate_series(1, 55) i RETURNING id) \
+         INSERT INTO command_targets (run_id, device_id) SELECT id, $1 FROM r",
+    )
+    .bind(a.device_id)
+    .execute(&s.pool)
+    .await
+    .unwrap();
+    let admin = s.admin_client().await;
+    let (_, html) = s.page(&admin, "/commands").await;
+    assert_eq!(html.matches("<a href=\"/commands/").count(), 50);
+    assert!(
+        html.contains("第55筆") && !html.contains("第5筆<"),
+        "{html}"
+    );
+    assert!(html.contains("/commands?page=1"));
+    let (_, html) = s.page(&admin, "/commands?page=1").await;
+    assert_eq!(html.matches("<a href=\"/commands/").count(), 5);
+    assert!(html.contains("第1筆<") && html.contains("第5筆<"), "{html}");
 }

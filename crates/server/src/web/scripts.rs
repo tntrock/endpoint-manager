@@ -344,10 +344,12 @@ pub async fn act(
 ) -> Result<Response, Response> {
     let mut csrf = String::new();
     let mut sha = String::new();
+    let mut timeout: Option<i32> = None;
     for (k, v) in form_urlencoded::parse(&raw) {
         match k.as_ref() {
             "csrf" => csrf = v.into_owned(),
             "sha256" => sha = v.into_owned(),
+            "timeout_minutes" => timeout = v.trim().parse().ok(),
             _ => {}
         }
     }
@@ -356,7 +358,11 @@ pub async fn act(
     let a = actor(&s);
     let pool = &st.pool;
     let r = match action.as_str() {
-        "approve" => scripts::approve_script(pool, id, &sha, &a).await,
+        // 核准畫面上看到的版本：內容雜湊與逾時都要相符（表單沒帶逾時就不核准）
+        "approve" => match timeout {
+            Some(t) => scripts::approve_version(pool, id, &sha, Some(t), &a).await,
+            None => Err(anyhow::anyhow!("腳本內容已變更，請重新檢視後再核准")),
+        },
         "disable" => scripts::set_disabled(pool, id, true, &a).await,
         "enable" => scripts::set_disabled(pool, id, false, &a).await,
         "delete" => {

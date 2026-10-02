@@ -252,13 +252,25 @@ pub async fn approve_script(
     expected_sha256: &str,
     actor: &Actor,
 ) -> anyhow::Result<()> {
+    approve_version(pool, id, expected_sha256, None, actor).await
+}
+
+/// 網頁核准：除了內容雜湊，也比對核准者看到的逾時（逾時改了也要重新核准，雜湊卻不變）
+pub async fn approve_version(
+    pool: &PgPool,
+    id: i64,
+    expected_sha256: &str,
+    expected_timeout: Option<i32>,
+    actor: &Actor,
+) -> anyhow::Result<()> {
     platform(actor)?;
     let second = require_second_approver(pool).await?;
     let mut tx = pool.begin().await?;
     let s = lock(&mut tx, id).await?;
     let (name, sha) = (s.name.clone(), s.sha256.clone());
     ensure!(
-        sha == expected_sha256.to_ascii_lowercase(),
+        sha == expected_sha256.to_ascii_lowercase()
+            && expected_timeout.is_none_or(|t| t == s.timeout),
         "腳本內容已變更，請重新檢視後再核准"
     );
     // 雙人核准下，自己核准過的（例如單人模式時）可以由另一位重新核准

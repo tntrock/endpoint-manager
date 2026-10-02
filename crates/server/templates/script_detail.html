@@ -13,7 +13,7 @@
   <tr><th>被指令使用</th><td>{{ used }} 次</td></tr>
 </table>
 <div class="actions">
-  {% if can_approve %}<form method="post" action="/scripts/{{ id }}/approve"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><input type="hidden" name="sha256" value="{{ sha256 }}"><button>核准這個版本</button></form>{% endif %}
+  {% if can_approve %}<form method="post" action="/scripts/{{ id }}/approve"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><input type="hidden" name="sha256" value="{{ sha256 }}"><input type="hidden" name="timeout_minutes" value="{{ timeout_minutes }}"><button>核准這個版本</button></form>{% endif %}
   {% if needs_other %}<span class="muted">需由另一位平台管理員核准（你修改過這個版本）。</span>{% endif %}
   <form method="get" action="/scripts/{{ id }}/edit"><button>編輯</button></form>
   {% if status == "disabled" %}<form method="post" action="/scripts/{{ id }}/enable"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button>啟用</button></form>

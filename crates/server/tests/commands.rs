@@ -805,3 +805,17 @@ async fn permission_errors_are_typed(pool: PgPool) {
     let e = runs::cancel_run(&s.pool, rid, &gary).await.unwrap_err();
     assert!(is_forbidden(&e), "{e:#}");
 }
+
+/// 裝置分頁依 device_id 查最近的指令：要有對應的索引（否則每次都掃整張表）
+#[sqlx::test(migrations = false)]
+async fn device_targets_index_exists(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let n: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM pg_indexes WHERE tablename = 'command_targets' \
+         AND indexdef LIKE '%(device_id, id DESC)%'",
+    )
+    .fetch_one(&s.pool)
+    .await
+    .unwrap();
+    assert_eq!(n, 1);
+}
