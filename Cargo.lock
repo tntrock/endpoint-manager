@@ -618,6 +618,7 @@ dependencies = [
  "axum",
  "bytes",
  "chrono",
+ "endpoint-cache",
  "endpoint-server",
  "flate2",
  "futures-util",

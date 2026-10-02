@@ -45,6 +45,7 @@ windows-sys = { version = "0.61", features = [
 [dev-dependencies]
 endpoint-server = { path = "../server" }
 axum.workspace = true
+endpoint-cache = { path = "../cache" }
 futures-util = "0.3"
 bytes = "1"
 sqlx.workspace = true

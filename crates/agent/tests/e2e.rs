@@ -1129,7 +1129,10 @@ mod deploy {
         let next = worker.pass(&via(&w, &url, true)).await.expect("稍後再試");
         // Retry-After 60 秒，加上 0.8～1.2 倍的隨機延遲（不是沒有 Retry-After 時的 5 分鐘）
         assert!(next >= before + chrono::Duration::seconds(47), "{next}");
-        assert!(next <= chrono::Utc::now() + chrono::Duration::seconds(73), "{next}");
+        assert!(
+            next <= chrono::Utc::now() + chrono::Duration::seconds(73),
+            "{next}"
+        );
         assert_eq!(runner.runs.load(Ordering::SeqCst), 0);
         assert!(status(&e, d).await.is_none(), "沒有回報、沒有向中央下載");
     }
@@ -1257,6 +1260,219 @@ mod deploy {
             .unwrap();
         assert_eq!(src.url, "https://cache.corp:8443");
         assert!(!src.fallback_to_central);
+    }
+
+    // ── 分點快取：真實中央 + 真實 endpoint-cache ──────────────────────────
+
+    struct RealCache {
+        url: String,
+        cache: Arc<endpoint_cache::run::Cache>,
+        serve: tokio::task::JoinHandle<anyhow::Result<()>>,
+        _dir: tempfile::TempDir,
+    }
+
+    /// 註冊、核准（據點 10.0.0.0/8，Fake 的 IP 是 10.1.1.1）、啟動快取並開始監聽
+    async fn real_cache(e: &Env) -> RealCache {
+        use endpoint_server::branch::{caches, sites};
+        let dir = tempfile::tempdir().unwrap();
+        let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        std_listener.set_nonblocking(true).unwrap();
+        let url = format!(
+            "https://127.0.0.1:{}",
+            std_listener.local_addr().unwrap().port()
+        );
+        let token = tokens::create_token(
+            &e.pool,
+            &tokens::NewToken {
+                name: "cache".into(),
+                group_id: None,
+                expires_at: None,
+                max_uses: 1,
+                created_by: "test".into(),
+                kind: tokens::TokenKind::Cache,
+            },
+        )
+        .await
+        .unwrap()
+        .1;
+        let id = endpoint_cache::run::enroll(
+            dir.path(),
+            &endpoint_cache::run::EnrollArgs {
+                server: e.url(),
+                root_pem_path: e.dir.path().join("root.pem"),
+                token,
+                name: "台北快取".into(),
+                url: url.clone(),
+                dns: vec!["127.0.0.1".into()],
+            },
+        )
+        .await
+        .unwrap();
+        let site = sites::create_site(
+            &e.pool,
+            &sites::SiteInput {
+                name: "台北".into(),
+                cidrs: vec!["10.0.0.0/8".into()],
+                fallback_to_central: true,
+                bandwidth_limit_mbps: None,
+                disk_limit_gb: 100,
+            },
+            "admin",
+        )
+        .await
+        .unwrap();
+        caches::approve(&e.pool, &e.state.ca, id, site, "admin")
+            .await
+            .unwrap();
+        let (_tx, rx) = tokio::sync::watch::channel(false);
+        let cache = Arc::new(
+            endpoint_cache::run::Cache::start_with(dir.path(), rx, Duration::from_millis(100))
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+        cache.checkin_once().await.unwrap();
+        let serve = tokio::spawn(endpoint_cache::server::serve(
+            TcpListener::from_std(std_listener).unwrap(),
+            cache.tls().unwrap(),
+            cache.router(),
+            100,
+        ));
+        RealCache {
+            url,
+            cache,
+            serve,
+            _dir: dir,
+        }
+    }
+
+    /// 另一台裝置（沒有 SMBIOS，不會被當成重灌）：回傳連快取用的身分 PEM
+    async fn other_device(e: &Env) -> String {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let csr = rcgen::CertificateParams::default()
+            .serialize_request(&key)
+            .unwrap()
+            .pem()
+            .unwrap();
+        let token = tokens::create_token(
+            &e.pool,
+            &tokens::NewToken {
+                name: "dev".into(),
+                group_id: None,
+                expires_at: None,
+                max_uses: 1,
+                created_by: "test".into(),
+                kind: tokens::TokenKind::Device,
+            },
+        )
+        .await
+        .unwrap()
+        .1;
+        let c = ServerClient::new(&e.url(), &e.root_pem(), None).unwrap();
+        let r = c
+            .enroll(&EnrollRequest {
+                schema_version: SCHEMA_VERSION,
+                enroll_token: token,
+                csr_pem: csr,
+                hostname: "PC-2".into(),
+                smbios_uuid: None,
+                bios_serial: None,
+                mac_addresses: vec![],
+            })
+            .await
+            .unwrap();
+        format!("{}{}", r.certificate_chain_pem, key.serialize_pem())
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn real_cache_serves_and_falls_back(pool: PgPool) {
+        let e = env(pool, 1).await;
+        // install=false：每個派送都會下載（偵測不到安裝結果，回報 failed 但會帶來源）
+        let (a, mut worker, _runner, _w, d1) = setup(&e, 0, false).await;
+        let rc = real_cache(&e).await;
+        let c = ServerClient::new(&e.url(), &e.root_pem(), a.state().identity_pem()).unwrap();
+        let w = work(&a, &e, assignments(&c).await);
+        worker.pass(&via(&w, &rc.url, true)).await;
+        assert_eq!(source_of(&e, d1).await.as_deref(), Some("cache"));
+        assert_eq!(rc.cache.state.central.downloads_started(), 1);
+
+        // 第二台從快取下載：快取不再向中央下載
+        let spec = w.assignments[0].package.clone();
+        let other = other_device(&e).await;
+        let oc = ServerClient::new(&rc.url, &e.root_pem(), Some(other.clone())).unwrap();
+        oc.verify_package(&spec).await.unwrap();
+        assert_eq!(rc.cache.state.central.downloads_started(), 1);
+
+        // 只派送給「高雄」群組的套件：沒有群組的裝置向快取要 → 403
+        let g = {
+            let mut conn = e.pool.acquire().await.unwrap();
+            endpoint_server::groups::find_or_create(&mut conn, "高雄")
+                .await
+                .unwrap()
+        };
+        let chunk: Result<bytes::Bytes, std::io::Error> =
+            Ok(bytes::Bytes::from_static(b"MZ kaohsiung only"));
+        let st = store::save(
+            &e.state.package_dir,
+            futures_util::stream::iter(vec![chunk]),
+        )
+        .await
+        .unwrap();
+        let pkg = admin::create_package(
+            &e.pool,
+            &e.state.package_dir,
+            &st,
+            "ks.exe",
+            None,
+            &admin::PackageInput {
+                name: "KS App".into(),
+                version: "1.0".into(),
+                kind: "exe".into(),
+                install_args: "/S".into(),
+                uninstall_args: String::new(),
+                success_codes: vec![],
+                detect_name: "KS App*".into(),
+                detect_publisher: String::new(),
+                detect_min_version: String::new(),
+            },
+            "admin",
+        )
+        .await
+        .unwrap();
+        admin::create_deployment(
+            &e.pool,
+            &admin::DeploymentInput {
+                name: "KS".into(),
+                package_id: pkg,
+                action: "install".into(),
+                include: vec![g],
+                exclude: vec![],
+                pilot_group_id: None,
+                max_failure_pct: 50,
+                min_samples: 100,
+            },
+            "admin",
+        )
+        .await
+        .unwrap();
+        e.state.deploy.invalidate();
+        let ks = PackageSpec {
+            id: pkg,
+            sha256: st.sha256.clone(),
+            size: st.size,
+            ..spec.clone()
+        };
+        assert!(matches!(
+            oc.verify_package(&ks).await,
+            Err(DownloadError::Forbidden)
+        ));
+
+        // 快取停機：第二個派送改向中央
+        rc.serve.abort();
+        let d2 = deployment(&e, b"MZ second installer", "/S").await;
+        let w = work(&a, &e, assignments(&c).await);
+        worker.pass(&via(&w, &rc.url, true)).await;
+        assert_eq!(source_of(&e, d2).await.as_deref(), Some("central"));
     }
 }
 
