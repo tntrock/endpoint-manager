@@ -108,6 +108,7 @@ fn counts_sql(filter: &str) -> String {
          FROM deployments d JOIN packages p ON p.id = d.package_id \
          LEFT JOIN devices v ON {TARGET} \
          LEFT JOIN deployment_status ds ON ds.deployment_id = d.id AND ds.device_id = v.id \
+           AND ds.revision = d.revision \
          {filter} GROUP BY d.id, p.name ORDER BY d.id DESC"
     )
 }
@@ -280,7 +281,7 @@ pub struct DetailQuery {
 pub struct DeviceRow {
     pub id: String,
     pub hostname: String,
-    pub status: &'static str,
+    pub status: String,
     pub message: String,
     pub updated: String,
     /// 套件從哪裡下載（快取／中央）
@@ -334,6 +335,7 @@ type DeviceDbRow = (
     Option<String>,
     Option<DateTime<Utc>>,
     Option<String>,
+    bool,
 );
 
 pub async fn detail(
@@ -366,7 +368,7 @@ pub async fn detail(
         "SELECT ds.message, count(*) FROM deployments d \
          JOIN devices v ON {TARGET} \
          JOIN deployment_status ds ON ds.deployment_id = d.id AND ds.device_id = v.id \
-         WHERE d.id = $3 AND ds.status = 'failed' \
+         WHERE d.id = $3 AND ds.status = 'failed' AND ds.revision = d.revision \
          GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 5"
     )))
     .bind(s.all_devices())
@@ -381,11 +383,13 @@ pub async fn detail(
     let page = q.page.clamp(0, super::devices::MAX_PAGE);
     // 等待中＝範圍內但還沒有狀態列
     let rows: Vec<DeviceDbRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT v.id, v.hostname, ds.status, ds.message, ds.updated_at, ds.source \
+        "SELECT v.id, v.hostname, ds.status, ds.message, ds.updated_at, ds.source, \
+                COALESCE(ds.revision < d.revision, false) \
          FROM deployments d JOIN devices v ON {TARGET} \
          LEFT JOIN deployment_status ds ON ds.deployment_id = d.id AND ds.device_id = v.id \
          WHERE d.id = $3 AND CASE $4::text WHEN '' THEN TRUE \
-           WHEN 'pending' THEN ds.device_id IS NULL ELSE ds.status = $4 END \
+           WHEN 'pending' THEN ds.device_id IS NULL OR ds.revision < d.revision \
+           ELSE ds.status = $4 AND ds.revision = d.revision END \
          ORDER BY lower(v.hostname), v.id LIMIT $5 OFFSET $6"
     )))
     .bind(s.all_devices())
@@ -438,10 +442,18 @@ pub async fn detail(
         devices: rows
             .into_iter()
             .take(DEVICE_PAGE as usize)
-            .map(|(vid, hostname, ds, msg, at, source)| DeviceRow {
+            .map(|(vid, hostname, ds, msg, at, source, old)| DeviceRow {
                 id: vid.to_string(),
                 hostname,
-                status: status_label(ds.as_deref().unwrap_or("pending")),
+                // 「重試失敗」之前的結果：這一輪還沒回報
+                status: if old {
+                    format!(
+                        "等待中（上一輪：{}）",
+                        status_label(ds.as_deref().unwrap_or(""))
+                    )
+                } else {
+                    status_label(ds.as_deref().unwrap_or("pending")).to_string()
+                },
                 message: msg.unwrap_or_default(),
                 updated: fmt_time(&st, at),
                 source: match source.as_deref() {

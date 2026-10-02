@@ -393,3 +393,72 @@ async fn package_form_error_keeps_success_codes_input(pool: PgPool) {
         "保留輸入"
     );
 }
+
+async fn fail_at(s: &TestServer, a: &common::TestAgent, d: i64, revision: i32, msg: &str) {
+    s.state.deploy.invalidate();
+    let r = s
+        .client(Some(a))
+        .post(s.url(&format!("/v1/deployments/{d}/result")))
+        .json(&protocol::deploy::DeployResult {
+            revision,
+            status: protocol::deploy::DeployStatus::Failed,
+            exit_code: Some(1603),
+            message: msg.into(),
+            attempts: 1,
+            source: None,
+        })
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 204);
+}
+
+#[sqlx::test(migrations = false)]
+async fn retry_counts_only_current_revision(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let pkg = server_package(&s).await;
+    let tok = s.create_group_token("台北", 2).await;
+    let a1 = s.enroll_ok(&tok, None, None).await;
+    let a2 = s.enroll_ok(&tok, None, None).await;
+    let d = dadmin::create_deployment(
+        &s.pool,
+        &dadmin::DeploymentInput {
+            name: "重試".into(),
+            package_id: pkg,
+            action: "install".into(),
+            include: vec![],
+            exclude: vec![],
+            pilot_group_id: None,
+            max_failure_pct: 100,
+            min_samples: 100,
+        },
+        "admin",
+    )
+    .await
+    .unwrap();
+    fail_at(&s, &a1, d, 1, "第一輪失敗").await;
+    fail_at(&s, &a2, d, 1, "第一輪失敗").await;
+    dadmin::retry_failed(&s.pool, d, "admin").await.unwrap();
+    fail_at(&s, &a1, d, 2, "第二輪失敗").await;
+
+    let admin = s.admin_client().await;
+    let loc = format!("/deployments/{d}");
+    let (_, html) = s.page(&admin, &loc).await;
+    assert!(
+        html.contains("失敗：1") && html.contains("等待中：1"),
+        "{html}"
+    );
+    let summary = html.split("<h2>裝置</h2>").next().unwrap();
+    assert!(
+        summary.contains("<td>第二輪失敗</td><td>1</td>") && !summary.contains("第一輪失敗"),
+        "主要失敗原因只算目前這一輪：{html}"
+    );
+    let (_, html) = s.page(&admin, "/deployments").await;
+    assert!(html.contains(r#"<span class="error">1</span>"#), "{html}");
+    let (_, html) = s.page(&admin, &format!("{loc}?status=pending")).await;
+    assert!(
+        html.contains(&a2.device_id.to_string()) && html.contains("上一輪"),
+        "{html}"
+    );
+    assert!(!html.contains(&a1.device_id.to_string()), "{html}");
+}
