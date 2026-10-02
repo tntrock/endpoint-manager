@@ -27,7 +27,7 @@
   <tr><th>動作</th><th>對象</th><th>建立者</th><th>建立時間</th><th>過期</th><th>台數</th><th>等待中</th><th>成功</th><th>失敗</th><th>已過期</th><th>已取消</th></tr>
   {% for r in rows %}
   <tr>
-    <td><a href="/commands/{{ r.id }}">{{ r.action }}</a></td><td>{{ r.target }}</td><td>{{ r.created_by }}</td>
+    <td><a href="/commands/{{ r.id }}">{{ r.action }}</a>{% if r.canceled %}（已取消）{% endif %}</td><td>{{ r.target }}</td><td>{{ r.created_by }}</td>
     <td>{{ r.created }}</td><td>{{ r.expires }}</td><td>{{ r.counts.total }}</td><td>{{ r.counts.waiting }}</td>
     <td>{{ r.counts.succeeded }}</td>
     <td>{% if r.counts.failed > 0 %}<span class="error">{{ r.counts.failed }}</span>{% else %}0{% endif %}</td>

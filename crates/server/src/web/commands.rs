@@ -13,7 +13,7 @@ use super::devices::{SelectOption, db_error};
 use super::{enc, fmt_time, forbidden, not_found, render};
 use crate::AppState;
 use crate::commands::runs::{self, RunInput, Target};
-use crate::commands::{Actor, is_forbidden};
+use crate::commands::{Actor, CmdError, cmd_error_kind};
 use crate::error::AppError;
 
 pub(super) fn actor(s: &Session) -> Actor {
@@ -24,14 +24,29 @@ pub(super) fn actor(s: &Session) -> Actor {
     }
 }
 
-/// 權限不足回 403；其他錯誤（輸入、狀態）回指定的狀態碼與訊息
-pub(super) fn command_error(e: anyhow::Error, status: StatusCode) -> Response {
-    let status = if is_forbidden(&e) {
-        StatusCode::FORBIDDEN
-    } else {
-        status
+/// 給使用者看的錯誤依種類回 403／422／404／409 與訊息；其他錯誤（資料庫等）記錄後回 500，
+/// 不把內部細節顯示在畫面上
+pub(super) fn command_error(e: anyhow::Error) -> Response {
+    let status = match cmd_error_kind(&e) {
+        Some(CmdError::Forbidden(_)) => StatusCode::FORBIDDEN,
+        Some(CmdError::Invalid(_)) => StatusCode::UNPROCESSABLE_ENTITY,
+        Some(CmdError::NotFound(_)) => StatusCode::NOT_FOUND,
+        Some(CmdError::Conflict(_)) => StatusCode::CONFLICT,
+        None => {
+            tracing::error!(error = %format!("{e:#}"), "command action failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "伺服器錯誤，請稍後再試").into_response();
+        }
     };
     (status, format!("{e:#}")).into_response()
+}
+
+/// 表單可以重新顯示的錯誤（輸入或狀態問題）：(狀態碼, 訊息)
+fn form_error(e: &anyhow::Error) -> Option<(StatusCode, String)> {
+    match cmd_error_kind(e)? {
+        CmdError::Invalid(m) => Some((StatusCode::UNPROCESSABLE_ENTITY, m.clone())),
+        CmdError::Conflict(m) => Some((StatusCode::CONFLICT, m.clone())),
+        _ => None,
+    }
 }
 
 pub fn action_label(a: &str) -> &'static str {
@@ -57,6 +72,7 @@ pub fn status_label(s: &str) -> &'static str {
     }
 }
 
+const DELAY_ERROR: &str = "延遲必須是 0–60 分鐘的整數";
 const EXPIRES: [(i64, &str); 4] = [(1, "1 小時"), (24, "1 天"), (168, "7 天"), (720, "30 天")];
 const RUN_PAGE: i64 = 50;
 const DEVICE_PAGE: i64 = 100;
@@ -77,21 +93,23 @@ pub struct RunRow {
     pub created_by: String,
     pub created: String,
     pub expires: String,
+    pub canceled: bool,
     pub counts: Counts,
 }
 
-/// 指令清單的查詢：至少有一台範圍內裝置的 run，台數只算範圍內（$1 全部、$2 群組）
+/// 指令清單的查詢：台數只算範圍內（$1 全部、$2 群組）。群組管理員只看得到至少有一台範圍內
+/// 裝置的 run；平台管理員也看得到對象裝置都已刪除的 run（台數 0）
 fn runs_sql(filter: &str) -> String {
     format!(
         "SELECT r.id, r.action, r.target_label, r.created_by, r.created_at, r.expires_at, \
-           count(t.id), \
+           r.canceled_at IS NOT NULL, count(t.id), \
            count(*) FILTER (WHERE t.status IN ('pending', 'sent')), \
            count(*) FILTER (WHERE t.status = 'succeeded'), \
            count(*) FILTER (WHERE t.status = 'failed'), \
            count(*) FILTER (WHERE t.status = 'expired'), \
            count(*) FILTER (WHERE t.status = 'canceled') \
-         FROM command_runs r JOIN command_targets t ON t.run_id = r.id \
-         JOIN devices v ON v.id = t.device_id \
+         FROM command_runs r \
+         LEFT JOIN (command_targets t JOIN devices v ON v.id = t.device_id) ON t.run_id = r.id \
          WHERE ($1::bool OR v.group_id = ANY($2::bigint[])) {filter} \
          GROUP BY r.id ORDER BY r.id DESC"
     )
@@ -104,6 +122,7 @@ type RunDbRow = (
     String,
     DateTime<Utc>,
     DateTime<Utc>,
+    bool,
     i64,
     i64,
     i64,
@@ -120,13 +139,14 @@ fn to_run(st: &AppState, r: RunDbRow) -> RunRow {
         created_by: r.3,
         created: fmt_time(st, Some(r.4)),
         expires: fmt_time(st, Some(r.5)),
+        canceled: r.6,
         counts: Counts {
-            total: r.6,
-            waiting: r.7,
-            succeeded: r.8,
-            failed: r.9,
-            expired: r.10,
-            canceled: r.11,
+            total: r.7,
+            waiting: r.8,
+            succeeded: r.9,
+            failed: r.10,
+            expired: r.11,
+            canceled: r.12,
         },
     }
 }
@@ -242,6 +262,8 @@ struct RunForm {
     action: String,
     group_id: Option<i64>,
     delay_minutes: Option<i32>,
+    /// 延遲有填但不是整數
+    bad_delay: bool,
     script_id: Option<i64>,
     expires_hours: i64,
 }
@@ -252,6 +274,7 @@ fn parse_run_form(raw: &[u8]) -> RunForm {
         action: String::new(),
         group_id: None,
         delay_minutes: None,
+        bad_delay: false,
         script_id: None,
         expires_hours: crate::commands::runs::DEFAULT_EXPIRES_HOURS,
     };
@@ -261,7 +284,10 @@ fn parse_run_form(raw: &[u8]) -> RunForm {
             "csrf" => f.csrf = v,
             "action" => f.action = v,
             "group_id" => f.group_id = v.parse().ok(),
-            "delay_minutes" => f.delay_minutes = v.parse().ok(),
+            "delay_minutes" if !v.is_empty() => match v.parse() {
+                Ok(d) => f.delay_minutes = Some(d),
+                Err(_) => f.bad_delay = true,
+            },
             "script_id" => f.script_id = v.parse().ok(),
             "expires_hours" => f.expires_hours = v.parse().unwrap_or(0),
             _ => {}
@@ -286,12 +312,20 @@ pub async fn create(
     let f = parse_run_form(&raw);
     check_csrf(&s, &f.csrf)?;
     manage(&s)?;
-    let Some(group) = f.group_id else {
-        let page = list_page(&st, &s, 0, Some("請選擇群組".into()))
+    let input_error = if f.bad_delay {
+        Some(DELAY_ERROR)
+    } else if f.group_id.is_none() {
+        Some("請選擇群組")
+    } else {
+        None
+    };
+    if let Some(m) = input_error {
+        let page = list_page(&st, &s, 0, Some(m.into()))
             .await
             .map_err(db_error)?;
         return Ok((StatusCode::UNPROCESSABLE_ENTITY, render(&page)).into_response());
-    };
+    }
+    let group = f.group_id.unwrap_or_default();
     let input = RunInput {
         action: f.action,
         target: Target::Group(group),
@@ -301,13 +335,13 @@ pub async fn create(
     };
     match runs::create_run(&st.pool, &input, &actor(&s)).await {
         Ok((id, _)) => Ok(Redirect::to(&format!("/commands/{id}")).into_response()),
-        Err(e) if is_forbidden(&e) => Err(command_error(e, StatusCode::FORBIDDEN)),
-        Err(e) => {
-            let page = list_page(&st, &s, 0, Some(format!("{e:#}")))
-                .await
-                .map_err(db_error)?;
-            Ok((StatusCode::UNPROCESSABLE_ENTITY, render(&page)).into_response())
-        }
+        Err(e) => match form_error(&e) {
+            Some((status, m)) => {
+                let page = list_page(&st, &s, 0, Some(m)).await.map_err(db_error)?;
+                Ok((status, render(&page)).into_response())
+            }
+            None => Err(command_error(e)),
+        },
     }
 }
 
@@ -379,7 +413,7 @@ pub async fn detail(
     .fetch_one(&st.pool)
     .await?;
     let status = match q.status.as_str() {
-        s @ ("pending" | "sent" | "succeeded" | "failed" | "expired" | "canceled") => s,
+        s @ ("waiting" | "pending" | "sent" | "succeeded" | "failed" | "expired" | "canceled") => s,
         _ => "",
     };
     let page = q.page.clamp(0, super::devices::MAX_PAGE);
@@ -387,7 +421,7 @@ pub async fn detail(
         "SELECT v.id, v.hostname, t.status, t.exit_code, t.finished_at, t.output \
          FROM command_targets t JOIN devices v ON v.id = t.device_id \
          WHERE t.run_id = $3 AND ($1::bool OR v.group_id = ANY($2::bigint[])) \
-           AND ($4 = '' OR t.status = $4) \
+           AND ($4 = '' OR t.status = $4 OR ($4 = 'waiting' AND t.status IN ('pending', 'sent'))) \
          ORDER BY lower(v.hostname), v.id LIMIT $5 OFFSET $6",
     )
     .bind(s.all_devices())
@@ -410,6 +444,7 @@ pub async fn detail(
     let c = &run.counts;
     let filters = [
         ("", format!("全部：{}", c.total)),
+        ("waiting", format!("等待中：{}", c.waiting)),
         ("succeeded", format!("成功：{}", c.succeeded)),
         ("failed", format!("失敗：{}", c.failed)),
         ("expired", format!("已過期：{}", c.expired)),
@@ -422,8 +457,11 @@ pub async fn detail(
         active: k == status,
     })
     .collect();
-    let can_cancel =
-        !canceled && (s.all_devices() || run.created_by == s.username) && s.can_manage();
+    // 還有等待中的裝置才能取消
+    let can_cancel = !canceled
+        && run.counts.waiting > 0
+        && (s.all_devices() || run.created_by == s.username)
+        && s.can_manage();
     Ok(render(&DetailPage {
         nav: Nav::from(&s),
         delay,
@@ -460,7 +498,7 @@ pub async fn cancel(
     manage(&s)?;
     runs::cancel_run(&st.pool, id, &actor(&s))
         .await
-        .map_err(|e| command_error(e, StatusCode::CONFLICT))?;
+        .map_err(command_error)?;
     Ok(Redirect::to(&format!("/commands/{id}")).into_response())
 }
 
@@ -473,6 +511,9 @@ pub async fn create_for_device(
     let f = parse_run_form(&raw);
     check_csrf(&s, &f.csrf)?;
     manage(&s)?;
+    if f.bad_delay {
+        return Err((StatusCode::UNPROCESSABLE_ENTITY, DELAY_ERROR).into_response());
+    }
     let input = RunInput {
         action: f.action,
         target: Target::Device(device),
@@ -482,7 +523,7 @@ pub async fn create_for_device(
     };
     runs::create_run(&st.pool, &input, &actor(&s))
         .await
-        .map_err(|e| command_error(e, StatusCode::CONFLICT))?;
+        .map_err(command_error)?;
     Ok(Redirect::to(&format!("/devices/{device}")).into_response())
 }
 
