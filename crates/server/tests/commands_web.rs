@@ -115,7 +115,11 @@ async fn scripts_two_person_flow(pool: PgPool) {
         &s,
         &bob,
         &format!("/scripts/{id}/approve"),
-        &[("csrf", &bcsrf), ("sha256", &page_sha(&html)), ("timeout_minutes", "30")],
+        &[
+            ("csrf", &bcsrf),
+            ("sha256", &page_sha(&html)),
+            ("timeout_minutes", "30"),
+        ],
     )
     .await;
     assert_eq!(st, 303);
@@ -140,7 +144,11 @@ async fn scripts_two_person_flow(pool: PgPool) {
         &s,
         &alice,
         &format!("/scripts/{id}/approve"),
-        &[("csrf", &csrf), ("sha256", &page_sha(&html)), ("timeout_minutes", "30")],
+        &[
+            ("csrf", &csrf),
+            ("sha256", &page_sha(&html)),
+            ("timeout_minutes", "30"),
+        ],
     )
     .await;
     assert_eq!(st, 403);
