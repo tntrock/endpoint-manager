@@ -397,3 +397,29 @@ async fn bad_input_gets_chinese_errors(pool: PgPool) {
     let (st, _) = s.page(&admin, "/compliance/violations?page=abc").await;
     assert_eq!(st, 200);
 }
+
+#[sqlx::test(migrations = false)]
+async fn compliance_tabs_mark_current(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let admin = s.admin_client().await;
+    let (_, html) = s.page(&admin, "/compliance/rules").await;
+    assert!(
+        html.contains(r#"<a href="/compliance" class="on" aria-current="page">"#),
+        "側邊欄：{html}"
+    );
+    assert!(
+        html.contains(r#"<a href="/compliance/rules" class="on" aria-current="page">規則</a>"#),
+        "分頁籤：{html}"
+    );
+    assert!(html.contains(r#"href="/compliance/rules/templates""#));
+    let v = s.login_as("vera", Role::Viewer, &["台北"]).await;
+    let (_, html) = s.page(&v, "/compliance/violations").await;
+    assert!(
+        html.contains(r#"class="on" aria-current="page">違規</a>"#),
+        "{html}"
+    );
+    assert!(
+        !html.contains(r#"href="/compliance/rules/templates""#),
+        "範本只給平台管理員"
+    );
+}

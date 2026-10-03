@@ -1,24 +1,31 @@
 {% extends "base.html" %}
+{% import "_macros.html" as m %}
 {% block content %}
-<h1>合規規則</h1>
-<p><a href="/compliance">← 合規總覽</a></p>
-{% if nav.platform %}
-<p>新增規則：{% for k in kinds %}<a href="/compliance/rules/new?kind={{ k.0 }}">{{ k.1 }}</a> {% endfor %}</p>
-<p><a href="/compliance/rules/templates">從範本建立</a></p>
-{% endif %}
+<div class="page-head">
+  <div><h1>合規</h1></div>
+  {% if nav.platform %}
+  <div class="actions">
+    <a class="btn" href="/compliance/rules/templates">從範本建立</a>
+    <details class="user"><summary class="btn primary">＋ 新增規則</summary><div class="menu">{% for k in kinds %}<a href="/compliance/rules/new?kind={{ k.0 }}">{{ k.1 }}</a>{% endfor %}</div></details>
+  </div>
+  {% endif %}
+</div>
+{% call m::compliance_tabs("rules", nav.platform) %}{% endcall %}
+{% if rows.is_empty() %}{% call m::empty("還沒有合規規則", "可以從範本快速建立") %}{% endcall %}{% else %}
 <table>
-  <tr><th>名稱</th><th>類型</th><th>嚴重度</th><th>範圍</th><th>違規</th><th>未知</th><th>豁免</th><th>狀態</th></tr>
+  <tr><th>名稱</th><th>類型</th><th>嚴重度</th><th>範圍</th><th class="num">違規</th><th class="num">未知</th><th class="num">豁免</th><th>狀態</th></tr>
   {% for r in rows %}
   <tr>
     <td>{% if nav.platform %}<a href="/compliance/rules/{{ r.id }}">{{ r.name }}</a>{% else %}{{ r.name }}{% endif %}</td>
     <td>{{ r.kind }}</td>
     <td><span class="sev {{ r.severity_class }}">{{ r.severity }}</span></td>
     <td>{{ r.scope }}</td>
-    <td><a href="/compliance/violations?rule={{ r.id }}&status=violating">{{ r.violating }}</a></td>
-    <td><a href="/compliance/violations?rule={{ r.id }}&status=unknown">{{ r.unknown }}</a></td>
-    <td><a href="/compliance/violations?rule={{ r.id }}&status=exempt">{{ r.exempt }}</a></td>
-    <td>{% if r.enabled %}啟用{% else %}<span class="muted">停用</span>{% endif %}</td>
+    <td class="num"><a href="/compliance/violations?rule={{ r.id }}&status=violating">{{ r.violating }}</a></td>
+    <td class="num"><a href="/compliance/violations?rule={{ r.id }}&status=unknown">{{ r.unknown }}</a></td>
+    <td class="num"><a href="/compliance/violations?rule={{ r.id }}&status=exempt">{{ r.exempt }}</a></td>
+    <td>{% if r.enabled %}<span class="tag ok">啟用</span>{% else %}<span class="tag off">停用</span>{% endif %}</td>
   </tr>
   {% endfor %}
 </table>
+{% endif %}
 {% endblock %}

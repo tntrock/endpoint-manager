@@ -2,7 +2,7 @@
 {% if results.is_empty() %}<p class="muted">{% if has_rules %}目前沒有違規。{% else %}尚未建立任何合規規則。{% endif %}</p>{% else %}
 <table>
   <tr><th>規則</th><th>嚴重度</th><th>狀態</th><th>細節</th><th>開始時間</th></tr>
-  {% for r in results %}<tr><td>{{ r.rule }}</td><td><span class="sev {{ r.severity_class }}">{{ r.severity }}</span></td><td>{{ r.status }}</td><td>{{ r.summary }}</td><td>{{ r.since }}</td></tr>{% endfor %}
+  {% for r in results %}<tr><td>{{ r.rule }}</td><td><span class="sev {{ r.severity_class }}">{{ r.severity }}</span></td><td>{% if r.status == "違規" %}<span class="tag bad">{{ r.status }}</span>{% else if r.status == "豁免" %}<span class="tag info">{{ r.status }}</span>{% else %}<span class="tag off">{{ r.status }}</span>{% endif %}</td><td>{{ r.summary }}</td><td class="num">{{ r.since }}</td></tr>{% endfor %}
 </table>
 {% endif %}
 <h3>豁免</h3>
@@ -10,24 +10,24 @@
 <table>
   <tr><th>規則</th><th>原因</th><th>到期</th><th>建立者</th><th></th></tr>
   {% for e in exemptions %}
-  <tr><td>{{ e.rule }}</td><td>{{ e.reason }}</td><td>{{ e.expires }}</td><td>{{ e.created_by }}</td>
-    <td>{% if platform %}<form class="inline" method="post" action="/exemptions/{{ e.id }}/revoke"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="danger">撤銷</button></form>{% endif %}</td></tr>
+  <tr><td>{{ e.rule }}</td><td>{{ e.reason }}</td><td class="num">{{ e.expires }}</td><td>{{ e.created_by }}</td>
+    <td>{% if platform %}<form class="inline" method="post" action="/exemptions/{{ e.id }}/revoke"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn sm danger">撤銷</button></form>{% endif %}</td></tr>
   {% endfor %}
 </table>
 {% endif %}
 {% if platform && !rules.is_empty() %}
-<form method="post" action="/devices/{{ device_id }}/exemptions">
+<form class="filters" method="post" action="/devices/{{ device_id }}/exemptions">
   <input type="hidden" name="csrf" value="{{ csrf }}">
-  <select name="rule_id">{% for r in rules %}<option value="{{ r.value }}">{{ r.label }}</option>{% endfor %}</select>
-  <input name="reason" required maxlength="500" placeholder="原因" size="30">
+  <select name="rule_id" aria-label="規則">{% for r in rules %}<option value="{{ r.value }}">{{ r.label }}</option>{% endfor %}</select>
+  <input name="reason" required maxlength="500" placeholder="原因" size="30" aria-label="原因">
   <label>有效天數 <input name="days" type="number" min="1" max="{{ max_days }}" value="30" required></label>
-  <button>新增豁免</button>
+  <button class="btn">新增豁免</button>
 </form>
 {% endif %}
 <h3>最近歷程</h3>
 {% if events.is_empty() %}<p class="muted">沒有歷程。</p>{% else %}
 <table>
   <tr><th>時間</th><th>規則</th><th>變化</th><th>細節</th></tr>
-  {% for e in events %}<tr><td>{{ e.at }}</td><td>{{ e.rule }}</td><td>{{ e.change }}</td><td>{{ e.summary }}</td></tr>{% endfor %}
+  {% for e in events %}<tr><td class="num">{{ e.at }}</td><td>{{ e.rule }}</td><td>{{ e.change }}</td><td>{{ e.summary }}</td></tr>{% endfor %}
 </table>
 {% endif %}

@@ -1,37 +1,45 @@
 {% extends "base.html" %}
+{% import "_macros.html" as m %}
 {% block content %}
-<h1>合規總覽</h1>
-<p><a href="/compliance/rules">規則</a> · <a href="/compliance/violations?status=violating">違規清單</a></p>
+<div class="page-head">
+  <div><h1>合規</h1></div>
+  <div class="actions"><a class="btn" href="/compliance/violations.csv">匯出違規 CSV</a></div>
+</div>
+{% call m::compliance_tabs("overview", nav.platform) %}{% endcall %}
 <div class="cards">
-  <div class="card offline">違規裝置<b>{{ devices_violating }}</b></div>
-  <div class="card">啟用規則<b>{{ rules.len() }}</b></div>
+  <div class="card kpi"><div class="kpi-label">違規裝置</div><div class="kpi-value num{% if devices_violating > 0 %} error{% endif %}">{{ devices_violating }}</div></div>
+  <div class="card kpi"><div class="kpi-label">啟用規則</div><div class="kpi-value num">{{ rules.len() }}</div></div>
 </div>
 {% if running %}
-<p class="notice">規則已變更，正在重新評估：<progress value="{{ progress_done }}" max="{{ progress_total }}"></progress> {{ progress_done }} / {{ progress_total }} 台</p>
+<div class="notice">規則已變更，正在重新評估：<progress value="{{ progress_done }}" max="{{ progress_total }}"></progress> <span class="num">{{ progress_done }} / {{ progress_total }}</span> 台</div>
 {% endif %}
 <table>
-  <tr><th>規則</th><th>嚴重度</th><th>違規</th><th>未知</th><th>豁免</th></tr>
+  <tr><th>規則</th><th>嚴重度</th><th class="num">違規</th><th class="num">未知</th><th class="num">豁免</th></tr>
   {% for r in rules %}
   <tr>
     <td>{{ r.name }}</td>
     <td><span class="sev {{ r.severity_class }}">{{ r.severity }}</span></td>
-    <td><a href="/compliance/violations?rule={{ r.id }}&status=violating">{{ r.violating }}</a></td>
-    <td><a href="/compliance/violations?rule={{ r.id }}&status=unknown">{{ r.unknown }}</a></td>
-    <td><a href="/compliance/violations?rule={{ r.id }}&status=exempt">{{ r.exempt }}</a></td>
+    <td class="num"><a href="/compliance/violations?rule={{ r.id }}&status=violating">{{ r.violating }}</a></td>
+    <td class="num"><a href="/compliance/violations?rule={{ r.id }}&status=unknown">{{ r.unknown }}</a></td>
+    <td class="num"><a href="/compliance/violations?rule={{ r.id }}&status=exempt">{{ r.exempt }}</a></td>
   </tr>
   {% endfor %}
 </table>
 {% if !channels.is_empty() %}
-<h2>通知 <a href="/compliance/notify">設定</a></h2>
+<div class="card">
+<h2>通知 <a class="btn sm" href="/compliance/notify">設定</a></h2>
 <table>
   <tr><th>管道</th><th>狀態</th><th>最後成功</th><th>最後錯誤</th></tr>
-  {% for c in channels %}<tr><td>{{ c.name }}</td><td>{% if c.enabled %}啟用{% else %}<span class="muted">停用</span>{% endif %}</td><td>{{ c.last_ok }}</td><td class="error">{{ c.error }}</td></tr>{% endfor %}
+  {% for c in channels %}<tr><td>{{ c.name }}</td><td>{% if c.enabled %}<span class="tag ok">啟用</span>{% else %}<span class="tag off">停用</span>{% endif %}</td><td>{{ c.last_ok }}</td><td class="error">{{ c.error }}</td></tr>{% endfor %}
 </table>
+</div>
 {% endif %}
 {% if !trend.is_empty() %}
+<div class="card">
 <h2>近 30 天違規數</h2>
 <table>
-  {% for t in trend %}<tr><td>{{ t.day }}</td><td><progress value="{{ t.violating }}" max="{{ trend_max }}"></progress> {{ t.violating }}</td></tr>{% endfor %}
+  {% for t in trend %}<tr><td class="num">{{ t.day }}</td><td><progress value="{{ t.violating }}" max="{{ trend_max }}"></progress> <span class="num">{{ t.violating }}</span></td></tr>{% endfor %}
 </table>
+</div>
 {% endif %}
 {% endblock %}

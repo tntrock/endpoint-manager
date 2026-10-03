@@ -1,16 +1,20 @@
 {% extends "base.html" %}
+{% import "_macros.html" as m %}
 {% block content %}
-<h1>違規清單</h1>
-<p><a href="/compliance">← 合規總覽</a></p>
-<form method="get" action="/compliance/violations">
-  <input name="q" value="{{ q }}" placeholder="電腦名稱">
-  <select name="rule">{% for o in rules %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}</select>
-  <select name="severity">{% for o in severities %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}</select>
-  <select name="status">{% for o in statuses %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}</select>
-  <select name="group">{% for o in groups %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}</select>
-  <button>搜尋</button>
-  <a href="{{ csv_url }}">匯出 CSV</a>
+<div class="page-head">
+  <div><h1>合規</h1></div>
+  <div class="actions"><a class="btn" href="{{ csv_url }}">匯出 CSV</a></div>
+</div>
+{% call m::compliance_tabs("violations", nav.platform) %}{% endcall %}
+<form class="filters" method="get" action="/compliance/violations">
+  <input name="q" value="{{ q }}" placeholder="電腦名稱" aria-label="電腦名稱">
+  <select name="rule" aria-label="規則">{% for o in rules %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}</select>
+  <select name="severity" aria-label="嚴重度">{% for o in severities %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}</select>
+  <select name="status" aria-label="狀態">{% for o in statuses %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}</select>
+  <select name="group" aria-label="群組">{% for o in groups %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}</select>
+  <button class="btn primary">搜尋</button>
 </form>
+{% if rows.is_empty() %}{% call m::empty("沒有符合條件的違規", "") %}{% endcall %}{% else %}
 <table>
   <tr><th>電腦名稱</th><th>群組</th><th>規則</th><th>嚴重度</th><th>狀態</th><th>細節</th><th>開始時間</th></tr>
   {% for v in rows %}
@@ -18,13 +22,15 @@
     <td><a href="/devices/{{ v.device_id }}">{{ v.hostname }}</a></td>
     <td>{{ v.group }}</td><td>{{ v.rule }}</td>
     <td><span class="sev {{ v.severity_class }}">{{ v.severity }}</span></td>
-    <td>{{ v.status }}</td><td>{{ v.summary }}</td><td>{{ v.since }}</td>
+    <td>{% if v.status == "違規" %}<span class="tag bad">{{ v.status }}</span>{% else if v.status == "豁免" %}<span class="tag info">{{ v.status }}</span>{% else %}<span class="tag off">{{ v.status }}</span>{% endif %}</td>
+    <td>{{ v.summary }}</td><td class="num">{{ v.since }}</td>
   </tr>
   {% endfor %}
 </table>
+{% endif %}
 <div class="pager">
-  {% if page > 0 %}<a href="{{ prev_url }}">上一頁</a>{% endif %}
-  <span class="muted">第 {{ page + 1 }} 頁</span>
-  {% if has_next %}<a href="{{ next_url }}">下一頁</a>{% endif %}
+  {% if page > 0 %}<a class="btn sm" href="{{ prev_url }}">← 上一頁</a>{% endif %}
+  <span class="num">第 {{ page + 1 }} 頁</span>
+  {% if has_next %}<a class="btn sm" href="{{ next_url }}">下一頁 →</a>{% endif %}
 </div>
 {% endblock %}
