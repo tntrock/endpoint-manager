@@ -118,7 +118,7 @@ async fn registry_query_is_scoped_and_case_insensitive(pool: PgPool) {
         .await;
     assert_eq!(st, 200);
     assert!(
-        html.contains(r#"<td class="num">1</td>"#) && html.contains(r#"<td class="num">0</td>"#),
+        html.contains(r#"<td class="code">1</td>"#) && html.contains(r#"<td class="code">0</td>"#),
         "{html}"
     );
     assert!(html.contains("共 2 台"), "{html}");
@@ -128,7 +128,7 @@ async fn registry_query_is_scoped_and_case_insensitive(pool: PgPool) {
         .page(&g, "/registry?path=HKLM%5CSOFTWARE%5CPolicies%5CX&name=Y")
         .await;
     assert!(
-        !html.contains(r#"<td class="num">0</td>"#) && html.contains("共 1 台"),
+        !html.contains(r#"<td class="code">0</td>"#) && html.contains("共 1 台"),
         "{html}"
     );
     // 裝置清單：只列範圍內的裝置
