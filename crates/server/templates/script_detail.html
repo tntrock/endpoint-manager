@@ -1,7 +1,16 @@
 {% extends "base.html" %}
 {% block content %}
-<h1>腳本：{{ name }}</h1>
-<p><a href="/scripts">← 腳本</a></p>
+<div class="page-head">
+  <div><div class="crumb"><a href="/scripts">腳本</a> ／ {{ name }}</div><h1>{{ name }}</h1></div>
+  <div class="actions">
+    {% if can_approve %}<form method="post" action="/scripts/{{ id }}/approve"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><input type="hidden" name="sha256" value="{{ sha256 }}"><input type="hidden" name="timeout_minutes" value="{{ timeout_minutes }}"><button class="btn primary">核准這個版本</button></form>{% endif %}
+    <a class="btn" href="/scripts/{{ id }}/edit">編輯</a>
+    {% if status == "disabled" %}<form method="post" action="/scripts/{{ id }}/enable"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="btn">啟用</button></form>
+    {% else %}<form method="post" action="/scripts/{{ id }}/disable"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="btn">停用</button></form>{% endif %}
+    {% if used == 0 %}<form method="post" action="/scripts/{{ id }}/delete" data-confirm="確定刪除這個腳本？"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="btn danger">刪除</button></form>{% endif %}
+  </div>
+</div>
+{% if needs_other %}<div class="notice">需由另一位平台管理員核准（你修改過這個版本）。</div>{% endif %}
 <table>
   <tr><th>狀態</th><td>{{ status_label }}</td></tr>
   <tr><th>說明</th><td>{{ description }}</td></tr>
@@ -10,17 +19,8 @@
   <tr><th>建立</th><td>{{ created }}</td></tr>
   <tr><th>最後修改內容</th><td>{{ updated }}</td></tr>
   <tr><th>核准</th><td>{{ approved }}</td></tr>
-  <tr><th>被指令使用</th><td>{{ used }} 次</td></tr>
+  <tr><th>被指令使用</th><td>{{ used }} 次{% if used > 0 %}<span class="faint">已被指令使用，只能停用。</span>{% endif %}</td></tr>
 </table>
-<div class="actions">
-  {% if can_approve %}<form method="post" action="/scripts/{{ id }}/approve"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><input type="hidden" name="sha256" value="{{ sha256 }}"><input type="hidden" name="timeout_minutes" value="{{ timeout_minutes }}"><button>核准這個版本</button></form>{% endif %}
-  {% if needs_other %}<span class="muted">需由另一位平台管理員核准（你修改過這個版本）。</span>{% endif %}
-  <form method="get" action="/scripts/{{ id }}/edit"><button>編輯</button></form>
-  {% if status == "disabled" %}<form method="post" action="/scripts/{{ id }}/enable"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button>啟用</button></form>
-  {% else %}<form method="post" action="/scripts/{{ id }}/disable"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button>停用</button></form>{% endif %}
-  {% if used == 0 %}<form method="post" action="/scripts/{{ id }}/delete" data-confirm="確定刪除這個腳本？"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="danger">刪除</button></form>
-  {% else %}<span class="muted">已被指令使用，只能停用。</span>{% endif %}
-</div>
 <h2>內容</h2>
 <pre>{{ content }}</pre>
 {% endblock %}

@@ -292,8 +292,11 @@ async fn overview_ubr_and_reboot(pool: PgPool) {
     let (st, html) = s.page(&admin, "/updates/overview").await;
     assert_eq!(st, 200);
     assert!(
-        html.contains("<td>19045</td><td>5000</td><td>2</td>")
-            && html.contains("<td>22631</td><td>4000</td><td>1</td>"),
+        html.contains(
+            r#"<td class="num">19045</td><td class="num">5000</td><td class="num">2</td>"#
+        ) && html.contains(
+            r#"<td class="num">22631</td><td class="num">4000</td><td class="num">1</td>"#
+        ),
         "{html}"
     );
     assert!(

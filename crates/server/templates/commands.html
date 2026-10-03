@@ -1,41 +1,42 @@
 {% extends "base.html" %}
+{% import "_macros.html" as m %}
 {% block content %}
-<h1>遠端指令</h1>
-{% if nav.platform %}<p><a href="/scripts">腳本</a></p>{% endif %}
-{% if let Some(e) = error %}<p class="error">{{ e }}</p>{% endif %}
+<div class="page-head"><div><h1>遠端指令</h1><div class="sub">指令在裝置下次報到時送達</div></div>{% if nav.platform %}<div class="actions"><a class="btn" href="/scripts">腳本</a></div>{% endif %}</div>
+{% if let Some(e) = error %}<div class="notice error">{{ e }}</div>{% endif %}
 {% if nav.manage %}
 <form method="post" action="/commands" data-confirm="確定要對整個群組執行？" data-confirm-skip="collect apply">
   <input type="hidden" name="csrf" value="{{ nav.csrf }}">
   <fieldset><legend>對群組下指令（群組內目前使用中的裝置）</legend>
-    <p><label>動作 <select name="action">
+    <div class="row"><label class="field">動作 <select name="action">
       <option value="collect">重新收集盤點</option>
       <option value="apply">立即套用派送與更新原則</option>
       <option value="reboot">重新開機</option>
       <option value="shutdown">關機</option>
       {% if nav.platform %}<option value="script">執行腳本</option>{% endif %}
     </select></label>
-    <label>群組 <select name="group_id">{% for g in groups %}<option value="{{ g.value }}">{{ g.label }}</option>{% endfor %}</select></label></p>
-    <p><label>延遲（重新開機／關機用）<input name="delay_minutes" value="10" inputmode="numeric" size="3"> 分鐘（0–60，到時通知登入的使用者）</label></p>
-    {% if nav.platform %}<p><label>腳本 <select name="script_id"><option value="">（執行腳本時選擇）</option>{% for sc in scripts %}<option value="{{ sc.value }}">{{ sc.label }}</option>{% endfor %}</select></label></p>{% endif %}
-    <p><label>過期 <select name="expires_hours">{% for e in expires %}<option value="{{ e.0 }}" {% if e.0 == 168 %}selected{% endif %}>{{ e.1 }}</option>{% endfor %}</select></label>
-       <span class="muted">裝置在下次報到時收到；過期前沒報到的不會執行。</span></p>
-    <p><button>送出</button></p>
+    <label class="field">群組 <select name="group_id">{% for g in groups %}<option value="{{ g.value }}">{{ g.label }}</option>{% endfor %}</select></label></div>
+    <label class="field">延遲（重新開機／關機用）<input name="delay_minutes" value="10" inputmode="numeric" size="3"> 分鐘（0–60，到時通知登入的使用者）</label>
+    {% if nav.platform %}<label class="field">腳本 <select name="script_id"><option value="">（執行腳本時選擇）</option>{% for sc in scripts %}<option value="{{ sc.value }}">{{ sc.label }}</option>{% endfor %}</select></label>{% endif %}
+    <div class="row"><label class="field">過期 <select name="expires_hours">{% for e in expires %}<option value="{{ e.0 }}" {% if e.0 == 168 %}selected{% endif %}>{{ e.1 }}</option>{% endfor %}</select></label>
+       <span class="muted">裝置在下次報到時收到；過期前沒報到的不會執行。</span></div>
+    <button class="btn primary">送出</button>
   </fieldset>
 </form>
 {% endif %}
+{% if rows.is_empty() %}{% call m::empty("還沒有遠端指令", "") %}{% endcall %}{% else %}
 <table>
-  <tr><th>動作</th><th>對象</th><th>建立者</th><th>建立時間</th><th>過期</th><th>台數</th><th>等待中</th><th>成功</th><th>失敗</th><th>已過期</th><th>已取消</th></tr>
+  <tr><th>動作</th><th>對象</th><th>建立者</th><th>建立時間</th><th>過期</th><th class="num">台數</th><th class="num">等待中</th><th class="num">成功</th><th class="num">失敗</th><th class="num">已過期</th><th class="num">已取消</th></tr>
   {% for r in rows %}
   <tr>
     <td><a href="/commands/{{ r.id }}">{{ r.action }}</a>{% if r.canceled %}（已取消）{% endif %}</td><td>{{ r.target }}</td><td>{{ r.created_by }}</td>
-    <td>{{ r.created }}</td><td>{{ r.expires }}</td><td>{{ r.counts.total }}</td><td>{{ r.counts.waiting }}</td>
-    <td>{{ r.counts.succeeded }}</td>
-    <td>{% if r.counts.failed > 0 %}<span class="error">{{ r.counts.failed }}</span>{% else %}0{% endif %}</td>
-    <td>{{ r.counts.expired }}</td><td>{{ r.counts.canceled }}</td>
+    <td class="num">{{ r.created }}</td><td class="num">{{ r.expires }}</td><td class="num">{{ r.counts.total }}</td><td class="num">{{ r.counts.waiting }}</td>
+    <td class="num">{{ r.counts.succeeded }}</td>
+    <td class="num">{% if r.counts.failed > 0 %}<span class="error">{{ r.counts.failed }}</span>{% else %}0{% endif %}</td>
+    <td class="num">{{ r.counts.expired }}</td><td class="num">{{ r.counts.canceled }}</td>
   </tr>
   {% endfor %}
 </table>
-{% if rows.is_empty() %}<p class="muted">還沒有遠端指令。</p>{% endif %}
-<p>{% if let Some(u) = prev %}<a href="{{ u }}">← 上一頁</a>{% endif %}　{% if let Some(u) = next %}<a href="{{ u }}">下一頁 →</a>{% endif %}</p>
+{% endif %}
+<div class="pager">{% if let Some(u) = prev %}<a class="btn sm" href="{{ u }}">← 上一頁</a>{% endif %}{% if let Some(u) = next %}<a class="btn sm" href="{{ u }}">下一頁 →</a>{% endif %}</div>
 {% if !nav.platform %}<p class="muted">只顯示含你管理範圍內裝置的指令，台數也只算範圍內的裝置。</p>{% endif %}
 {% endblock %}

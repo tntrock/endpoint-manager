@@ -1,29 +1,29 @@
 {% extends "base.html" %}
 {% block content %}
-<h1>遠端指令：{{ run.action }}</h1>
-<p><a href="/commands">← 遠端指令</a></p>
+<div class="page-head">
+  <div><div class="crumb"><a href="/commands">遠端指令</a> ／ {{ run.action }}</div><h1>{{ run.action }}</h1>{% if !nav.platform %}<div class="sub">只顯示你管理範圍內的裝置。</div>{% endif %}</div>
+  {% if can_cancel %}
+  <div class="actions"><form method="post" action="/commands/{{ run.id }}/cancel" data-confirm="取消後還沒執行的裝置不會再執行；已在執行的無法中止。確定取消？"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="btn danger">取消</button></form></div>
+  {% endif %}
+</div>
 <table>
   <tr><th>對象</th><td>{{ run.target }}</td></tr>
   {% if let Some(d) = delay %}<tr><th>延遲</th><td>{{ d }} 分鐘</td></tr>{% endif %}
   {% if let Some(sc) = script %}<tr><th>腳本</th><td>{{ sc.0 }}（<code>{{ sc.1 }}</code>）</td></tr>{% endif %}
   <tr><th>建立</th><td>{{ run.created_by }}（{{ run.created }}）</td></tr>
   <tr><th>過期</th><td>{{ run.expires }}</td></tr>
-  <tr><th>狀態</th><td>{% if canceled %}已取消{% else %}等待中 {{ run.counts.waiting }} 台{% endif %}</td></tr>
+  <tr><th>狀態</th><td>{% if canceled %}<span class="tag off">已取消</span>{% else %}等待中 {{ run.counts.waiting }} 台{% endif %}</td></tr>
 </table>
-{% if can_cancel %}
-<form method="post" action="/commands/{{ run.id }}/cancel" data-confirm="取消後還沒執行的裝置不會再執行；已在執行的無法中止。確定取消？"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="danger">取消</button></form>
-{% endif %}
-<p>{% for f in filters %}{% if f.active %}<strong>{{ f.label }}</strong>{% else %}<a href="{{ f.url }}">{{ f.label }}</a>{% endif %}　{% endfor %}</p>
+<nav class="chips" aria-label="篩選">{% for f in filters %}{% if f.active %}<strong>{{ f.label }}</strong>{% else %}<a href="{{ f.url }}">{{ f.label }}</a>{% endif %}{% endfor %}</nav>
 <table>
-  <tr><th>主機名稱</th><th>狀態</th><th>結束碼</th><th>完成時間</th><th>輸出</th></tr>
+  <tr><th>主機名稱</th><th>狀態</th><th class="num">結束碼</th><th>完成時間</th><th>輸出</th></tr>
   {% for t in targets %}
   <tr>
-    <td><a href="/devices/{{ t.device }}">{{ t.hostname }}</a> <span class="muted">{{ t.device }}</span></td>
-    <td>{{ t.status }}</td><td>{{ t.exit_code }}</td><td>{{ t.finished }}</td>
+    <td><a href="/devices/{{ t.device }}">{{ t.hostname }}</a><span class="faint">{{ t.device }}</span></td>
+    <td>{{ t.status }}</td><td class="num">{{ t.exit_code }}</td><td class="num">{{ t.finished }}</td>
     <td>{% if !t.output.is_empty() %}<details><summary>輸出</summary><pre>{{ t.output }}</pre></details>{% endif %}</td>
   </tr>
   {% endfor %}
 </table>
-<p>{% if let Some(u) = prev %}<a href="{{ u }}">← 上一頁</a>{% endif %}　{% if let Some(u) = next %}<a href="{{ u }}">下一頁 →</a>{% endif %}</p>
-{% if !nav.platform %}<p class="muted">只顯示你管理範圍內的裝置。</p>{% endif %}
+<div class="pager">{% if let Some(u) = prev %}<a class="btn sm" href="{{ u }}">← 上一頁</a>{% endif %}{% if let Some(u) = next %}<a class="btn sm" href="{{ u }}">下一頁 →</a>{% endif %}</div>
 {% endblock %}
