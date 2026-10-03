@@ -6,11 +6,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="htmx-config" content='{"includeIndicatorStyles": false}'>
 <title>Endpoint Manager</title>
-<script src="/static/theme.js"></script>
-<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="/static/app.css">
-<script src="/static/htmx.min.js" defer></script>
-<script src="/static/app.js" defer></script>
+<script src="/static/theme.js?v={{ nav.version }}"></script>
+<link rel="icon" href="/static/favicon.svg?v={{ nav.version }}" type="image/svg+xml">
+<link rel="stylesheet" href="/static/app.css?v={{ nav.version }}">
+<script src="/static/htmx.min.js?v={{ nav.version }}" defer></script>
+<script src="/static/app.js?v={{ nav.version }}" defer></script>
 </head>
 <body{% if !nav.logged_in %} class="login"{% endif %}>
 {% if nav.logged_in %}

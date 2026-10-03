@@ -321,6 +321,31 @@ async fn static_assets_served(pool: PgPool) {
     ] {
         assert!(css.contains(needle), "app.css 缺少 {needle}");
     }
+    // 收起的手機選單不能留在 Tab 順序裡（看不到焦點）
+    let drawer = css
+        .split(".js .sidebar {")
+        .nth(1)
+        .and_then(|r| r.split('}').next())
+        .expect("窄視窗的抽屜規則");
+    assert!(drawer.contains("visibility: hidden"), "{drawer}");
+}
+
+/// 靜態檔快取一天：網址帶版本，升級後瀏覽器才會拿新的 CSS／JS
+#[sqlx::test(migrations = false)]
+async fn static_links_carry_version(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let v = env!("CARGO_PKG_VERSION");
+    let (_, login) = s.page(&s.web_client(), "/login").await;
+    let admin = s.admin_client().await;
+    let (_, home) = s.page(&admin, "/").await;
+    for html in [&login, &home] {
+        for f in ["app.css", "app.js", "theme.js", "htmx.min.js"] {
+            assert!(
+                html.contains(&format!("/static/{f}?v={v}\"")),
+                "{f} 沒帶版本：{html}"
+            );
+        }
+    }
 }
 
 #[sqlx::test(migrations = false)]

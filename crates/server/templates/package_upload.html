@@ -6,5 +6,5 @@
   <div class="actions"><button class="btn primary">上傳</button> <span id="upload-status" class="muted"></span></div>
   <p class="muted">只接受 .msi 或 .exe，單檔最大 2 GiB。MSI 會自動讀出名稱、版本、發行者與 ProductCode；上傳後請到下一頁確認偵測規則，EXE 請填靜默安裝參數。</p>
 </form>
-<script src="/static/upload.js" defer></script>
+<script src="/static/upload.js?v={{ nav.version }}" defer></script>
 {% endblock %}
