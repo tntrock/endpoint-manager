@@ -70,7 +70,7 @@ pub async fn list(
     .await
     .map_err(db_error)?;
     Ok(render(&ListPage {
-        nav: Nav::from(&s),
+        nav: Nav::new(&s, "deployments"),
         rows: rows
             .into_iter()
             .map(
@@ -97,7 +97,7 @@ struct UploadPage {
 
 pub async fn upload_page(AdminSession(s): AdminSession) -> Result<Response, Response> {
     platform(&s)?;
-    Ok(render(&UploadPage { nav: Nav::from(&s) }))
+    Ok(render(&UploadPage { nav: Nav::new(&s, "deployments") }))
 }
 
 fn bad(msg: impl Into<String>) -> Response {
@@ -268,7 +268,7 @@ async fn load_form(st: &AppState, s: &Session, id: i64) -> Result<Option<FormPag
     .fetch_optional(&st.pool)
     .await?;
     Ok(row.map(|r| FormPage {
-        nav: Nav::from(s),
+        nav: Nav::new(s, "deployments"),
         id,
         name: r.0,
         version: r.1,

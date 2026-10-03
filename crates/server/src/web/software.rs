@@ -60,7 +60,7 @@ pub async fn search(
     let truncated = rows.len() as i64 > LIMIT;
     rows.truncate(LIMIT as usize);
     Ok(render(&SoftwarePage {
-        nav: Nav::from(&s),
+        nav: Nav::new(&s, "software"),
         q: q.q,
         rows: rows
             .into_iter()

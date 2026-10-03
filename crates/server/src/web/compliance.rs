@@ -191,7 +191,7 @@ pub async fn violations(
     }));
     let qs = f.query_string();
     Ok(render(&ViolationsPage {
-        nav: Nav::from(&s),
+        nav: Nav::new(&s, "compliance"),
         rules,
         severities: select(
             &[
@@ -334,7 +334,7 @@ pub async fn overview(
     };
     let trend_max = trend.iter().map(|t| t.1).max().unwrap_or(0).max(1);
     Ok(render(&OverviewPage {
-        nav: Nav::from(&s),
+        nav: Nav::new(&s, "compliance"),
         devices_violating,
         rules: rows
             .into_iter()

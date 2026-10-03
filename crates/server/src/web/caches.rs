@@ -140,7 +140,7 @@ async fn page_for(
     .map_err(db_error)?;
     let now = Utc::now();
     Ok(render(&CachesPage {
-        nav: Nav::from(s),
+        nav: Nav::new(s, "sites"),
         new_token,
         server_url: st.agent_public_url.clone(),
         rows,

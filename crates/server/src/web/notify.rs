@@ -32,7 +32,7 @@ pub async fn page(
     }
     let n = notify::load_settings(&st.pool).await.map_err(db_error)?;
     Ok(render(&NotifyPage {
-        nav: Nav::from(&s),
+        nav: Nav::new(&s, "notify"),
         severities: Severity::ALL
             .into_iter()
             .map(|x| SelectOption {

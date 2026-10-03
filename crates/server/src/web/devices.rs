@@ -218,7 +218,7 @@ pub async fn list(
     .collect();
     Ok(render(&DevicesPage {
         groups: group_options(&st, &s, &q.group, true).await?,
-        nav: Nav::from(&s),
+        nav: Nav::new(&s, "devices"),
         prev_url: page_url(&q, page - 1),
         next_url: page_url(&q, page + 1),
         q: q.q,
@@ -481,7 +481,7 @@ pub async fn detail(
         } else {
             vec![]
         },
-        nav: Nav::from(&s),
+        nav: Nav::new(&s, "devices"),
         d: DeviceView {
             id,
             hostname,

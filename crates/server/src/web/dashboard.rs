@@ -81,7 +81,7 @@ async fn build(st: &AppState, s: &Session) -> Result<DashboardPage, AppError> {
     .fetch_all(&st.pool)
     .await?;
     Ok(DashboardPage {
-        nav: Nav::from(s),
+        nav: Nav::new(s, "overview"),
         total,
         online,
         duplicate,

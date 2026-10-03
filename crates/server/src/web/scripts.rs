@@ -64,7 +64,7 @@ pub async fn list(
         .await
         .map_err(db_error)?;
     Ok(render(&ListPage {
-        nav: Nav::from(&s),
+        nav: Nav::new(&s, "scripts"),
         rows: rows
             .into_iter()
             .map(|(id, name, status, sha, updated_by, approved_by)| ListRow {
@@ -159,7 +159,7 @@ struct FormPage {
 
 fn invalid(s: &Session, id: Option<i64>, f: FormFields, e: String) -> Response {
     let page = FormPage {
-        nav: Nav::from(s),
+        nav: Nav::new(s, "scripts"),
         id,
         f,
         error: Some(e),
@@ -170,7 +170,7 @@ fn invalid(s: &Session, id: Option<i64>, f: FormFields, e: String) -> Response {
 pub async fn new_form(AdminSession(s): AdminSession) -> Result<Response, Response> {
     platform(&s)?;
     Ok(render(&FormPage {
-        nav: Nav::from(&s),
+        nav: Nav::new(&s, "scripts"),
         id: None,
         f: FormFields {
             timeout_minutes: "30".into(),
@@ -275,7 +275,7 @@ pub async fn detail(
             && !approval_is_independent(approved_by.as_deref(), &editors));
     let mine = second && editors.contains(&s.username);
     Ok(render(&DetailPage {
-        nav: Nav::from(&s),
+        nav: Nav::new(&s, "scripts"),
         id,
         name,
         description,
@@ -305,7 +305,7 @@ pub async fn edit_form(
         return Err(not_found());
     };
     Ok(render(&FormPage {
-        nav: Nav::from(&s),
+        nav: Nav::new(&s, "scripts"),
         id: Some(id),
         f: FormFields {
             name: r.0,

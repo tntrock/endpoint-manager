@@ -125,6 +125,62 @@ async fn nav_depends_on_role(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = false)]
+async fn shell_and_nav_by_role(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let (_, login) = s.page(&s.web_client(), "/login").await;
+    assert!(!login.contains(r#"class="sidebar""#) && !login.contains("/ui/status"));
+
+    let admin = s.admin_client().await;
+    let (_, html) = s.page(&admin, "/").await;
+    assert!(html.contains(r#"<aside class="sidebar""#) && html.contains(r#"class="topbar""#));
+    assert!(html.contains(r#"hx-get="/ui/status""#) && html.contains(r#"action="/devices""#));
+    let settings = [
+        "/scripts",
+        "/tokens",
+        "/sites",
+        "/groups",
+        "/accounts",
+        "/compliance/notify",
+        "/audit",
+    ];
+    for href in settings {
+        assert!(
+            html.contains(&format!(r#"href="{href}""#)),
+            "平台管理員要看到 {href}"
+        );
+    }
+    assert!(html.contains(">設定<"));
+
+    let g = s.login_as("gary", Role::GroupAdmin, &["台北總部"]).await;
+    let (_, html) = s.page(&g, "/").await;
+    assert!(html.contains(r#"href="/tokens""#) && html.contains(">設定<"));
+    for href in settings.iter().filter(|h| **h != "/tokens") {
+        assert!(
+            !html.contains(&format!(r#"href="{href}""#)),
+            "群組管理員不應看到 {href}"
+        );
+    }
+
+    let v = s.login_as("vera", Role::Viewer, &["台北總部"]).await;
+    let (_, html) = s.page(&v, "/").await;
+    assert!(!html.contains(">設定<") && !html.contains(r#"href="/tokens""#));
+}
+
+#[sqlx::test(migrations = false)]
+async fn current_section_is_marked(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(1).await;
+    let a = s.enroll_ok(&tok, None, None).await;
+    let c = s.admin_client().await;
+    let (_, html) = s.page(&c, &format!("/devices/{}", a.device_id)).await;
+    assert!(
+        html.contains(r#"<a href="/devices" class="on" aria-current="page">"#),
+        "{html}"
+    );
+    assert_eq!(html.matches(r#"aria-current="page""#).count(), 1);
+}
+
+#[sqlx::test(migrations = false)]
 async fn static_assets_served(pool: PgPool) {
     let s = TestServer::start(pool).await;
     let c = s.web_client();

@@ -236,7 +236,7 @@ async fn list_page(
     .await?;
     let more = rows.len() as i64 > RUN_PAGE;
     Ok(ListPage {
-        nav: Nav::from(s),
+        nav: Nav::new(s, "commands"),
         rows: rows
             .into_iter()
             .take(RUN_PAGE as usize)
@@ -465,7 +465,7 @@ pub async fn detail(
         && (s.all_devices() || run.created_by == s.username)
         && s.can_manage();
     Ok(render(&DetailPage {
-        nav: Nav::from(&s),
+        nav: Nav::new(&s, "commands"),
         delay,
         script: script_sha.map(|sha| (script_name.unwrap_or_else(|| "（已刪除）".into()), sha)),
         canceled,
@@ -576,7 +576,7 @@ pub async fn device_tab(st: &AppState, s: &Session, device: Uuid) -> Result<Resp
     .fetch_all(&st.pool)
     .await?;
     Ok(render(&Tab {
-        nav: Nav::from(s),
+        nav: Nav::new(s, "commands"),
         device: device.to_string(),
         manage: s.can_manage(),
         scripts: approved_scripts(st, s).await?,

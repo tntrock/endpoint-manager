@@ -105,7 +105,7 @@ async fn page_for(
         )
         .collect();
     Ok(render(&TokensPage {
-        nav: Nav::from(s),
+        nav: Nav::new(s, "tokens"),
         new_token,
         groups: group_options(st, s, "", false).await.map_err(db_error)?,
         rows,

@@ -1,3 +1,4 @@
+{% import "_macros.html" as m %}
 <!doctype html>
 <html lang="zh-Hant">
 <head>
@@ -5,33 +6,70 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="htmx-config" content='{"includeIndicatorStyles": false}'>
 <title>Endpoint Manager</title>
+<script src="/static/theme.js"></script>
 <link rel="stylesheet" href="/static/app.css">
 <script src="/static/htmx.min.js" defer></script>
+<script src="/static/app.js" defer></script>
 </head>
-<body>
+<body{% if !nav.logged_in %} class="login"{% endif %}>
 {% if nav.logged_in %}
-<header>
-  <strong>Endpoint Manager</strong>
-  <nav>
-    <a href="/">儀表板</a>
-    <a href="/devices">裝置</a>
-    <a href="/software">軟體搜尋</a>
-    <a href="/registry">登錄檔</a>
-    <a href="/compliance">合規</a>
-    <a href="/deployments">派送</a>
-    <a href="/updates">更新原則</a>
-    <a href="/commands">遠端指令</a>
-    {% if nav.platform %}<a href="/scripts">腳本</a>{% endif %}
-    {% if nav.manage %}<a href="/tokens">註冊金鑰</a>{% endif %}
-    {% if nav.platform %}<a href="/sites">據點</a><a href="/caches">快取</a>{% endif %}
-    {% if nav.platform %}<a href="/groups">群組</a><a href="/accounts">帳號</a><a href="/audit">稽核記錄</a>{% endif %}
+<a class="skip" href="#main">跳到主要內容</a>
+<div class="app">
+<aside class="sidebar" id="sidebar">
+  <a class="brand" href="/"><span class="logo"></span><span><b>Endpoint</b><small>v{{ nav.version }}</small></span></a>
+  <nav aria-label="主要">
+    {% call m::link(nav.section, "overview", "/", "overview", "總覽", "") %}{% endcall %}
+    <div class="nav-group">資產</div>
+    {% call m::link(nav.section, "devices", "/devices", "devices", "裝置", "st-devices") %}{% endcall %}
+    {% call m::link(nav.section, "software", "/software", "software", "軟體", "") %}{% endcall %}
+    {% call m::link(nav.section, "registry", "/registry", "registry", "登錄檔", "") %}{% endcall %}
+    <div class="nav-group">安全與合規</div>
+    {% call m::link(nav.section, "compliance", "/compliance", "compliance", "合規", "st-violating") %}{% endcall %}
+    {% call m::link(nav.section, "updates", "/updates", "updates", "Windows Update", "") %}{% endcall %}
+    <div class="nav-group">作業</div>
+    {% call m::link(nav.section, "deployments", "/deployments", "deploy", "派送", "") %}{% endcall %}
+    {% call m::link(nav.section, "commands", "/commands", "command", "遠端指令", "") %}{% endcall %}
+    {% if nav.platform %}{% call m::link(nav.section, "scripts", "/scripts", "script", "腳本", "") %}{% endcall %}{% endif %}
+    {% if nav.manage %}
+    <div class="nav-group">設定</div>
+    {% call m::link(nav.section, "tokens", "/tokens", "key", "註冊金鑰", "") %}{% endcall %}
+    {% if nav.platform %}
+    {% call m::link(nav.section, "sites", "/sites", "site", "據點與快取", "") %}{% endcall %}
+    {% call m::link(nav.section, "groups", "/groups", "group", "群組", "") %}{% endcall %}
+    {% call m::link(nav.section, "accounts", "/accounts", "account", "帳號", "") %}{% endcall %}
+    {% call m::link(nav.section, "notify", "/compliance/notify", "notify", "通知", "") %}{% endcall %}
+    {% call m::link(nav.section, "audit", "/audit", "audit", "稽核記錄", "") %}{% endcall %}
+    {% endif %}
+    {% endif %}
   </nav>
-  <a href="/password">{{ nav.user }}（{{ nav.role }}）</a>
-  <form method="post" action="/logout"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button>登出</button></form>
+</aside>
+<div class="shell">
+<header class="topbar">
+  <button class="icon-btn menu-btn" type="button" aria-controls="sidebar" aria-expanded="false" aria-label="開啟選單"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-menu"></use></svg></button>
+  <form class="search" role="search" method="get" action="/devices">
+    <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-search"></use></svg>
+    <input id="q" name="q" type="search" placeholder="搜尋主機名稱、使用者或 IP…" aria-label="搜尋裝置">
+    <kbd>Ctrl K</kbd>
+  </form>
+  <span class="live"><span class="dot" aria-hidden="true"></span><span id="st-online">—</span></span>
+  <button class="icon-btn theme-btn" type="button" hidden aria-label="切換主題"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-sun"></use></svg></button>
+  <details class="user">
+    <summary><span class="avatar" aria-hidden="true">{{ nav.user.chars().next().unwrap_or('?') }}</span><span class="user-name">{{ nav.user }} <span class="muted">{{ nav.role }}</span></span></summary>
+    <div class="menu">
+      <a href="/password"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-user"></use></svg>變更密碼</a>
+      <form method="post" action="/logout"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-logout"></use></svg>登出</button></form>
+    </div>
+  </details>
 </header>
+<main id="main">
 {% endif %}
-<main>
 {% block content %}{% endblock %}
+{% if nav.logged_in %}
 </main>
+</div>
+</div>
+<div class="scrim"></div>
+<div hx-get="/ui/status" hx-trigger="load, every 60s" hx-swap="none"></div>
+{% endif %}
 </body>
 </html>

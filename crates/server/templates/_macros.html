@@ -1,0 +1,11 @@
+{% macro link(cur, sec, href, icon, label, count_id) %}
+<a href="{{ href }}"{% if cur == sec %} class="on" aria-current="page"{% endif %}><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-{{ icon }}"></use></svg>{{ label }}{% if count_id != "" %}<span class="count num" id="{{ count_id }}">—</span>{% endif %}</a>
+{% endmacro %}
+
+{% macro tab(href, label, active) %}
+<a href="{{ href }}"{% if active %} class="on" aria-current="page"{% endif %}>{{ label }}</a>
+{% endmacro %}
+
+{% macro empty(msg, hint) %}
+<div class="empty"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-empty"></use></svg><div>{{ msg }}</div>{% if hint != "" %}<div class="faint">{{ hint }}</div>{% endif %}</div>
+{% endmacro %}

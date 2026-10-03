@@ -129,7 +129,7 @@ pub async fn list(
             .await
             .map_err(db_error)?;
     Ok(render(&AccountsPage {
-        nav: Nav::from(&s),
+        nav: Nav::new(&s, "accounts"),
         roles: roles("group_admin"),
         groups: all_groups(&st, &[]).await.map_err(db_error)?,
         rows: rows.into_iter().map(|r| to_row(&st, r).0).collect(),
@@ -153,7 +153,7 @@ pub async fn detail(
     let role = row.2.clone();
     let (a, group_ids) = to_row(&st, row);
     Ok(render(&AccountPage {
-        nav: Nav::from(&s),
+        nav: Nav::new(&s, "accounts"),
         roles: roles(&role),
         groups: all_groups(&st, &group_ids).await.map_err(db_error)?,
         a,
