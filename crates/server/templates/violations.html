@@ -23,7 +23,7 @@
     <td>{{ v.group }}</td><td>{{ v.rule }}</td>
     <td><span class="sev {{ v.severity_class }}">{{ v.severity }}</span></td>
     <td>{% if v.status == "違規" %}<span class="tag bad">{{ v.status }}</span>{% else if v.status == "豁免" %}<span class="tag info">{{ v.status }}</span>{% else %}<span class="tag off">{{ v.status }}</span>{% endif %}</td>
-    <td>{{ v.summary }}</td><td class="num">{{ v.since }}</td>
+    <td>{{ v.summary }}</td><td><span class="num">{{ v.since }}</span></td>
   </tr>
   {% endfor %}
 </table>

@@ -22,7 +22,7 @@
 <table>
   <tr><th>主機名稱</th><th>狀態</th><th>說明</th><th>回報時間</th></tr>
   {% for d in devices %}
-  <tr><td><a href="/devices/{{ d.id }}">{{ d.hostname }}</a><span class="faint">{{ d.id }}</span></td><td>{{ d.state }}</td><td>{{ d.detail }}</td><td class="num">{{ d.updated }}</td></tr>
+  <tr><td><a href="/devices/{{ d.id }}">{{ d.hostname }}</a><span class="faint">{{ d.id }}</span></td><td>{{ d.state }}</td><td>{{ d.detail }}</td><td><span class="num">{{ d.updated }}</span></td></tr>
   {% endfor %}
 </table>
 <div class="pager">{% if let Some(u) = prev %}<a class="btn sm" href="{{ u }}">← 上一頁</a>{% endif %}{% if let Some(u) = next %}<a class="btn sm" href="{{ u }}">下一頁 →</a>{% endif %}</div>

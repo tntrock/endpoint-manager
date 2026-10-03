@@ -274,6 +274,10 @@ pub fn web_router(state: AppState) -> Router {
             }),
         )
         .route(
+            "/static/favicon.svg",
+            get(|| async { asset(include_str!("../../static/favicon.svg"), "image/svg+xml") }),
+        )
+        .route(
             "/static/icons.svg",
             get(|| async { asset(include_str!("../../static/icons.svg"), "image/svg+xml") }),
         )

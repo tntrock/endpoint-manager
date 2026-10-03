@@ -13,7 +13,7 @@
   {% for r in rows %}
   <tr>
     <td>{{ r.name }}</td>
-    <td class="num">{% for c in r.cidrs %}{{ c }}<br>{% endfor %}</td>
+    <td><span class="num">{% for c in r.cidrs %}{{ c }}<br>{% endfor %}</span></td>
     <td>{{ r.cache }}</td>
     <td>{% if r.fallback %}改向中央{% else %}等快取恢復{% endif %}</td>
     <td>{{ r.bandwidth }}</td>

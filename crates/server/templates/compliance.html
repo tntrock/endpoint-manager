@@ -38,7 +38,7 @@
 <div class="card">
 <h2>近 30 天違規數</h2>
 <table>
-  {% for t in trend %}<tr><td class="num">{{ t.day }}</td><td><progress value="{{ t.violating }}" max="{{ trend_max }}"></progress> <span class="num">{{ t.violating }}</span></td></tr>{% endfor %}
+  {% for t in trend %}<tr><td><span class="num">{{ t.day }}</span></td><td><progress value="{{ t.violating }}" max="{{ trend_max }}"></progress> <span class="num">{{ t.violating }}</span></td></tr>{% endfor %}
 </table>
 </div>
 {% endif %}

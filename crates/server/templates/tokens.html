@@ -30,8 +30,8 @@
   <tr><th>名稱</th><th>群組</th><th class="num">已用／上限</th><th>到期</th><th>建立者</th><th>建立時間</th><th>狀態</th></tr>
   {% for t in rows %}
   <tr>
-    <td>{{ t.name }}</td><td>{{ t.group }}</td><td class="num">{{ t.used }} / {{ t.max }}</td><td class="num">{{ t.expires }}</td>
-    <td>{{ t.created_by }}</td><td class="num">{{ t.created_at }}</td>
+    <td>{{ t.name }}</td><td>{{ t.group }}</td><td class="num">{{ t.used }} / {{ t.max }}</td><td><span class="num">{{ t.expires }}</span></td>
+    <td>{{ t.created_by }}</td><td><span class="num">{{ t.created_at }}</span></td>
     <td>{% if t.active %}
       <form class="inline" method="post" action="/tokens/{{ t.id }}/revoke"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="btn sm danger">作廢</button></form>
     {% else %}<span class="tag off">{{ t.state }}</span>{% endif %}</td>

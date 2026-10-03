@@ -29,7 +29,7 @@
     <td><a href="/devices/{{ p.id }}">{{ p.hostname }}</a></td>
     <td><a href="/devices/{{ p.old_id }}">{{ p.old_hostname }}</a></td>
     <td>{{ p.group }}</td>
-    <td class="num">{{ p.enrolled_at }}</td>
+    <td><span class="num">{{ p.enrolled_at }}</span></td>
     <td>{% if nav.manage %}<div class="actions">
       <form method="post" action="/devices/{{ p.id }}/approve"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="btn sm">核准</button></form>
       <form method="post" action="/devices/{{ p.id }}/reject"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="btn sm danger">拒絕</button></form>

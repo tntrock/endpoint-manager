@@ -20,7 +20,7 @@
   {% for t in targets %}
   <tr>
     <td><a href="/devices/{{ t.device }}">{{ t.hostname }}</a><span class="faint">{{ t.device }}</span></td>
-    <td>{{ t.status }}</td><td class="num">{{ t.exit_code }}</td><td class="num">{{ t.finished }}</td>
+    <td>{{ t.status }}</td><td class="num">{{ t.exit_code }}</td><td><span class="num">{{ t.finished }}</span></td>
     <td>{% if !t.output.is_empty() %}<details><summary>輸出</summary><pre>{{ t.output }}</pre></details>{% endif %}</td>
   </tr>
   {% endfor %}

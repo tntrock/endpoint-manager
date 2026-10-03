@@ -6,7 +6,7 @@
 </div>
 <table>
   <tr><th>主機名稱</th><th>裝置 ID</th></tr>
-  {% for r in rows %}<tr><td><a href="/devices/{{ r.0 }}">{{ r.1 }}</a></td><td class="num">{{ r.0 }}</td></tr>{% endfor %}
+  {% for r in rows %}<tr><td><a href="/devices/{{ r.0 }}">{{ r.1 }}</a></td><td><span class="num">{{ r.0 }}</span></td></tr>{% endfor %}
 </table>
 {% if truncated %}<p class="muted">只顯示前 500 台。</p>{% endif %}
 {% endblock %}

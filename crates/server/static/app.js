@@ -36,6 +36,15 @@
         setMenu(!document.body.classList.contains('menu-open'));
       });
     }
+    // htmx 載入內容的分頁籤（裝置頁）：標示目前的分頁
+    var tabTarget = document.getElementById('tab');
+    document.querySelectorAll('.tabs button[hx-get]').forEach(function (b) {
+      if (tabTarget && b.getAttribute('hx-get') === tabTarget.getAttribute('hx-get')) b.classList.add('on');
+      b.addEventListener('click', function () {
+        b.parentNode.querySelectorAll('button').forEach(function (o) { o.classList.toggle('on', o === b); });
+      });
+    });
+
     var scrim = document.querySelector('.scrim');
     if (scrim) scrim.addEventListener('click', function () { setMenu(false); });
 

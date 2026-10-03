@@ -18,7 +18,7 @@
   <tr>
     <td>{{ c.name }}</td><td>{{ c.site }}</td><td>{{ c.url }}</td>
     <td>{% if c.status == "active" %}<span class="tag ok">{{ c.status_label }}</span>{% else if c.status == "pending" %}<span class="tag warn">{{ c.status_label }}</span>{% else if c.status == "disabled" %}<span class="tag off">{{ c.status_label }}</span>{% else %}<span class="tag bad">{{ c.status_label }}</span>{% endif %}</td>
-    <td class="num">{{ c.last_seen }}</td><td>{{ c.version }}</td><td class="num">{{ c.disk }}</td><td>{{ c.progress }}</td>
+    <td><span class="num">{{ c.last_seen }}</span></td><td>{{ c.version }}</td><td class="num">{{ c.disk }}</td><td>{{ c.progress }}</td>
     <td><div class="actions">
       {% if c.status == "pending" %}
       <form method="post" action="/caches/{{ c.id }}/approve"><input type="hidden" name="csrf" value="{{ nav.csrf }}">
@@ -56,7 +56,7 @@
 <table>
   <tr><th>名稱</th><th class="num">已用／上限</th><th>到期</th><th>建立者</th><th>狀態</th></tr>
   {% for t in tokens %}
-  <tr><td>{{ t.name }}</td><td class="num">{{ t.used }} / {{ t.max }}</td><td class="num">{{ t.expires }}</td><td>{{ t.created_by }}</td>
+  <tr><td>{{ t.name }}</td><td class="num">{{ t.used }} / {{ t.max }}</td><td><span class="num">{{ t.expires }}</span></td><td>{{ t.created_by }}</td>
     <td>{% if t.state.is_empty() %}
       <form class="inline" method="post" action="/caches/tokens/{{ t.id }}/revoke"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="btn sm danger">作廢</button></form>
     {% else %}<span class="tag off">{{ t.state }}</span>{% endif %}</td></tr>

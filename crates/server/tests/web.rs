@@ -292,6 +292,7 @@ async fn static_assets_served(pool: PgPool) {
         ("/static/app.js", "text/javascript"),
         ("/static/theme.js", "text/javascript"),
         ("/static/icons.svg", "image/svg+xml"),
+        ("/static/favicon.svg", "image/svg+xml"),
     ] {
         let r = c.get(s.web_url(path)).send().await.unwrap();
         assert_eq!(r.status(), 200, "{path}");

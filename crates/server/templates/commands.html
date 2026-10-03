@@ -29,7 +29,7 @@
   {% for r in rows %}
   <tr>
     <td><a href="/commands/{{ r.id }}">{{ r.action }}</a>{% if r.canceled %}（已取消）{% endif %}</td><td>{{ r.target }}</td><td>{{ r.created_by }}</td>
-    <td class="num">{{ r.created }}</td><td class="num">{{ r.expires }}</td><td class="num">{{ r.counts.total }}</td><td class="num">{{ r.counts.waiting }}</td>
+    <td><span class="num">{{ r.created }}</span></td><td><span class="num">{{ r.expires }}</span></td><td class="num">{{ r.counts.total }}</td><td class="num">{{ r.counts.waiting }}</td>
     <td class="num">{{ r.counts.succeeded }}</td>
     <td class="num">{% if r.counts.failed > 0 %}<span class="error">{{ r.counts.failed }}</span>{% else %}0{% endif %}</td>
     <td class="num">{{ r.counts.expired }}</td><td class="num">{{ r.counts.canceled }}</td>

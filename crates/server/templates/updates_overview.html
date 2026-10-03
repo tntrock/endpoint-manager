@@ -16,7 +16,7 @@
 {% if reboots.is_empty() %}<p class="muted">沒有待重開機的電腦（或 Agent 尚未回報）。</p>{% else %}
 <table>
   <tr><th>主機名稱</th><th>待重開機起始</th><th class="num">天數</th></tr>
-  {% for r in reboots %}<tr><td><a href="/devices/{{ r.id }}">{{ r.hostname }}</a><span class="faint">{{ r.id }}</span></td><td class="num">{{ r.since }}</td><td class="num">{{ r.days }} 天</td></tr>{% endfor %}
+  {% for r in reboots %}<tr><td><a href="/devices/{{ r.id }}">{{ r.hostname }}</a><span class="faint">{{ r.id }}</span></td><td><span class="num">{{ r.since }}</span></td><td class="num">{{ r.days }} 天</td></tr>{% endfor %}
 </table>
 {% endif %}
 </div>

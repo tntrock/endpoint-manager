@@ -22,8 +22,8 @@
   {% for d in rows %}
   <tr>
     <td><a href="/devices/{{ d.id }}">{{ d.hostname }}</a></td>
-    <td>{{ d.group }}</td><td>{{ d.domain }}</td><td>{{ d.os }}</td><td>{{ d.user }}</td><td class="num">{{ d.ip }}</td>
-    <td class="num">{{ d.last_seen }}</td>
+    <td>{{ d.group }}</td><td>{{ d.domain }}</td><td>{{ d.os }}</td><td>{{ d.user }}</td><td><span class="num">{{ d.ip }}</span></td>
+    <td><span class="num">{{ d.last_seen }}</span></td>
     <td><span class="tag {{ d.badge }}">{{ d.badge_label }}</span></td>
   </tr>
   {% endfor %}

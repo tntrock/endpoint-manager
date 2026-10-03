@@ -17,7 +17,7 @@
   <tr><th>帳號</th><th>角色</th><th>群組</th><th>狀態</th><th>建立時間</th></tr>
   {% for a in rows %}
   <tr><td><a href="/accounts/{{ a.id }}">{{ a.username }}</a></td><td>{{ a.role }}</td><td>{{ a.groups }}</td>
-    <td><span class="tag {{ a.state_class }}">{{ a.state }}</span></td><td class="num">{{ a.created_at }}</td></tr>
+    <td><span class="tag {{ a.state_class }}">{{ a.state }}</span></td><td><span class="num">{{ a.created_at }}</span></td></tr>
   {% endfor %}
 </table>
 {% endblock %}
