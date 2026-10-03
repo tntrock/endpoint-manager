@@ -6,7 +6,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Redirect, Response};
 use chrono::{DateTime, Utc};
 
-use super::auth::{AdminSession, Nav, Session, check_csrf};
+use super::auth::{AdminSession, Nav, Session, check_csrf, platform};
 use super::commands::{actor, command_error};
 use crate::commands::{CmdError, cmd_error_kind};
 
@@ -18,17 +18,9 @@ fn is_form_error(e: &anyhow::Error) -> bool {
     )
 }
 use super::devices::db_error;
-use super::{fmt_time, forbidden, not_found, render};
+use super::{fmt_time, not_found, render};
 use crate::AppState;
 use crate::commands::scripts::{self, ScriptInput, approval_is_independent};
-
-fn platform(s: &Session) -> Result<(), Response> {
-    if s.all_devices() {
-        Ok(())
-    } else {
-        Err(forbidden())
-    }
-}
 
 pub fn status_label(status: &str) -> &'static str {
     match status {

@@ -7,10 +7,10 @@ use axum::response::{IntoResponse, Redirect, Response};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
-use super::auth::{AdminSession, Nav, Role, Session, check_csrf};
+use super::auth::{AdminSession, Nav, Role, check_csrf, platform};
 use super::devices::{SelectOption, db_error};
 use super::login::CsrfForm;
-use super::{fmt_time, forbidden, not_found, render};
+use super::{fmt_time, not_found, render};
 use crate::AppState;
 use crate::accounts::{self, NewAdmin};
 
@@ -112,14 +112,6 @@ fn roles(current: &str) -> Vec<SelectOption> {
             selected: r.as_str() == current,
         })
         .collect()
-}
-
-fn platform(s: &Session) -> Result<(), Response> {
-    if s.all_devices() {
-        Ok(())
-    } else {
-        Err(forbidden())
-    }
 }
 
 fn conflict(e: anyhow::Error) -> Response {

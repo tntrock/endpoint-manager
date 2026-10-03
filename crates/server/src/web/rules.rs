@@ -9,9 +9,9 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::auth::{AdminSession, Nav, Session, check_csrf};
+use super::auth::{AdminSession, Nav, Session, check_csrf, platform};
 use super::devices::{SelectOption, db_error};
-use super::{forbidden, not_found, render};
+use super::{not_found, render};
 use crate::AppState;
 use crate::compliance::admin::{self, RuleInput};
 use crate::compliance::rules::{KINDS, Params, Rule, Severity, kind_label};
@@ -386,14 +386,6 @@ pub async fn create_from_templates(
         msg.push_str(&format!("、失敗 {} 條", r.failed.len()));
     }
     render_templates(&st, &s, Some(msg), r.failed).await
-}
-
-fn platform(s: &Session) -> Result<(), Response> {
-    if s.all_devices() {
-        Ok(())
-    } else {
-        Err(forbidden())
-    }
 }
 
 fn conflict(e: impl std::fmt::Display) -> Response {

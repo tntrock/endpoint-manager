@@ -157,16 +157,9 @@ async fn check_registry_cap(
 }
 
 /// 同一個範本已建立過（唯一索引擋下）
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("這個範本已經建立過")]
 pub struct TemplateExists;
-
-impl std::fmt::Display for TemplateExists {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("這個範本已經建立過")
-    }
-}
-
-impl std::error::Error for TemplateExists {}
 
 pub async fn create_rule(pool: &PgPool, i: &RuleInput, actor: &str) -> anyhow::Result<i64> {
     let v = validate(i)?;

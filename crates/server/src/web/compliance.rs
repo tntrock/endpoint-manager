@@ -326,11 +326,7 @@ pub async fn overview(
              WHERE day > $1::date - 30 GROUP BY day ORDER BY day",
         )
         // 快照以管理網頁時區的日期記錄：區間也用同一個「今天」
-        .bind(
-            chrono::Utc::now()
-                .with_timezone(&st.display_offset)
-                .date_naive(),
-        )
+        .bind(crate::compliance::today(chrono::Utc::now()))
         .fetch_all(&st.pool)
         .await?
     } else {

@@ -14,6 +14,7 @@ pub mod devices;
 pub mod diff;
 pub mod enroll;
 pub mod error;
+pub mod gencache;
 pub mod groups;
 pub mod heartbeat;
 pub mod identity;
@@ -92,7 +93,7 @@ impl AppState {
             agent_msi: None,
             agent_public_url: String::new(),
             server_names: Arc::new(vec![]),
-            rules: Arc::new(compliance::RuleCache::new()),
+            rules: Arc::new(compliance::RuleCache::default()),
             notify: Arc::new(notify::NotifySecrets::default()),
             deploy: Arc::new(deploy::assign::DeployCache::default()),
             package_dir: "packages".into(),
@@ -220,7 +221,7 @@ pub async fn serve(cfg: config::Config) -> anyhow::Result<()> {
         }
     });
     compliance::set_display_offset(state.display_offset);
-    compliance::worker::spawn(pool.clone(), state.display_offset);
+    compliance::worker::spawn(pool.clone());
     commands::worker::spawn(pool.clone());
     notify::worker::spawn(pool.clone(), state.notify.clone());
 

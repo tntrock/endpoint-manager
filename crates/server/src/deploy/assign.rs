@@ -1,13 +1,12 @@
 //! 報到時的派送指派：未停止的派送快取在記憶體（依 deploy_state.generation 判斷過期），
 //! 每次報到只依裝置群組篩選，不額外查資料庫。
 
-use std::sync::Arc;
+use std::future::Future;
 
 use protocol::deploy::{Assignment, DeployAction, Detect, PackageKind, PackageSpec};
 use sqlx::PgPool;
-use tokio::sync::RwLock;
 
-use crate::compliance::CHECK_EVERY;
+use crate::gencache::{GenerationCache, Snapshot};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stage {
@@ -185,57 +184,21 @@ pub async fn load(pool: &PgPool) -> Result<DeploySet, sqlx::Error> {
     })
 }
 
-/// 同 `compliance::RuleCache`：報到路徑最多每 CHECK_EVERY 確認一次 generation。
-pub struct DeployCache {
-    current: RwLock<Arc<DeploySet>>,
-    checked: std::sync::Mutex<Option<std::time::Instant>>,
-}
+pub type DeployCache = GenerationCache<DeploySet>;
 
-impl Default for DeployCache {
-    fn default() -> Self {
-        DeployCache {
-            current: RwLock::new(Arc::new(DeploySet {
-                generation: -1,
-                deployments: vec![],
-            })),
-            checked: std::sync::Mutex::new(None),
+impl Snapshot for DeploySet {
+    const GENERATION_SQL: &'static str = "SELECT generation FROM deploy_state";
+    fn generation(&self) -> i64 {
+        self.generation
+    }
+    fn empty() -> Self {
+        DeploySet {
+            generation: -1,
+            deployments: vec![],
         }
     }
-}
-
-impl DeployCache {
-    pub async fn get(&self, pool: &PgPool) -> Result<Arc<DeploySet>, sqlx::Error> {
-        let generation: i64 = sqlx::query_scalar("SELECT generation FROM deploy_state")
-            .fetch_one(pool)
-            .await?;
-        {
-            let cur = self.current.read().await;
-            if cur.generation == generation {
-                return Ok(cur.clone());
-            }
-        }
-        let fresh = Arc::new(load(pool).await?);
-        *self.current.write().await = fresh.clone();
-        Ok(fresh)
-    }
-
-    pub async fn get_throttled(&self, pool: &PgPool) -> Result<Arc<DeploySet>, sqlx::Error> {
-        let fresh_enough = self
-            .checked
-            .lock()
-            .expect("cache lock")
-            .is_some_and(|t| t.elapsed() < CHECK_EVERY);
-        if fresh_enough {
-            return Ok(self.current.read().await.clone());
-        }
-        let r = self.get(pool).await?;
-        *self.checked.lock().expect("cache lock") = Some(std::time::Instant::now());
-        Ok(r)
-    }
-
-    /// 下次報到時重新確認 generation（測試與管理動作後使用）
-    pub fn invalidate(&self) {
-        *self.checked.lock().expect("cache lock") = None;
+    fn load(pool: &PgPool) -> impl Future<Output = Result<Self, sqlx::Error>> + Send {
+        load(pool)
     }
 }
 

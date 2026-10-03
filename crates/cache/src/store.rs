@@ -20,9 +20,7 @@ pub fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-fn is_sha256(s: &str) -> bool {
-    s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
-}
+use protocol::is_sha256;
 
 pub struct Store {
     dir: PathBuf,

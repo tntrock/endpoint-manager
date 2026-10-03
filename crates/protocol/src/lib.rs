@@ -8,6 +8,7 @@ pub mod regpath;
 pub mod update;
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -446,6 +447,32 @@ pub fn validate_strings<T: Serialize>(value: &T) -> Result<(), ValidationError> 
         }
     }
     walk(&serde_json::to_value(value).expect("value serializes"))
+}
+
+/// 64 位十六進位字元（套件以 sha256 為檔名，格式不對的不能拿來組路徑）
+pub fn is_sha256(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// 寫入 `<path>.tmp` 並 fsync 後再 rename：斷電時不會留下寫一半或內容為零的檔案。
+/// 暫存檔一律重新建立（不沿用可能被他人預先建立、帶著其他擁有者的檔案）。
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    match std::fs::remove_file(&tmp) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+        _ => {}
+    }
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp)?;
+    f.write_all(bytes)?;
+    f.sync_all()?;
+    drop(f);
+    std::fs::rename(&tmp, path)
 }
 
 #[cfg(test)]

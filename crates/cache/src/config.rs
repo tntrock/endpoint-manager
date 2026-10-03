@@ -103,18 +103,7 @@ pub fn secure_data_dir(dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 先寫暫存檔再改名：中途失敗不會留下寫一半的檔案
-pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-    let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
-    let tmp = PathBuf::from(tmp);
-    let mut f = std::fs::File::create(&tmp)?;
-    f.write_all(bytes)?;
-    f.sync_all()?;
-    drop(f);
-    std::fs::rename(&tmp, path)
-}
+pub use protocol::write_atomic;
 
 #[cfg(test)]
 mod tests {

@@ -68,14 +68,6 @@ impl AuthCache {
             .expect("auth lock")
             .retain(|_, (at, _)| at.elapsed() < ttl);
     }
-
-    pub fn len(&self) -> usize {
-        self.entries.lock().expect("auth lock").len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
 }
 
 /// 每隔 `every` 移除過期項目（與報到成敗無關）
@@ -101,9 +93,9 @@ mod tests {
         assert_eq!(a.get("other", 1), None);
         std::thread::sleep(Duration::from_millis(60));
         assert_eq!(a.get("fp", 1), None);
-        assert_eq!(a.len(), 2);
+        assert_eq!(a.entries.lock().unwrap().len(), 2, "過期的還在，等 prune");
         a.prune();
-        assert_eq!(a.len(), 0);
+        assert!(a.entries.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -131,6 +123,6 @@ mod tests {
         let task = tokio::spawn(prune_loop(a.clone(), Duration::from_millis(20)));
         tokio::time::sleep(Duration::from_millis(100)).await;
         task.abort();
-        assert!(a.is_empty());
+        assert!(a.entries.lock().unwrap().is_empty());
     }
 }

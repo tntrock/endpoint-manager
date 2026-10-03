@@ -9,20 +9,12 @@ use axum::response::{IntoResponse, Redirect, Response};
 use chrono::{DateTime, Utc};
 use serde_json::json;
 
-use super::auth::{AdminSession, Nav, Session, check_csrf};
+use super::auth::{AdminSession, Nav, Session, check_csrf, platform};
 use super::devices::db_error;
-use super::{fmt_time, forbidden, not_found, render};
+use super::{fmt_time, not_found, render};
 use crate::AppState;
 use crate::deploy::admin::{self, PackageInput};
 use crate::deploy::store;
-
-fn platform(s: &Session) -> Result<(), Response> {
-    if s.all_devices() {
-        Ok(())
-    } else {
-        Err(forbidden())
-    }
-}
 
 /// 位元組數轉成易讀的大小
 pub fn human_size(n: i64) -> String {
