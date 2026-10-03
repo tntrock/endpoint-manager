@@ -281,19 +281,27 @@ async fn channels(st: &AppState) -> Result<Vec<ChannelStatus>, sqlx::Error> {
 
 type SummaryRow = (i64, String, String, i64, i64, i64);
 
-pub async fn overview(
-    State(st): State<AppState>,
-    AdminSession(s): AdminSession,
-) -> Result<Response, AppError> {
-    let devices_violating: i64 = sqlx::query_scalar(
+/// 範圍內有違規的裝置數（合規總覽與側邊欄共用）
+pub(super) async fn devices_violating(
+    pool: &sqlx::PgPool,
+    s: &Session,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
         "SELECT count(DISTINCT v.device_id) FROM device_violations v \
          JOIN devices d ON d.id = v.device_id \
          WHERE v.status = 'violating' AND ($1::bool OR d.group_id = ANY($2::bigint[]))",
     )
     .bind(s.all_devices())
     .bind(&s.groups)
-    .fetch_one(&st.pool)
-    .await?;
+    .fetch_one(pool)
+    .await
+}
+
+pub async fn overview(
+    State(st): State<AppState>,
+    AdminSession(s): AdminSession,
+) -> Result<Response, AppError> {
+    let devices_violating = devices_violating(&st.pool, &s).await?;
     // 平台管理員不需要範圍條件（省掉每列違規的 EXISTS 檢查）
     let scope = if s.all_devices() {
         ""

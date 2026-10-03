@@ -123,6 +123,7 @@ fn asset(body: &'static str, content_type: &'static str) -> Response {
 pub fn web_router(state: AppState) -> Router {
     Router::new()
         .route("/", get(dashboard::page))
+        .route("/ui/status", get(dashboard::status))
         .route("/login", get(login::form).post(login::submit))
         .route("/logout", post(login::logout))
         .route("/devices", get(devices::list))

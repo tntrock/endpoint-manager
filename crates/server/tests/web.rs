@@ -181,6 +181,73 @@ async fn current_section_is_marked(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = false)]
+async fn ui_status_counts_by_scope(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tp = s.create_group_token("台北總部", 1).await;
+    let kh = s.create_group_token("高雄廠", 1).await;
+    s.enroll_ok(&tp, None, None).await;
+    s.enroll_ok(&kh, None, None).await;
+    sqlx::query("UPDATE devices SET last_seen_at = now()")
+        .execute(&s.pool)
+        .await
+        .unwrap();
+    let rule: i64 = sqlx::query_scalar(
+        "INSERT INTO compliance_rules (name, kind, severity, params, created_by) \
+         VALUES ('r', 'forbidden_software', 'high', '{\"name\":\"x\"}'::jsonb, 't') RETURNING id",
+    )
+    .fetch_one(&s.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO device_violations (device_id, rule_id, status, detail) \
+         SELECT id, $1, 'violating', '{}'::jsonb FROM devices",
+    )
+    .bind(rule)
+    .execute(&s.pool)
+    .await
+    .unwrap();
+
+    let r = s
+        .web_client()
+        .get(s.web_url("/ui/status"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 401, "未登入不能取得數字");
+
+    let admin = s.admin_client().await;
+    let (st, body) = s.page(&admin, "/ui/status").await;
+    assert_eq!(st, 200);
+    assert!(
+        body.contains(r#"<span id="st-online" hx-swap-oob="true">2 台在線</span>"#),
+        "{body}"
+    );
+    assert!(
+        body.contains(r#"id="st-devices" hx-swap-oob="true">2<"#),
+        "{body}"
+    );
+    assert!(
+        body.contains(r#"class="count num hot" id="st-violating" hx-swap-oob="true">2<"#),
+        "{body}"
+    );
+
+    let g = s.login_as("gary", Role::GroupAdmin, &["台北總部"]).await;
+    let (_, body) = s.page(&g, "/ui/status").await;
+    assert!(
+        body.contains(">1 台在線<"),
+        "群組管理員只算自己的群組：{body}"
+    );
+    assert!(
+        body.contains(r#"id="st-devices" hx-swap-oob="true">1<"#),
+        "{body}"
+    );
+    assert!(
+        body.contains(r#"id="st-violating" hx-swap-oob="true">1<"#),
+        "{body}"
+    );
+}
+
+#[sqlx::test(migrations = false)]
 async fn static_assets_served(pool: PgPool) {
     let s = TestServer::start(pool).await;
     let c = s.web_client();

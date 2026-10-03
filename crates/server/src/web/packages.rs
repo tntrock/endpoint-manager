@@ -97,7 +97,9 @@ struct UploadPage {
 
 pub async fn upload_page(AdminSession(s): AdminSession) -> Result<Response, Response> {
     platform(&s)?;
-    Ok(render(&UploadPage { nav: Nav::new(&s, "deployments") }))
+    Ok(render(&UploadPage {
+        nav: Nav::new(&s, "deployments"),
+    }))
 }
 
 fn bad(msg: impl Into<String>) -> Response {
