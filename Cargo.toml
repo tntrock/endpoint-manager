@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/protocol", "crates/server", "crates/agent", "crates/cache", "tools/loadsim"]
 
 [workspace.package]
-version = "0.7.0"
+version = "0.7.1"
 edition = "2024"
 license = "GPL-3.0-only"
 repository = "https://github.com/tntrock/endpoint-manager"
