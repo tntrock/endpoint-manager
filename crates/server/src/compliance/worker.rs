@@ -236,8 +236,8 @@ pub async fn cleanup_history(pool: &PgPool, today: chrono::NaiveDate) -> Result<
     Ok(events)
 }
 
-/// display_offset：以管理網頁的時區決定每日快照屬於哪一天
-pub fn spawn(pool: PgPool, display_offset: chrono::FixedOffset) {
+/// 每日快照屬於管理網頁時區的哪一天（`compliance::today`，啟動時已設定時區）
+pub fn spawn(pool: PgPool) {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(5));
         let mut last_expire: Option<Instant> = None;
@@ -255,9 +255,7 @@ pub fn spawn(pool: PgPool, display_offset: chrono::FixedOffset) {
             }
             if last_hourly.is_none_or(|t| t.elapsed() >= Duration::from_secs(3600)) {
                 last_hourly = Some(Instant::now());
-                let today = chrono::Utc::now()
-                    .with_timezone(&display_offset)
-                    .date_naive();
+                let today = super::today(chrono::Utc::now());
                 if let Err(e) = snapshot_daily(&pool, today).await {
                     tracing::error!(error = %e, "compliance snapshot failed");
                 }

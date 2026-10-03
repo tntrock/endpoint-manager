@@ -23,16 +23,9 @@ pub fn file_path(dir: &Path, sha256: &str) -> PathBuf {
 const TEMP_PREFIX: &str = ".upload-";
 
 /// 檔案超過上限（網頁回 413）
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("檔案超過上限 2 GiB")]
 pub struct TooLarge;
-
-impl std::fmt::Display for TooLarge {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "檔案超過上限 2 GiB")
-    }
-}
-
-impl std::error::Error for TooLarge {}
 
 /// 暫存檔守衛：上傳失敗、被取消（連線中斷時 future 被 drop）或改名失敗時都會刪檔
 struct TempFile {

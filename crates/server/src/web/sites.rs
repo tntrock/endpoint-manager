@@ -6,20 +6,12 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Redirect, Response};
 use serde::Deserialize;
 
-use super::auth::{AdminSession, Nav, Session, check_csrf};
+use super::auth::{AdminSession, Nav, Session, check_csrf, platform};
 use super::devices::db_error;
 use super::login::CsrfForm;
-use super::{forbidden, not_found, render};
+use super::{not_found, render};
 use crate::AppState;
 use crate::branch::sites::{self, SiteInput};
-
-fn platform(s: &Session) -> Result<(), Response> {
-    if s.all_devices() {
-        Ok(())
-    } else {
-        Err(forbidden())
-    }
-}
 
 /// 快取狀態的顯示文字
 pub fn cache_status_label(status: &str) -> &'static str {

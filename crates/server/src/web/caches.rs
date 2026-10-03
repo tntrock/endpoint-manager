@@ -7,22 +7,14 @@ use axum::response::{IntoResponse, Redirect, Response};
 use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
 
-use super::auth::{AdminSession, Nav, Session, check_csrf};
+use super::auth::{AdminSession, Nav, Session, check_csrf, platform};
 use super::devices::{action_error, db_error};
 use super::login::CsrfForm;
 use super::sites::cache_status_label;
-use super::{fmt_time, forbidden, not_found, render};
+use super::{fmt_time, not_found, render};
 use crate::AppState;
 use crate::branch::caches;
 use crate::tokens::{NewToken, TokenKind, create_token_in, revoke_token};
-
-fn platform(s: &Session) -> Result<(), Response> {
-    if s.all_devices() {
-        Ok(())
-    } else {
-        Err(forbidden())
-    }
-}
 
 pub struct CacheRow {
     pub id: i64,

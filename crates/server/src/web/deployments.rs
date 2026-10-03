@@ -8,9 +8,9 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use uuid::Uuid;
 
-use super::auth::{AdminSession, Nav, Session, check_csrf};
+use super::auth::{AdminSession, Nav, Session, check_csrf, platform};
 use super::devices::{SelectOption, action_error, db_error, device_group_in_scope};
-use super::{enc, fmt_time, forbidden, not_found, render};
+use super::{enc, fmt_time, not_found, render};
 use crate::AppState;
 use crate::deploy::admin::{self, DeploymentInput, Transition};
 use crate::error::AppError;
@@ -31,14 +31,6 @@ const TARGET: &str = "v.status = 'active' \
              OR EXISTS (SELECT 1 FROM deployment_groups i WHERE i.deployment_id = d.id \
                         AND i.mode = 'include' AND i.group_id = v.group_id) \
          END";
-
-fn platform(s: &Session) -> Result<(), Response> {
-    if s.all_devices() {
-        Ok(())
-    } else {
-        Err(forbidden())
-    }
-}
 
 pub fn stage_label(stage: &str) -> &'static str {
     match stage {

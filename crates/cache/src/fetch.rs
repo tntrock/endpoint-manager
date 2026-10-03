@@ -43,7 +43,7 @@ impl Catalog {
     pub fn replace(&self, r: &CacheCheckinResponse) {
         // sha256 是檔名：格式不對的（中央資料損壞）略過，避免寫到資料目錄以外
         let valid = |p: &&CachePackage| {
-            let ok = p.sha256.len() == 64 && p.sha256.bytes().all(|b| b.is_ascii_hexdigit());
+            let ok = protocol::is_sha256(&p.sha256);
             if !ok {
                 tracing::warn!(package_id = p.id, sha256 = %p.sha256, "ignoring package with bad sha256");
             }

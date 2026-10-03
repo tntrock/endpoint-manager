@@ -335,6 +335,15 @@ impl From<&Session> for Nav {
     }
 }
 
+/// 平台管理員才能做的動作（其他角色回 403）
+pub fn platform(s: &Session) -> Result<(), Response> {
+    if s.all_devices() {
+        Ok(())
+    } else {
+        Err(super::forbidden())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -19,24 +19,7 @@ pub struct AgentState {
     pub rejected: BTreeMap<Section, String>,
 }
 
-/// 寫入暫存檔並 fsync 後再 rename：斷電時不會留下寫一半或內容為零的檔案。
-/// 暫存檔一律重新建立（不沿用可能被他人預先建立、帶著其他擁有者的檔案）。
-pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-    let tmp = path.with_extension("json.tmp");
-    match std::fs::remove_file(&tmp) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
-        _ => {}
-    }
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&tmp)?;
-    f.write_all(bytes)?;
-    f.sync_all()?;
-    drop(f);
-    std::fs::rename(&tmp, path)
-}
+pub use protocol::write_atomic;
 
 impl AgentState {
     pub fn load(dir: &Path) -> anyhow::Result<Self> {

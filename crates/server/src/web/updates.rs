@@ -8,9 +8,9 @@ use chrono::{DateTime, NaiveDate, Utc};
 use serde::Deserialize;
 use uuid::Uuid;
 
-use super::auth::{AdminSession, Nav, Session, check_csrf};
+use super::auth::{AdminSession, Nav, Session, check_csrf, platform};
 use super::devices::{SelectOption, action_error, db_error};
-use super::{enc, fmt_time, forbidden, not_found, render};
+use super::{enc, fmt_time, not_found, render};
 use crate::AppState;
 use crate::error::AppError;
 use crate::updates::admin::{self, PauseKind, PolicyInput};
@@ -29,18 +29,6 @@ const ERROR: &str = "(s.state = 'error' AND (s.policy_id IS NULL OR s.policy_id 
 
 /// Windows Update 寬限期的預設值（期限有填、寬限沒填時使用）
 const DEFAULT_GRACE: u32 = 2;
-
-fn platform(s: &Session) -> Result<(), Response> {
-    if s.all_devices() {
-        Ok(())
-    } else {
-        Err(forbidden())
-    }
-}
-
-fn today(st: &AppState) -> NaiveDate {
-    Utc::now().with_timezone(&st.display_offset).date_naive()
-}
 
 fn pause_labels(set: &PolicySettings, today: NaiveDate) -> Vec<String> {
     [
@@ -190,7 +178,7 @@ pub async fn list(
         .fetch_all(&st.pool)
         .await?;
     let mut names = group_names(&st, &s).await?;
-    let today = today(&st);
+    let today = crate::compliance::today(Utc::now());
     Ok(render(&ListPage {
         nav: Nav::from(&s),
         rows: rows
@@ -607,7 +595,7 @@ pub async fn detail(
         .remove(&id)
         .unwrap_or_default()
         .join("、");
-    let today = today(&st);
+    let today = crate::compliance::today(Utc::now());
     Ok(render(&DetailPage {
         nav: Nav::from(&s),
         id,
@@ -652,7 +640,7 @@ pub async fn act(
     platform(&s)?;
     let pool = &st.pool;
     let user = s.username.as_str();
-    let today = today(&st);
+    let today = crate::compliance::today(Utc::now());
     let r = match action.as_str() {
         "pause-quality" => admin::set_pause(pool, id, PauseKind::Quality, Some(today), user).await,
         "resume-quality" => admin::set_pause(pool, id, PauseKind::Quality, None, user).await,

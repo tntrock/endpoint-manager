@@ -235,10 +235,6 @@ pub struct Worker<C: Collector, R: Runner> {
     source: Option<DownloadSource>,
 }
 
-fn is_sha256(s: &str) -> bool {
-    s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
-}
-
 fn truncate(msg: String) -> String {
     msg.chars().take(MAX_RESULT_MESSAGE).collect()
 }
@@ -569,7 +565,7 @@ impl<C: Collector, R: Runner> Worker<C, R> {
             PackageKind::Exe => "exe",
             PackageKind::Unknown => return None,
         };
-        if !is_sha256(&spec.sha256) {
+        if !protocol::is_sha256(&spec.sha256) {
             self.fail_before_run(client, a, now, "套件雜湊格式錯誤".into())
                 .await;
             return None;
