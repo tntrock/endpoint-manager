@@ -403,24 +403,30 @@ async fn load(
     Ok(row.map(|(n, set, rev)| (n, parse_settings(&set), rev)))
 }
 
+/// 資料庫裡最新的原則內容（含 revision），編輯表單與 409 頁面共用
+async fn current_fields(st: &AppState, id: i64) -> Result<Option<FormFields>, sqlx::Error> {
+    let Some((name, set, revision)) = load(st, id).await? else {
+        return Ok(None);
+    };
+    let groups: Vec<i64> =
+        sqlx::query_scalar("SELECT group_id FROM update_policy_groups WHERE policy_id = $1")
+            .bind(id)
+            .fetch_all(&st.pool)
+            .await?;
+    Ok(Some(FormFields {
+        revision: revision.to_string(),
+        ..FormFields::from_policy(name, &set.unwrap_or_default(), groups)
+    }))
+}
+
 pub async fn edit_form(
     State(st): State<AppState>,
     AdminSession(s): AdminSession,
     Path(id): Path<i64>,
 ) -> Result<Response, Response> {
     platform(&s)?;
-    let Some((name, set, revision)) = load(&st, id).await.map_err(db_error)? else {
+    let Some(f) = current_fields(&st, id).await.map_err(db_error)? else {
         return Err(not_found());
-    };
-    let groups: Vec<i64> =
-        sqlx::query_scalar("SELECT group_id FROM update_policy_groups WHERE policy_id = $1")
-            .bind(id)
-            .fetch_all(&st.pool)
-            .await
-            .map_err(db_error)?;
-    let f = FormFields {
-        revision: revision.to_string(),
-        ..FormFields::from_policy(name, &set.unwrap_or_default(), groups)
     };
     let page = form_page(&st, &s, Some(id), f, None)
         .await
@@ -446,9 +452,13 @@ pub async fn update(
         Ok(()) => Ok(Redirect::to(&format!("/updates/{id}")).into_response()),
         Err(e) => match e.downcast_ref::<crate::commands::CmdError>() {
             Some(crate::commands::CmdError::NotFound(_)) => Err(not_found()),
-            Some(crate::commands::CmdError::Conflict(m)) => {
-                let m = m.clone();
-                let page = form_page(&st, &s, Some(id), f, Some(m))
+            // 別人改過：顯示最新內容與 revision，請使用者重新修改（直接重送不會再 409）
+            Some(crate::commands::CmdError::Conflict(_)) => {
+                let Some(latest) = current_fields(&st, id).await.map_err(db_error)? else {
+                    return Err(not_found());
+                };
+                let msg = "原則已被其他人修改，以下是最新內容；請重新修改後再儲存".to_string();
+                let page = form_page(&st, &s, Some(id), latest, Some(msg))
                     .await
                     .map_err(db_error)?;
                 Ok((axum::http::StatusCode::CONFLICT, render(&page)).into_response())

@@ -532,8 +532,15 @@ async fn stale_form_is_409(pool: PgPool) {
     let f: Vec<(&str, &str)> = f.iter().map(|(k, v)| (*k, v.as_str())).collect();
     let (st, _, html) = post(&s, &admin_c, &edit, &f).await;
     assert_eq!(st, 409, "{html}");
-    assert!(html.contains("重新整理"), "{html}");
+    assert!(html.contains("最新內容"), "{html}");
     assert_eq!(settings(&s, id).await.1.quality_defer_days, Some(7));
+    // 409 頁面顯示資料庫的最新內容與 revision：使用者重新修改後可直接送出
+    let (rev_now, _) = settings(&s, id).await;
+    assert_eq!(revision_from(&html), rev_now.to_string(), "{html}");
+    assert!(
+        html.contains(r#"name="quality_defer_days" value="7""#),
+        "{html}"
+    );
     let (_, html) = s.page(&admin_c, &edit).await;
     let f = form(&revision_from(&html));
     let f: Vec<(&str, &str)> = f.iter().map(|(k, v)| (*k, v.as_str())).collect();

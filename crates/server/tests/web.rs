@@ -251,9 +251,16 @@ async fn approvals_respect_role_and_scope(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(r.status(), 404, "別的群組當作不存在");
+    // 表單帶入別的群組的裝置 id 也不會被核准
+    let (tp_id, kh_id) = (tp_new.device_id.to_string(), kh_new.device_id.to_string());
     let r = gary
         .post(s.web_url("/devices/approve-all"))
-        .form(&[("csrf", csrf.as_str()), ("confirm", "1")])
+        .form(&[
+            ("csrf", csrf.as_str()),
+            ("confirm", "1"),
+            ("ids", &tp_id),
+            ("ids", &kh_id),
+        ])
         .send()
         .await
         .unwrap();

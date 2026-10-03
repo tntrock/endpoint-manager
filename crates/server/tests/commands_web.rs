@@ -722,3 +722,31 @@ async fn script_content_keeps_leading_newline(pool: PgPool) {
         &after[..30]
     );
 }
+
+/// 3：送出時腳本剛被刪除：重新顯示表單與訊息，不是空白的 404
+#[sqlx::test(migrations = false)]
+async fn deleted_script_redisplays_form(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tp = s.group_id("台北").await.to_string();
+    let admin = s.admin_client().await;
+    let (_, html) = s.page(&admin, "/commands").await;
+    let csrf = csrf_from(&html);
+    let (st, _, body) = post(
+        &s,
+        &admin,
+        "/commands",
+        &[
+            ("csrf", &csrf),
+            ("action", "script"),
+            ("script_id", "999999"),
+            ("group_id", &tp),
+            ("expires_hours", "24"),
+        ],
+    )
+    .await;
+    assert_eq!(st, 404);
+    assert!(
+        body.contains("腳本不存在") && body.contains("<form"),
+        "{body}"
+    );
+}

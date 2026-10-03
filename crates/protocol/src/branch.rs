@@ -47,6 +47,19 @@ pub struct CacheEnrollRequest {
 }
 
 impl CacheEnrollRequest {
+    /// 去掉主機名稱結尾的點（`cache.corp.` → `cache.corp`）：憑證 SAN 不寫結尾的點
+    pub fn normalize(&mut self) {
+        for d in &mut self.dns_names {
+            if let Some(t) = d.strip_suffix('.') {
+                *d = t.to_string();
+            }
+        }
+        if let Some(host) = url_host(&self.url).filter(|h| h.ends_with('.')) {
+            let trimmed = host.trim_end_matches('.');
+            self.url = self.url.replacen(host, trimmed, 1);
+        }
+    }
+
     pub fn validate(&self) -> Result<(), &'static str> {
         let n = self.name.trim().chars().count();
         if n == 0 || n > 100 || self.name.chars().any(char::is_control) {
@@ -266,6 +279,19 @@ mod tests {
             };
             assert!(r.validate().is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn trailing_dot_is_normalized() {
+        let mut r = CacheEnrollRequest {
+            url: "https://cache-tp.corp.:8443".into(),
+            dns_names: vec!["cache-tp.corp.".into(), "10.1.2.3".into()],
+            ..enroll()
+        };
+        r.normalize();
+        assert_eq!(r.url, "https://cache-tp.corp:8443");
+        assert_eq!(r.dns_names, vec!["cache-tp.corp", "10.1.2.3"]);
+        assert!(r.validate().is_ok());
     }
 
     #[test]

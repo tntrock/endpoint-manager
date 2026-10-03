@@ -744,3 +744,27 @@ async fn poll_is_rate_limited(pool: PgPool) {
     }
     assert_eq!(last, 429);
 }
+
+#[sqlx::test(migrations = false)]
+async fn trailing_dot_names_are_accepted(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = token(&s, TokenKind::Cache).await;
+    let (csr, _) = common::make_csr();
+    let r = cache_enroll(
+        &s,
+        &CacheEnrollRequest {
+            url: "https://cache-tp.test.:8443".into(),
+            dns_names: vec!["cache-tp.test.".into(), "127.0.0.1".into()],
+            ..enroll_req(&tok, "結尾有點", &csr)
+        },
+    )
+    .await;
+    assert_eq!(r.status(), 200);
+    let (url, names): (String, Vec<String>) =
+        sqlx::query_as("SELECT url, dns_names FROM caches WHERE name = '結尾有點'")
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+    assert_eq!(url, "https://cache-tp.test:8443");
+    assert_eq!(names, vec!["cache-tp.test", "127.0.0.1"]);
+}
