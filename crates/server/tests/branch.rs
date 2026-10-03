@@ -719,3 +719,28 @@ async fn cache_renew_and_result_source(pool: PgPool) {
     assert_eq!(post(Some(DownloadSource::Unknown)).await, 204);
     assert_eq!(src().await, None);
 }
+
+#[sqlx::test(migrations = false)]
+async fn rejected_name_can_be_reused(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = token(&s, TokenKind::Cache).await;
+    let (csr, _) = common::make_csr();
+    let r = cache_enroll(&s, &enroll_req(&tok, "台北快取", &csr)).await;
+    assert_eq!(r.status(), 200);
+    let e: CacheEnrollResponse = r.json().await.unwrap();
+    caches::reject(&s.pool, e.cache_id, "admin").await.unwrap();
+    let r = cache_enroll(&s, &enroll_req(&tok, "台北快取", &csr)).await;
+    assert_eq!(r.status(), 200, "已拒絕的快取不占用名稱");
+    let r = cache_enroll(&s, &enroll_req(&tok, "台北快取", &csr)).await;
+    assert_eq!(r.status(), 409, "待核准的仍不能重名");
+}
+
+#[sqlx::test(migrations = false)]
+async fn poll_is_rate_limited(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let mut last = 0;
+    for _ in 0..=endpoint_server::ENROLL_PER_IP_PER_MINUTE {
+        last = poll(&s, 1, "wrong").await.status().as_u16();
+    }
+    assert_eq!(last, 429);
+}

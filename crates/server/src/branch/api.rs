@@ -122,8 +122,13 @@ pub async fn enroll(
 
 pub async fn poll(
     State(st): State<AppState>,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
     Json(req): Json<CacheEnrollPoll>,
 ) -> Result<Json<CacheEnrollPollResponse>, AppError> {
+    // 與註冊共用每 IP 的速率限制：poll_secret 不能被大量猜測
+    if !st.enroll_limiter.check(remote.ip(), Instant::now()) {
+        return Err(AppError::TooManyRequests);
+    }
     // 以雜湊比對，不會有逐字元比較的時序洩漏
     let status: Option<String> =
         sqlx::query_scalar("SELECT status FROM caches WHERE id = $1 AND poll_secret_hash = $2")

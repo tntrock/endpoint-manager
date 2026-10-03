@@ -213,7 +213,9 @@ pub async fn delete_site(pool: &PgPool, id: i64, actor: &str) -> anyhow::Result<
         .bind(id)
         .fetch_optional(&mut *tx)
         .await?;
-    let name = name.context("據點不存在")?;
+    let name = name.ok_or_else(|| {
+        anyhow::Error::from(crate::commands::CmdError::NotFound("據點不存在".into()))
+    })?;
     bump(&mut tx).await?;
     audit::record(
         &mut tx,

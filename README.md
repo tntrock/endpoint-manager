@@ -187,8 +187,10 @@ sc.exe start EndpointManagerCache
 sudo useradd --system --no-create-home endpoint-cache
 sudo install -d -o endpoint-cache -m 0700 /var/lib/endpoint-cache
 sudo install -m 0755 endpoint-cache /usr/local/bin/
+# endpoint-cache 帳號讀不到你家目錄的檔案：先把 root.pem 放到它讀得到的位置
+sudo install -m 0644 root.pem /var/lib/endpoint-cache/root-in.pem
 sudo -u endpoint-cache endpoint-cache enroll --data-dir /var/lib/endpoint-cache \
-    --server https://em.example.com:8443 --root root.pem --token <快取金鑰> \
+    --server https://em.example.com:8443 --root /var/lib/endpoint-cache/root-in.pem --token <快取金鑰> \
     --name 台北快取 --url https://cache-tp.example.com:8443 --dns cache-tp.example.com
 sudo install -m 0644 deploy/endpoint-cache.service /etc/systemd/system/
 sudo systemctl enable --now endpoint-cache

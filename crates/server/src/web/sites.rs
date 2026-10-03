@@ -296,7 +296,8 @@ pub async fn delete(
     platform(&s)?;
     match sites::delete_site(&st.pool, id, &s.username).await {
         Ok(()) => Ok(Redirect::to("/sites").into_response()),
-        Err(_) => Err(not_found()),
+        // 不存在 404；其他（資料庫錯誤）記錄後回 500
+        Err(e) => Err(super::commands::command_error(e)),
     }
 }
 
@@ -317,9 +318,14 @@ pub async fn site_of(st: &AppState, ip: Option<&str>) -> Result<(String, String)
     .await?;
     Ok(match row {
         None => ("—".into(), "—".into()),
-        Some((site, Some(cache), Some(status))) => {
+        // 只有使用中的快取會下發給端點，其他狀態都向中央下載
+        Some((site, Some(cache), Some(status))) if status == "active" => {
             (site, format!("{cache}（{}）", cache_status_label(&status)))
         }
+        Some((site, Some(cache), Some(status))) => (
+            site,
+            format!("{cache}（{}，向中央下載）", cache_status_label(&status)),
+        ),
         Some((site, _, _)) => (site, "無（向中央下載）".into()),
     })
 }
