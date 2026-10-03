@@ -1,7 +1,18 @@
 {% extends "base.html" %}
 {% block content %}
-<h1>派送：{{ name }}</h1>
-<p><a href="/deployments">← 派送</a></p>
+<div class="page-head">
+  <div><div class="crumb"><a href="/deployments">派送</a> ／ {{ name }}</div><h1>{{ name }}</h1>{% if !nav.platform %}<div class="sub">只顯示你管理範圍內的裝置。</div>{% endif %}</div>
+  {% if nav.platform %}
+  <div class="actions">
+    {% if stage == "pilot" %}<form method="post" action="/deployments/{{ id }}/expand"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="btn primary">擴大到全部</button></form>{% endif %}
+    {% if stage == "pilot" || stage == "all" %}<form method="post" action="/deployments/{{ id }}/pause"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="btn">暫停</button></form>{% endif %}
+    {% if stage == "paused" %}<form method="post" action="/deployments/{{ id }}/resume"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="btn">繼續</button></form>{% endif %}
+    {% if stage != "stopped" %}<form method="post" action="/deployments/{{ id }}/retry"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="btn">重試失敗</button></form>
+    <form method="post" action="/deployments/{{ id }}/stop"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="btn danger">停止</button></form>{% endif %}
+    {% if stage == "stopped" %}<form method="post" action="/deployments/{{ id }}/delete"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="btn danger">刪除派送</button></form>{% endif %}
+  </div>
+  {% endif %}
+</div>
 <table>
   <tr><th>套件</th><td>{{ package }}（{{ action }}）</td></tr>
   <tr><th>狀態</th><td>{{ stage_label }}{% if let Some(p) = pilot %}（試點群組：{{ p }}）{% endif %}</td></tr>
@@ -9,33 +20,26 @@
   <tr><th>重試輪次</th><td>{{ revision }}</td></tr>
 </table>
 {% if stage == "paused" && counts.failed > 0 %}
-<p class="notice">派送已暫停。失敗的裝置仍計入失敗率，直接「繼續」時下一筆失敗就可能再次暫停：建議先排除原因，再按「重試失敗」讓失敗的裝置重新嘗試並重新計算。</p>
+<div class="notice">派送已暫停。失敗的裝置仍計入失敗率，直接「繼續」時下一筆失敗就可能再次暫停：建議先排除原因，再按「重試失敗」讓失敗的裝置重新嘗試並重新計算。</div>
 {% endif %}
-{% if nav.platform %}
-<div class="actions">
-  {% if stage == "pilot" %}<form method="post" action="/deployments/{{ id }}/expand"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button>擴大到全部</button></form>{% endif %}
-  {% if stage == "pilot" || stage == "all" %}<form method="post" action="/deployments/{{ id }}/pause"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button>暫停</button></form>{% endif %}
-  {% if stage == "paused" %}<form method="post" action="/deployments/{{ id }}/resume"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button>繼續</button></form>{% endif %}
-  {% if stage != "stopped" %}<form method="post" action="/deployments/{{ id }}/retry"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button>重試失敗</button></form>
-  <form method="post" action="/deployments/{{ id }}/stop"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="danger">停止</button></form>{% endif %}
-  {% if stage == "stopped" %}<form method="post" action="/deployments/{{ id }}/delete"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="danger">刪除派送</button></form>{% endif %}
-</div>
-{% endif %}
-<p>{% for f in filters %}{% if f.active %}<strong>{{ f.label }}</strong>{% else %}<a href="{{ f.url }}">{{ f.label }}</a>{% endif %}　{% endfor %}</p>
+<nav class="chips" aria-label="篩選">{% for f in filters %}{% if f.active %}<strong>{{ f.label }}</strong>{% else %}<a href="{{ f.url }}">{{ f.label }}</a>{% endif %}{% endfor %}</nav>
 {% if !failures.is_empty() %}
+<div class="card">
 <h2>主要失敗原因</h2>
 <table>
-  <tr><th>訊息</th><th>台數</th></tr>
-  {% for f in failures %}<tr><td>{{ f.0 }}</td><td>{{ f.1 }}</td></tr>{% endfor %}
+  <tr><th>訊息</th><th class="num">台數</th></tr>
+  {% for f in failures %}<tr><td>{{ f.0 }}</td><td class="num">{{ f.1 }}</td></tr>{% endfor %}
 </table>
+</div>
 {% endif %}
+<div class="card">
 <h2>裝置</h2>
 <table>
   <tr><th>主機名稱</th><th>狀態</th><th>來源</th><th>訊息</th><th>更新時間</th></tr>
   {% for d in devices %}
-  <tr><td><a href="/devices/{{ d.id }}">{{ d.hostname }}</a> <span class="muted">{{ d.id }}</span></td><td>{{ d.status }}</td><td>{{ d.source }}</td><td>{{ d.message }}</td><td>{{ d.updated }}</td></tr>
+  <tr><td><a href="/devices/{{ d.id }}">{{ d.hostname }}</a><span class="faint">{{ d.id }}</span></td><td>{{ d.status }}</td><td>{{ d.source }}</td><td>{{ d.message }}</td><td><span class="num">{{ d.updated }}</span></td></tr>
   {% endfor %}
 </table>
-<p>{% if let Some(u) = prev %}<a href="{{ u }}">← 上一頁</a>{% endif %}　{% if let Some(u) = next %}<a href="{{ u }}">下一頁 →</a>{% endif %}</p>
-{% if !nav.platform %}<p class="muted">只顯示你管理範圍內的裝置。</p>{% endif %}
+<div class="pager">{% if let Some(u) = prev %}<a class="btn sm" href="{{ u }}">← 上一頁</a>{% endif %}{% if let Some(u) = next %}<a class="btn sm" href="{{ u }}">下一頁 →</a>{% endif %}</div>
+</div>
 {% endblock %}

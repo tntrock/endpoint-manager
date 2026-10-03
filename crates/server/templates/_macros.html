@@ -1,0 +1,41 @@
+{% macro link(cur, sec, href, icon, label, count_id) %}
+<a href="{{ href }}"{% if cur == sec %} class="on" aria-current="page"{% endif %}><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-{{ icon }}"></use></svg>{{ label }}{% if count_id != "" %}<span class="count num" id="{{ count_id }}">—</span>{% endif %}</a>
+{% endmacro %}
+
+{% macro tab(href, label, active) %}
+<a href="{{ href }}"{% if active %} class="on" aria-current="page"{% endif %}>{{ label }}</a>
+{% endmacro %}
+
+{% macro empty(msg, hint) %}
+<div class="empty"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-empty"></use></svg><div>{{ msg }}</div>{% if hint != "" %}<div class="faint">{{ hint }}</div>{% endif %}</div>
+{% endmacro %}
+
+{% macro compliance_tabs(on, platform) %}
+<nav class="tabs" aria-label="合規">
+  <a href="/compliance"{% if on == "overview" %} class="on" aria-current="page"{% endif %}>總覽</a>
+  <a href="/compliance/violations"{% if on == "violations" %} class="on" aria-current="page"{% endif %}>違規</a>
+  <a href="/compliance/rules"{% if on == "rules" %} class="on" aria-current="page"{% endif %}>規則</a>
+  {% if platform %}<a href="/compliance/rules/templates"{% if on == "templates" %} class="on" aria-current="page"{% endif %}>範本</a>{% endif %}
+</nav>
+{% endmacro %}
+
+{% macro deploy_tabs(on) %}
+<nav class="tabs" aria-label="派送">
+  <a href="/deployments"{% if on == "deployments" %} class="on" aria-current="page"{% endif %}>派送</a>
+  <a href="/packages"{% if on == "packages" %} class="on" aria-current="page"{% endif %}>套件</a>
+</nav>
+{% endmacro %}
+
+{% macro updates_tabs(on) %}
+<nav class="tabs" aria-label="Windows Update">
+  <a href="/updates"{% if on == "policies" %} class="on" aria-current="page"{% endif %}>原則</a>
+  <a href="/updates/overview"{% if on == "overview" %} class="on" aria-current="page"{% endif %}>組建與重開機</a>
+</nav>
+{% endmacro %}
+
+{% macro sites_tabs(on) %}
+<nav class="tabs" aria-label="據點與快取">
+  <a href="/sites"{% if on == "sites" %} class="on" aria-current="page"{% endif %}>據點</a>
+  <a href="/caches"{% if on == "caches" %} class="on" aria-current="page"{% endif %}>快取</a>
+</nav>
+{% endmacro %}

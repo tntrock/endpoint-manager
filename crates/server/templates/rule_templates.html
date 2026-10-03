@@ -1,19 +1,21 @@
 {% extends "base.html" %}
+{% import "_macros.html" as m %}
 {% block content %}
-<h1>從範本建立規則</h1>
-<p><a href="/compliance/rules">← 規則清單</a></p>
-{% if let Some(m) = message %}<p class="ok">{{ m }}</p>{% endif %}
-{% for f in failed %}<p class="error">{{ f.0 }}：{{ f.1 }}</p>{% endfor %}
+<div class="page-head"><div><h1>合規</h1></div></div>
+{% call m::compliance_tabs("templates", nav.platform) %}{% endcall %}
+{% if let Some(msg) = message %}<div class="notice ok">{{ msg }}</div>{% endif %}
+{% for f in failed %}<div class="notice error">{{ f.0 }}：{{ f.1 }}</div>{% endfor %}
 <p class="muted">建立後的規則為啟用、套用全部裝置，可再到規則清單編輯範圍與參數。組態規則需要 Agent 0.3.0 以上。</p>
 <form method="post" action="/compliance/rules/templates">
   <input type="hidden" name="csrf" value="{{ nav.csrf }}">
   {% for g in groups %}
+  <div class="card">
   <h2>{{ g.0 }}</h2>
   <table>
     <tr><th></th><th>範本</th><th>說明</th><th>嚴重度</th><th>出處</th></tr>
     {% for t in g.1 %}
     <tr>
-      <td>{% if t.used %}<span class="muted">已建立</span>{% else %}<input type="checkbox" name="key" value="{{ t.key }}">{% endif %}</td>
+      <td>{% if t.used %}<span class="tag off">已建立</span>{% else %}<input type="checkbox" name="key" value="{{ t.key }}" aria-label="{{ t.name }}">{% endif %}</td>
       <td>{{ t.name }}</td>
       <td>{{ t.description }}</td>
       <td><span class="sev {{ t.severity_class }}">{{ t.severity }}</span></td>
@@ -21,7 +23,8 @@
     </tr>
     {% endfor %}
   </table>
+  </div>
   {% endfor %}
-  <p><button>建立勾選的規則</button></p>
+  <button class="btn primary">建立勾選的規則</button>
 </form>
 {% endblock %}

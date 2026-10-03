@@ -47,7 +47,7 @@ pub async fn list(
         rows.push((id, name, devices, tokens, admins, rules));
     }
     Ok(render(&GroupsPage {
-        nav: Nav::from(&s),
+        nav: Nav::new(&s, "groups"),
         rows: rows
             .into_iter()
             .map(|(id, name, devices, tokens, admins, rules)| GroupRow {

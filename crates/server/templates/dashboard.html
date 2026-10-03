@@ -1,23 +1,25 @@
 {% extends "base.html" %}
+{% import "_macros.html" as m %}
 {% block content %}
-<h1>儀表板</h1>
-{% if let Some(r) = approve_result %}<p class="notice">已核准 {{ r.0 }} 台{% if r.1 > 0 %}，略過 {{ r.1 }} 台（原因記錄在伺服器日誌）{% endif %}。</p>{% endif %}
+<div class="page-head"><div><h1>總覽</h1><div class="sub">管理範圍內的裝置狀態</div></div></div>
+{% if let Some(r) = approve_result %}<div class="notice ok">已核准 {{ r.0 }} 台{% if r.1 > 0 %}，略過 {{ r.1 }} 台（原因記錄在伺服器日誌）{% endif %}。</div>{% endif %}
 <div class="cards">
-  <div class="card">裝置總數<b>{{ total }}</b></div>
-  <div class="card online">在線<b>{{ online }}</b></div>
-  <div class="card offline">離線<b>{{ total - online }}</b></div>
-  <div class="card duplicate_suspect">疑似重複<b>{{ duplicate }}</b></div>
-  <div class="card pending_approval">待核准<b>{{ pending.len() }}</b></div>
+  <div class="card kpi"><div class="kpi-label">裝置總數</div><div class="kpi-value num">{{ total }}</div></div>
+  <div class="card kpi"><div class="kpi-label">在線</div><div class="kpi-value num ok">{{ online }}</div></div>
+  <div class="card kpi"><div class="kpi-label">離線</div><div class="kpi-value num">{{ total - online }}</div></div>
+  <div class="card kpi"><div class="kpi-label">疑似重複</div><div class="kpi-value num{% if duplicate > 0 %} error{% endif %}">{{ duplicate }}</div></div>
+  <div class="card kpi"><div class="kpi-label">待核准</div><div class="kpi-value num">{{ pending.len() }}</div></div>
 </div>
 {% if !pending.is_empty() %}
+<div class="card">
 <h2>待核准的重新註冊</h2>
 <p class="muted">硬體識別與既有裝置相同（通常是重灌）。核准後新憑證會接手原裝置的記錄；若不是預期的重灌，請拒絕。</p>
 {% if nav.manage %}
-<form method="post" action="/devices/approve-all">
+<form class="actions" method="post" action="/devices/approve-all">
   <input type="hidden" name="csrf" value="{{ nav.csrf }}">
   {% for p in pending %}<input type="hidden" name="ids" value="{{ p.id }}">{% endfor %}
-  <label><input type="checkbox" name="confirm" value="1" required> 我已確認這些都是預期的重灌</label>
-  <button>全部核准（{{ pending.len() }}）</button>
+  <label class="checks"><input type="checkbox" name="confirm" value="1" required> 我已確認這些都是預期的重灌</label>
+  <button class="btn primary">全部核准（{{ pending.len() }}）</button>
 </form>
 {% endif %}
 <table>
@@ -27,13 +29,14 @@
     <td><a href="/devices/{{ p.id }}">{{ p.hostname }}</a></td>
     <td><a href="/devices/{{ p.old_id }}">{{ p.old_hostname }}</a></td>
     <td>{{ p.group }}</td>
-    <td>{{ p.enrolled_at }}</td>
-    <td>{% if nav.manage %}
-      <form class="inline" method="post" action="/devices/{{ p.id }}/approve"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button>核准</button></form>
-      <form class="inline" method="post" action="/devices/{{ p.id }}/reject"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="danger">拒絕</button></form>
-    {% endif %}</td>
+    <td><span class="num">{{ p.enrolled_at }}</span></td>
+    <td>{% if nav.manage %}<div class="actions">
+      <form method="post" action="/devices/{{ p.id }}/approve"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="btn sm">核准</button></form>
+      <form method="post" action="/devices/{{ p.id }}/reject"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="btn sm danger">拒絕</button></form>
+    </div>{% endif %}</td>
   </tr>
   {% endfor %}
 </table>
+</div>
 {% endif %}
 {% endblock %}

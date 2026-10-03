@@ -132,7 +132,7 @@ pub async fn list(
         .fetch_all(&st.pool)
         .await?;
     Ok(render(&ListPage {
-        nav: Nav::from(&s),
+        nav: Nav::new(&s, "deployments"),
         rows: rows.into_iter().map(to_row).collect(),
     }))
 }
@@ -178,7 +178,7 @@ async fn form_page(
         selected: i.pilot_group_id == Some(*id),
     }));
     Ok(FormPage {
-        nav: Nav::from(s),
+        nav: Nav::new(s, "deployments"),
         packages: pkgs
             .into_iter()
             .map(|(id, name, version, kind)| SelectOption {
@@ -416,7 +416,7 @@ pub async fn detail(
     })
     .collect();
     Ok(render(&DetailPage {
-        nav: Nav::from(&s),
+        nav: Nav::new(&s, "deployments"),
         id,
         name,
         package,

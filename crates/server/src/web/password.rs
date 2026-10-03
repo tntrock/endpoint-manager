@@ -20,7 +20,7 @@ struct PasswordPage {
 
 pub async fn form(AdminSession(s): AdminSession) -> Response {
     render(&PasswordPage {
-        nav: Nav::from(&s),
+        nav: Nav::new(&s, "password"),
         message: None,
         error: None,
     })
@@ -42,7 +42,7 @@ pub async fn submit(
     check_csrf(&s, &f.csrf)?;
     let fail = |e: String| {
         let page = PasswordPage {
-            nav: Nav::from(&s),
+            nav: Nav::new(&s, "password"),
             message: None,
             error: Some(e),
         };
@@ -55,7 +55,7 @@ pub async fn submit(
         .await
         .map_err(|e| fail(format!("{e:#}")))?;
     Ok(render(&PasswordPage {
-        nav: Nav::from(&s),
+        nav: Nav::new(&s, "password"),
         message: Some("密碼已更新"),
         error: None,
     }))

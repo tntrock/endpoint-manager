@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>元件樣張：深色／淺色</title>
+<style>
+.t-dark{--bg:#070b12;--panel:#0e1623;--panel2:#111c2c;--line:#1b2738;--line2:#243349;--text:#dbe5f3;--muted:#7d8ba1;--faint:#4d5b70;
+  --accent:#3fd0c9;--accent-ink:#04221f;--ok:#46c97a;--warn:#f2b24c;--bad:#f0646b;--info:#8f8cf7;
+  --ok-bg:rgba(70,201,122,.12);--warn-bg:rgba(242,178,76,.12);--bad-bg:rgba(240,100,107,.13);--info-bg:rgba(143,140,247,.13);--accent-bg:rgba(63,208,201,.12);--row:#0b121c;--input:#0a111b}
+.t-light{--bg:#dfe4eb;--panel:#eef1f5;--panel2:#eef1f5;--line:#cfd6e0;--line2:#bfc8d4;--text:#172131;--muted:#4f5c70;--faint:#7e8a9c;
+  --accent:#0e9f98;--accent-ink:#ffffff;--ok:#1e8e4f;--warn:#b26b00;--bad:#d03a43;--info:#5753d9;
+  --ok-bg:#d6ecdf;--warn-bg:#f3e6cb;--bad-bg:#f2d9dc;--info-bg:#dedcf5;--accent-bg:#d3ebea;--row:#e6eaf0;--input:#f6f8fa}
+.t-warm{--bg:#e4e1dc;--panel:#f1efeb;--panel2:#f1efeb;--line:#d6d1ca;--line2:#c6c0b8;--text:#1f1d1a;--muted:#5f5a52;--faint:#8c867d;
+  --accent:#0d8f89;--accent-ink:#ffffff;--ok:#2a7d4a;--warn:#9e5f00;--bad:#c23a3f;--info:#5450c4;
+  --ok-bg:#dbe9dc;--warn-bg:#efe1c6;--bad-bg:#efd8d6;--info-bg:#e0ddf0;--accent-bg:#d5e8e5;--row:#e9e6e1;--input:#f7f5f2}
+*{box-sizing:border-box}
+body{margin:0;font:14px/1.5 "Segoe UI","Microsoft JhengHei UI","Microsoft JhengHei",system-ui,sans-serif;background:#000}
+.cols{display:grid;grid-template-columns:1fr 1fr 1fr;min-height:100vh}
+.theme{background:var(--bg);color:var(--text);padding:26px 28px}
+.theme h1{font-size:13px;letter-spacing:.14em;color:var(--faint);margin:0 0 18px;font-weight:600}
+.num{font-family:"Cascadia Mono",Consolas,ui-monospace,monospace;font-variant-numeric:tabular-nums}
+.sec{margin-bottom:22px}.sec>.lbl{font-size:11px;color:var(--faint);letter-spacing:.12em;margin-bottom:8px}
+.row-inline{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+/* 頁首 */
+.ph{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:1px solid var(--line);padding-bottom:12px}
+.ph h2{margin:0;font-size:20px}.ph .sub{color:var(--muted);font-size:12.5px}
+.crumb{font-size:12px;color:var(--muted);margin-bottom:4px}.crumb a{color:var(--muted);text-decoration:none}
+/* 按鈕 */
+.btn{display:inline-flex;align-items:center;gap:6px;padding:7px 13px;border-radius:9px;border:1px solid var(--line2);background:var(--panel);color:var(--text);font:inherit;font-size:13px;cursor:pointer}
+.btn.pri{background:var(--accent);border-color:transparent;color:var(--accent-ink);font-weight:600}
+.btn.danger{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 40%,transparent)}
+.btn.ghost{background:transparent;border-color:transparent;color:var(--muted)}
+.btn.sm{padding:4px 9px;font-size:12px;border-radius:7px}
+.btn:focus-visible,.inp:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+/* 標籤 */
+.tag{display:inline-flex;align-items:center;gap:5px;font-size:12px;padding:2px 9px 2px 7px;border-radius:20px;font-weight:500}
+.tag::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.tag.ok{background:var(--ok-bg);color:var(--ok)}.tag.warn{background:var(--warn-bg);color:var(--warn)}.tag.bad{background:var(--bad-bg);color:var(--bad)}.tag.info{background:var(--info-bg);color:var(--info)}.tag.off{background:color-mix(in srgb,var(--muted) 14%,transparent);color:var(--muted)}
+.sev{font-size:11px;font-weight:700;padding:1px 7px;border-radius:5px;letter-spacing:.04em}
+.sev.h{background:var(--bad-bg);color:var(--bad)}.sev.m{background:var(--warn-bg);color:var(--warn)}.sev.l{background:var(--info-bg);color:var(--info)}
+/* 表單 */
+.field{display:grid;gap:5px;margin-bottom:10px}.field label{font-size:12.5px;color:var(--muted)}
+.inp{width:100%;background:var(--input);border:1px solid var(--line2);border-radius:9px;padding:7px 11px;color:var(--text);font:inherit}
+.field .help{font-size:11.5px;color:var(--faint)}.field.err .inp{border-color:var(--bad)}.field.err .help{color:var(--bad)}
+.check{display:flex;gap:8px;align-items:center;font-size:13px}
+.check i{width:16px;height:16px;border-radius:5px;background:var(--accent);display:inline-grid;place-items:center}
+.check i::after{content:"";width:8px;height:4px;border-left:2px solid var(--accent-ink);border-bottom:2px solid var(--accent-ink);transform:rotate(-45deg) translate(1px,-1px)}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+/* 表格 */
+.tbl{width:100%;border-collapse:separate;border-spacing:0;background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;font-size:13px}
+.tbl th{text-align:left;font-weight:600;color:var(--muted);font-size:11.5px;letter-spacing:.06em;padding:9px 12px;background:var(--row);border-bottom:1px solid var(--line)}
+.tbl td{padding:9px 12px;border-bottom:1px solid var(--line)}.tbl tr:last-child td{border-bottom:0}
+.tbl tr:hover td{background:color-mix(in srgb,var(--accent) 5%,transparent)}
+.tbl a{color:var(--text);font-weight:600;text-decoration:none}.tbl .id{color:var(--faint);font-size:11px;display:block}
+.tbl td.n{text-align:right}
+/* 卡片、提示、分頁籤、空狀態 */
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+.kpi .l{font-size:12px;color:var(--muted)}.kpi .v{font-size:28px;font-weight:600}
+.note{display:flex;gap:10px;padding:10px 14px;border-radius:10px;border:1px solid;font-size:13px}
+.note.warn{background:var(--warn-bg);border-color:color-mix(in srgb,var(--warn) 35%,transparent)}
+.note.bad{background:var(--bad-bg);border-color:color-mix(in srgb,var(--bad) 35%,transparent)}
+.note b{white-space:nowrap}
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line)}
+.tabs span{padding:8px 14px;font-size:13px;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-1px}
+.tabs span.on{color:var(--text);border-color:var(--accent);font-weight:600}
+.tabs .c{font-size:11px;margin-left:5px;padding:0 6px;border-radius:9px;background:var(--bad-bg);color:var(--bad)}
+.empty{border:1px dashed var(--line2);border-radius:12px;padding:22px;text-align:center;color:var(--muted)}
+.empty svg{width:36px;height:36px;color:var(--faint)}
+.pager{display:flex;gap:6px;align-items:center;font-size:12.5px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="cols">
+<script>/* 只是讓同一段 HTML 套兩次主題 */</script>
+<template id="sheet">
+  <div class="sec">
+    <div class="crumb"><a href="#">合規</a> ／ 規則</div>
+    <div class="ph"><div><h2>合規規則</h2><div class="sub">14 條規則・3 條有高風險違規</div></div><div class="row-inline"><button class="btn">從範本建立</button><button class="btn pri">＋ 新增規則</button></div></div>
+  </div>
+  <div class="sec"><div class="lbl">按鈕</div><div class="row-inline">
+    <button class="btn pri">儲存</button><button class="btn">取消</button><button class="btn danger">刪除派送</button><button class="btn ghost">略過</button><button class="btn sm">小按鈕</button></div></div>
+  <div class="sec"><div class="lbl">狀態標籤（顏色＋文字＋圓點，不只靠顏色）</div><div class="row-inline">
+    <span class="tag ok">在線</span><span class="tag off">離線</span><span class="tag warn">待核准</span><span class="tag bad">已除役</span><span class="tag info">派送中</span>
+    <span class="sev h">高</span><span class="sev m">中</span><span class="sev l">低</span></div></div>
+  <div class="sec"><div class="lbl">表格</div>
+    <table class="tbl">
+      <tr><th>主機名稱</th><th>群組</th><th>狀態</th><th>違規</th><th class="n">最後回報</th></tr>
+      <tr><td><a href="#">TP-PC-005</a><span class="id num">7f3a…e21c</span></td><td>台北總部</td><td><span class="tag ok">在線</span></td><td><span class="sev h">高</span> uTorrent</td><td class="n num">2 分鐘前</td></tr>
+      <tr><td><a href="#">HC-PC-010</a><span class="id num">b0cd…b9f8</span></td><td>新竹廠</td><td><span class="tag off">離線</span></td><td><span class="sev m">中</span> BitLocker</td><td class="n num">3 小時前</td></tr>
+      <tr><td><a href="#">KH-PC-002</a><span class="id num">e911…c0f7</span></td><td>高雄分公司</td><td><span class="tag warn">待重開機</span></td><td style="color:var(--faint)">—</td><td class="n num">1 分鐘前</td></tr>
+    </table>
+    <div class="pager" style="margin-top:8px"><button class="btn sm">← 上一頁</button><span class="num">1–3 / 40</span><button class="btn sm">下一頁 →</button></div>
+  </div>
+  <div class="sec"><div class="lbl">表單</div>
+    <div class="two"><div class="field"><label>規則名稱</label><input class="inp" value="禁止 uTorrent"></div>
+      <div class="field"><label>嚴重度</label><select class="inp"><option>高</option></select></div></div>
+    <div class="field err"><label>軟體名稱樣式</label><input class="inp" value=""><span class="help">必填，例如 uTorrent*（* 代表任意字元）</span></div>
+    <div class="check"><i></i> 啟用這條規則</div>
+  </div>
+  <div class="sec"><div class="lbl">分頁籤、卡片、提示、空狀態</div>
+    <div class="tabs"><span class="on">總覽</span><span>軟體</span><span>合規<span class="c num">3</span></span><span>派送</span><span>更新</span></div>
+    <div class="two" style="margin-top:12px">
+      <div class="card kpi"><div class="l">在線</div><div class="v num">35<span style="font-size:14px;color:var(--muted)"> / 40</span></div></div>
+      <div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 3 20 7.5v9L12 21l-8-4.5v-9z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/></svg><div>還沒有派送</div><div style="font-size:12px;color:var(--faint)">上傳套件後就能建立第一個派送</div></div>
+    </div>
+    <div class="note warn" style="margin-top:12px"><b>已暫停</b><span>失敗率超過 20%，派送已自動暫停。排除原因後按「重試失敗」。</span></div>
+  </div>
+</template>
+<section class="theme t-dark" id="d"><h1>深色（預設）</h1></section>
+<section class="theme t-light" id="l"><h1>淺色 1：冷灰（偏藍）</h1></section>
+<section class="theme t-warm" id="w"><h1>淺色 2：暖灰（紙張感）</h1></section>
+</div>
+<script>
+const t=document.getElementById('sheet');
+['d','l','w'].forEach(id=>document.getElementById(id).appendChild(t.content.cloneNode(true)));
+</script>
+</body>
+</html>

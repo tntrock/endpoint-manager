@@ -94,7 +94,7 @@ pub async fn list(
         )
         .collect();
     Ok(render(&SitesPage {
-        nav: Nav::from(&s),
+        nav: Nav::new(&s, "sites"),
         rows,
     }))
 }
@@ -176,7 +176,7 @@ struct FormPage {
 
 fn form(s: &Session, id: Option<i64>, f: Fields, error: Option<String>) -> Response {
     let page = render(&FormPage {
-        nav: Nav::from(s),
+        nav: Nav::new(s, "sites"),
         id,
         f,
         error: error.clone(),

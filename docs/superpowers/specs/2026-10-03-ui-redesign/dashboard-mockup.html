@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>Endpoint Manager — 儀表板（做法 A 示範稿）</title>
+<style>
+:root{
+  --bg:#070b12; --bg2:#0b111b; --panel:#0e1623; --panel2:#111c2c; --line:#1b2738; --line2:#243349;
+  --text:#dbe5f3; --muted:#7d8ba1; --faint:#4d5b70;
+  --cyan:#3fd0c9; --cyan2:#2aa59f; --green:#46c97a; --amber:#f2b24c; --red:#f0646b; --violet:#8f8cf7;
+  --r:12px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:radial-gradient(1200px 600px at 80% -10%,rgba(63,208,201,.08),transparent 60%),radial-gradient(900px 500px at -10% 110%,rgba(143,140,247,.07),transparent 60%),var(--bg);
+  color:var(--text);font:14px/1.5 "Segoe UI","Microsoft JhengHei UI","Microsoft JhengHei",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+.num{font-family:"Cascadia Mono","Consolas",ui-monospace,monospace;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.app{display:grid;grid-template-columns:232px 1fr;min-height:100vh}
+
+/* 側邊欄 */
+aside{background:linear-gradient(180deg,#0a1019,#080d15);border-right:1px solid var(--line);padding:18px 14px;position:sticky;top:0;height:100vh}
+.brand{display:flex;align-items:center;gap:10px;padding:4px 8px 18px}
+.logo{width:30px;height:30px;border-radius:9px;background:conic-gradient(from 210deg,var(--cyan),var(--violet),var(--cyan));display:grid;place-items:center;box-shadow:0 0 24px rgba(63,208,201,.35)}
+.logo::after{content:"";width:12px;height:12px;border-radius:3px;background:var(--bg);transform:rotate(45deg)}
+.brand b{font-size:15px;letter-spacing:.02em}.brand small{display:block;color:var(--faint);font-size:11px}
+.grp{color:var(--faint);font-size:11px;letter-spacing:.12em;margin:16px 10px 6px}
+.nav a{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:8px;color:var(--muted);text-decoration:none;font-size:13.5px;position:relative}
+.nav a:hover{background:#0f1826;color:var(--text)}
+.nav a.on{background:linear-gradient(90deg,rgba(63,208,201,.16),rgba(63,208,201,.02));color:#e9fbfa}
+.nav a.on::before{content:"";position:absolute;left:-14px;top:8px;bottom:8px;width:3px;border-radius:0 3px 3px 0;background:var(--cyan);box-shadow:0 0 10px var(--cyan)}
+.ico{width:16px;height:16px;flex:none;opacity:.85}
+.nav .cnt{margin-left:auto;font-size:11px;padding:0 6px;border-radius:10px;background:#1d2a3d;color:var(--muted)}
+.nav .cnt.hot{background:rgba(240,100,107,.16);color:#ff9aa0}
+
+/* 頂端列 */
+.top{display:flex;align-items:center;gap:14px;padding:14px 28px;border-bottom:1px solid var(--line);background:rgba(7,11,18,.7);backdrop-filter:blur(10px);position:sticky;top:0;z-index:2}
+.search{flex:1;max-width:520px;display:flex;align-items:center;gap:10px;background:var(--panel);border:1px solid var(--line2);border-radius:10px;padding:8px 12px;color:var(--faint)}
+.search kbd{margin-left:auto;font:11px "Consolas",monospace;color:var(--muted);border:1px solid var(--line2);border-bottom-width:2px;border-radius:5px;padding:1px 6px}
+.live{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 0 0 rgba(70,201,122,.6);animation:pulse 2s infinite}
+@keyframes pulse{70%{box-shadow:0 0 0 8px rgba(70,201,122,0)}100%{box-shadow:0 0 0 0 rgba(70,201,122,0)}}
+.user{display:flex;align-items:center;gap:10px;margin-left:auto}
+.avatar{width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#2b5876,#4e4376);display:grid;place-items:center;font-size:12px;font-weight:700}
+
+main{padding:24px 28px 40px}
+.head{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:20px}
+h1{font-size:22px;margin:0;letter-spacing:.01em}.sub{color:var(--muted);font-size:13px;margin-top:2px}
+.btn{display:inline-flex;align-items:center;gap:8px;padding:8px 14px;border-radius:9px;border:1px solid var(--line2);background:var(--panel);color:var(--text);font:inherit;font-size:13px;text-decoration:none}
+.btn.pri{background:linear-gradient(180deg,#3fd0c9,#27a49e);border-color:transparent;color:#04221f;font-weight:600;box-shadow:0 6px 20px -6px rgba(63,208,201,.6)}
+
+/* KPI */
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:14px}
+.card{background:linear-gradient(180deg,var(--panel2),var(--panel));border:1px solid var(--line);border-radius:var(--r);padding:16px 18px;position:relative;overflow:hidden}
+.card::after{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;background:linear-gradient(180deg,rgba(255,255,255,.035),transparent 40%)}
+.kpi .lbl{color:var(--muted);font-size:12px;letter-spacing:.06em}
+.kpi .val{font-size:34px;font-weight:600;margin-top:4px;line-height:1.1}
+.kpi .val small{font-size:15px;color:var(--muted);font-weight:400;margin-left:4px}
+.kpi .delta{font-size:12px;margin-top:6px}.up{color:var(--green)}.down{color:var(--red)}
+.kpi svg{position:absolute;right:14px;bottom:14px;width:96px;height:36px}
+.ring{position:absolute;right:16px;top:16px;width:64px;height:64px}
+
+/* 主格線 */
+.grid{display:grid;grid-template-columns:1.65fr 1fr;gap:14px}
+.card h2{font-size:14px;margin:0 0 2px;font-weight:600}.card .hint{color:var(--muted);font-size:12px;margin-bottom:12px}
+.ch{display:flex;justify-content:space-between;align-items:flex-start}
+.seg{display:flex;background:#0a111b;border:1px solid var(--line);border-radius:8px;padding:2px;font-size:12px}
+.seg span{padding:3px 10px;border-radius:6px;color:var(--muted)}.seg span.on{background:#17263a;color:var(--text)}
+
+/* 需要處理 */
+.todo{list-style:none;margin:0;padding:0}
+.todo li{display:flex;align-items:center;gap:12px;padding:11px 4px;border-top:1px solid var(--line)}
+.todo li:first-child{border-top:0}
+.sev{width:6px;align-self:stretch;border-radius:3px}
+.sev.h{background:var(--red);box-shadow:0 0 10px rgba(240,100,107,.5)}.sev.m{background:var(--amber)}.sev.l{background:var(--violet)}
+.todo .t{font-size:13.5px}.todo .d{color:var(--muted);font-size:12px}
+.todo .n{margin-left:auto;font-size:18px;font-weight:600}
+.pill{font-size:11px;padding:2px 8px;border-radius:20px;border:1px solid}
+.pill.c{color:var(--cyan);border-color:rgba(63,208,201,.35);background:rgba(63,208,201,.08)}
+
+/* 規則長條 */
+.bars .row{display:grid;grid-template-columns:150px 1fr 34px;gap:10px;align-items:center;font-size:12.5px;padding:5px 0}
+.bars .track{height:8px;border-radius:5px;background:#0a121d;overflow:hidden}
+.bars .fill{height:100%;border-radius:5px;background:linear-gradient(90deg,var(--cyan2),var(--cyan))}
+.bars .fill.w{background:linear-gradient(90deg,#c9862b,var(--amber))}.bars .fill.r{background:linear-gradient(90deg,#c0434a,var(--red))}
+
+/* 據點 */
+.sites{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.site{border:1px solid var(--line);border-radius:10px;padding:12px;background:#0b131f}
+.site b{font-size:13px}.site .meter{display:flex;height:6px;border-radius:4px;overflow:hidden;margin:10px 0 6px;background:#0a121d}
+.site .meter i{display:block}
+.legend{display:flex;gap:14px;color:var(--muted);font-size:11.5px}
+.legend i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:5px;vertical-align:0}
+.foot{color:var(--faint);font-size:11.5px;margin-top:22px;text-align:right}
+</style>
+</head>
+<body>
+<div class="app">
+<aside>
+  <div class="brand"><div class="logo"></div><div><b>Endpoint</b><small>Manager 0.7</small></div></div>
+  <nav class="nav">
+    <a class="on" href="#"><svg class="ico" viewBox="0 0 16 16" fill="currentColor"><rect x="1" y="1" width="6" height="6" rx="1.5"/><rect x="9" y="1" width="6" height="4" rx="1.5"/><rect x="1" y="9" width="6" height="6" rx="1.5"/><rect x="9" y="7" width="6" height="8" rx="1.5"/></svg>總覽</a>
+    <div class="grp">資產</div>
+    <a href="#"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1.5" y="2.5" width="13" height="8.5" rx="1.5"/><path d="M5 14h6M8 11v3"/></svg>裝置<span class="cnt">40</span></a>
+    <a href="#"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 4.5 8 1.5l5.5 3v7L8 14.5l-5.5-3z"/><path d="M2.5 4.5 8 7.5l5.5-3M8 7.5v7"/></svg>軟體</a>
+    <a href="#"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 3h12M2 8h12M2 13h7"/></svg>登錄檔</a>
+    <div class="grp">安全與合規</div>
+    <a href="#"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.5 13.5 4v4c0 3.3-2.4 5.6-5.5 6.5C4.9 13.6 2.5 11.3 2.5 8V4z"/><path d="m5.5 8 1.8 1.8L10.8 6"/></svg>合規<span class="cnt hot">22</span></a>
+    <a href="#"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6.5"/><path d="M8 4.5V8l2.5 1.5"/></svg>Windows Update</a>
+    <div class="grp">作業</div>
+    <a href="#"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.5v9M4.5 7 8 10.5 11.5 7"/><path d="M2 12v2.5h12V12"/></svg>派送</a>
+    <a href="#"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="m4.5 6 2 2-2 2M8 10h3.5"/></svg>遠端指令</a>
+    <a href="#"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 1.5h5.5L12 4v10.5H4z"/><path d="M6 7h4M6 9.5h4M6 12h2.5"/></svg>腳本</a>
+    <div class="grp">設定</div>
+    <a href="#"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="6" r="2.5"/><path d="M8 14.5S3 10 3 6a5 5 0 0 1 10 0c0 4-5 8.5-5 8.5z"/></svg>據點與快取</a>
+    <a href="#"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="5.5" cy="8" r="3"/><path d="M8.5 8h6M12.5 8v2.5"/></svg>註冊金鑰</a>
+    <a href="#"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="5.5" cy="5.5" r="2.5"/><circle cx="11.5" cy="6.5" r="2"/><path d="M1.5 14c0-2.5 1.8-4 4-4s4 1.5 4 4M10 10.2c2.2-.4 4.5.8 4.5 3.8"/></svg>群組與帳號</a>
+    <a href="#"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 1.5h10v13H3z"/><path d="M5.5 5h5M5.5 8h5M5.5 11h3"/></svg>稽核記錄</a>
+  </nav>
+</aside>
+
+<div>
+  <div class="top">
+    <div class="search"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="7" r="5"/><path d="m11 11 3.5 3.5"/></svg>搜尋主機名稱、使用者或 IP…<kbd>Ctrl K</kbd></div>
+    <div class="live"><span class="dot"></span>即時・35 台在線</div>
+    <div class="user"><span style="color:var(--muted);font-size:12.5px">demo・平台管理員</span><div class="avatar">D</div></div>
+  </div>
+
+  <main>
+    <div class="head">
+      <div><h1>總覽</h1><div class="sub">2026 年 10 月 3 日・台北總部、新竹廠、高雄分公司</div></div>
+      <div style="display:flex;gap:10px"><a class="btn" href="#">匯出主管報告</a><a class="btn pri" href="#">＋ 新增派送</a></div>
+    </div>
+
+    <section class="kpis">
+      <div class="card kpi"><div class="lbl">受管裝置</div><div class="val num">40</div><div class="delta up">▲ 3　本週新增</div>
+        <svg viewBox="0 0 96 36"><polyline fill="none" stroke="#3fd0c9" stroke-width="2" points="0,30 16,28 32,26 48,24 64,20 80,14 96,8"/></svg></div>
+      <div class="card kpi"><div class="lbl">在線</div><div class="val num">35<small>/ 40</small></div><div class="delta" style="color:var(--muted)">5 台超過 15 分鐘未回報</div>
+        <svg class="ring" viewBox="0 0 64 64"><circle cx="32" cy="32" r="26" fill="none" stroke="#132033" stroke-width="7"/><circle cx="32" cy="32" r="26" fill="none" stroke="#46c97a" stroke-width="7" stroke-linecap="round" stroke-dasharray="143 163" transform="rotate(-90 32 32)"/><text x="32" y="36" text-anchor="middle" fill="#dbe5f3" font-size="13" font-family="Consolas">88%</text></svg></div>
+      <div class="card kpi"><div class="lbl">合規率</div><div class="val num">45<small>%</small></div><div class="delta up">▲ 6.2%　較上週</div>
+        <svg viewBox="0 0 96 36"><polyline fill="none" stroke="#46c97a" stroke-width="2" points="0,30 16,31 32,26 48,27 64,20 80,18 96,12"/></svg></div>
+      <div class="card kpi"><div class="lbl">待處理風險</div><div class="val num" style="color:#ff9aa0">22</div><div class="delta down">▼ 高風險 9 台</div>
+        <svg viewBox="0 0 96 36"><polyline fill="none" stroke="#f0646b" stroke-width="2" points="0,10 16,12 32,11 48,16 64,18 80,20 96,22"/></svg></div>
+    </section>
+
+    <section class="grid">
+      <div class="card">
+        <div class="ch"><div><h2>合規趨勢</h2><div class="hint">違規裝置數（近 30 天）</div></div><div class="seg"><span>7 天</span><span class="on">30 天</span><span>90 天</span></div></div>
+        <svg viewBox="0 0 640 210" style="width:100%;height:auto">
+          <defs><linearGradient id="g" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#3fd0c9" stop-opacity=".35"/><stop offset="1" stop-color="#3fd0c9" stop-opacity="0"/></linearGradient>
+          <linearGradient id="g2" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#f0646b" stop-opacity=".25"/><stop offset="1" stop-color="#f0646b" stop-opacity="0"/></linearGradient></defs>
+          <g stroke="#152234" stroke-width="1"><line x1="40" y1="20" x2="630" y2="20"/><line x1="40" y1="70" x2="630" y2="70"/><line x1="40" y1="120" x2="630" y2="120"/><line x1="40" y1="170" x2="630" y2="170"/></g>
+          <g fill="#4d5b70" font-size="11" font-family="Consolas"><text x="10" y="24">40</text><text x="10" y="74">30</text><text x="10" y="124">20</text><text x="10" y="174">10</text>
+          <text x="40" y="198">9/4</text><text x="190" y="198">9/12</text><text x="340" y="198">9/20</text><text x="490" y="198">9/28</text><text x="598" y="198">10/3</text></g>
+          <path d="M40,60 C90,55 120,72 160,66 S240,80 280,90 S360,98 400,108 S480,112 520,120 S590,128 630,126 L630,170 L40,170Z" fill="url(#g)"/>
+          <path d="M40,60 C90,55 120,72 160,66 S240,80 280,90 S360,98 400,108 S480,112 520,120 S590,128 630,126" fill="none" stroke="#3fd0c9" stroke-width="2.5"/>
+          <path d="M40,130 C100,128 140,136 200,134 S300,142 360,146 S460,150 520,152 S600,156 630,155 L630,170 L40,170Z" fill="url(#g2)"/>
+          <path d="M40,130 C100,128 140,136 200,134 S300,142 360,146 S460,150 520,152 S600,156 630,155" fill="none" stroke="#f0646b" stroke-width="2" stroke-dasharray="4 4"/>
+          <circle cx="630" cy="126" r="5" fill="#070b12" stroke="#3fd0c9" stroke-width="2.5"/>
+          <g transform="translate(540,92)"><rect width="84" height="26" rx="6" fill="#16263a" stroke="#24405a"/><text x="10" y="17" fill="#dbe5f3" font-size="12">違規 <tspan font-family="Consolas" font-weight="700">22</tspan> 台</text></g>
+        </svg>
+        <div class="legend"><span><i style="background:#3fd0c9"></i>所有違規</span><span><i style="background:#f0646b"></i>高風險</span></div>
+      </div>
+
+      <div class="card">
+        <div class="ch"><div><h2>需要處理</h2><div class="hint">依風險排序</div></div><span class="pill c">5 項</span></div>
+        <ul class="todo">
+          <li><span class="sev h"></span><div><div class="t">發現禁止軟體 uTorrent</div><div class="d">TP-PC-005、HC-PC-002 …</div></div><span class="n num">4</span></li>
+          <li><span class="sev h"></span><div><div class="t">缺少 KB5044285</div><div class="d">本月累積更新</div></div><span class="n num">7</span></li>
+          <li><span class="sev m"></span><div><div class="t">BitLocker 未保護系統磁碟</div><div class="d">高雄分公司 3 台</div></div><span class="n num">8</span></li>
+          <li><span class="sev m"></span><div><div class="t">多出的本機管理員</div><div class="d">CORP\wang.xm</div></div><span class="n num">7</span></li>
+          <li><span class="sev l"></span><div><div class="t">待核准的重新註冊</div><div class="d">TP-PC-001 重灌</div></div><span class="n num">1</span></li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="ch"><div><h2>各據點狀態</h2><div class="hint">合規／違規／離線</div></div></div>
+        <div class="sites">
+          <div class="site"><b>台北總部</b><div class="meter"><i style="width:56%;background:var(--green)"></i><i style="width:33%;background:var(--amber)"></i><i style="width:11%;background:#2b3a50"></i></div><span class="num">18</span> <span style="color:var(--muted);font-size:12px">台</span></div>
+          <div class="site"><b>新竹廠</b><div class="meter"><i style="width:42%;background:var(--green)"></i><i style="width:50%;background:var(--amber)"></i><i style="width:8%;background:#2b3a50"></i></div><span class="num">12</span> <span style="color:var(--muted);font-size:12px">台</span></div>
+          <div class="site"><b>高雄分公司</b><div class="meter"><i style="width:40%;background:var(--green)"></i><i style="width:40%;background:var(--amber)"></i><i style="width:20%;background:#2b3a50"></i></div><span class="num">10</span> <span style="color:var(--muted);font-size:12px">台</span></div>
+        </div>
+        <div class="legend" style="margin-top:12px"><span><i style="background:var(--green)"></i>合規</span><span><i style="background:var(--amber)"></i>有違規</span><span><i style="background:#2b3a50"></i>離線</span></div>
+      </div>
+
+      <div class="card bars">
+        <div class="ch"><div><h2>違規最多的規則</h2><div class="hint">台數</div></div></div>
+        <div class="row"><span>Defender 防竄改</span><div class="track"><div class="fill w" style="width:100%"></div></div><span class="num">14</span></div>
+        <div class="row"><span>7-Zip 必須 23.01 以上</span><div class="track"><div class="fill w" style="width:86%"></div></div><span class="num">12</span></div>
+        <div class="row"><span>本機密碼最短 12 碼</span><div class="track"><div class="fill" style="width:71%"></div></div><span class="num">10</span></div>
+        <div class="row"><span>BitLocker 系統磁碟</span><div class="track"><div class="fill r" style="width:57%"></div></div><span class="num">8</span></div>
+        <div class="row"><span>超過 30 天沒更新</span><div class="track"><div class="fill" style="width:57%"></div></div><span class="num">8</span></div>
+      </div>
+    </section>
+    <div class="foot">這張稿只用 HTML＋CSS＋SVG，沒有任何 JavaScript 或框架 —— 就是做法 A 的技術</div>
+  </main>
+</div>
+</div>
+</body>
+</html>

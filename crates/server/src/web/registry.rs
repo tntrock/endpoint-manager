@@ -96,7 +96,7 @@ pub async fn query(
     rows.truncate(LIMIT as usize);
     let shown_path = path.clone().unwrap_or_else(|| q.path.clone());
     Ok(render(&RegistryPage {
-        nav: Nav::from(&s),
+        nav: Nav::new(&s, "registry"),
         searched: path.is_some(),
         rows: rows
             .into_iter()
@@ -174,7 +174,7 @@ pub async fn devices(
     let truncated = rows.len() as i64 > LIMIT;
     rows.truncate(LIMIT as usize);
     Ok(render(&DevicesPage {
-        nav: Nav::from(&s),
+        nav: Nav::new(&s, "registry"),
         path,
         name: q.name,
         state: q.state,

@@ -343,7 +343,7 @@ async fn render_templates(
         }
     }
     Ok(render(&TemplatesPage {
-        nav: Nav::from(s),
+        nav: Nav::new(s, "compliance"),
         groups,
         message,
         failed,
@@ -508,7 +508,7 @@ pub async fn list(
         )
         .collect();
     Ok(render(&RulesPage {
-        nav: Nav::from(&s),
+        nav: Nav::new(&s, "compliance"),
         rows,
         kinds: KINDS.iter().map(|k| (*k, kind_label(k))).collect(),
     }))
@@ -578,7 +578,7 @@ pub async fn new_form(
         return Err(not_found());
     }
     Ok(render(&RuleFormPage {
-        nav: Nav::from(&s),
+        nav: Nav::new(&s, "compliance"),
         id: None,
         kind_label: kind_label(&q.kind),
         kind: q.kind,
@@ -627,7 +627,7 @@ pub async fn edit_form(
     };
     let params: Value = serde_json::from_str(&params).unwrap_or(Value::Null);
     Ok(render(&RuleFormPage {
-        nav: Nav::from(&s),
+        nav: Nav::new(&s, "compliance"),
         id: Some(id),
         kind_label: kind_label(&kind),
         p: params_to_form(&kind, &params),
@@ -709,7 +709,7 @@ async fn saved_or_form(
         return Err(conflict(err));
     }
     let page = RuleFormPage {
-        nav: Nav::from(s),
+        nav: Nav::new(s, "compliance"),
         id,
         kind_label: kind_label(&f.kind),
         severities: severities(&f.severity),

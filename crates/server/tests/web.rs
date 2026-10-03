@@ -31,6 +31,7 @@ async fn pages_require_login(pool: PgPool) {
     let (status, html) = s.page(&c, "/login").await;
     assert_eq!(status, 200);
     assert!(html.contains("登入"));
+    assert!(html.contains(r#"class="login-box""#) && html.contains("連續失敗多次會暫時鎖定帳號"));
 }
 
 #[sqlx::test(migrations = false)]
@@ -49,7 +50,7 @@ async fn login_logout_roundtrip_and_security_headers(pool: PgPool) {
     assert_eq!(h["x-content-type-options"], "nosniff");
     assert_eq!(h["cache-control"], "no-store");
     let html = r.text().await.unwrap();
-    assert!(html.contains("儀表板") && html.contains("平台管理員"));
+    assert!(html.contains("<h1>總覽</h1>") && html.contains("平台管理員"));
 
     let csrf = csrf_from(&html);
     let r = c
@@ -125,6 +126,146 @@ async fn nav_depends_on_role(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = false)]
+async fn shell_and_nav_by_role(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let (_, login) = s.page(&s.web_client(), "/login").await;
+    assert!(!login.contains(r#"class="sidebar""#) && !login.contains("/ui/status"));
+
+    let admin = s.admin_client().await;
+    let (_, html) = s.page(&admin, "/").await;
+    assert!(html.contains(r#"<aside class="sidebar""#) && html.contains(r#"class="topbar""#));
+    assert!(html.contains(r#"hx-get="/ui/status""#) && html.contains(r#"action="/devices""#));
+    let settings = [
+        "/scripts",
+        "/tokens",
+        "/sites",
+        "/groups",
+        "/accounts",
+        "/compliance/notify",
+        "/audit",
+    ];
+    for href in settings {
+        assert!(
+            html.contains(&format!(r#"href="{href}""#)),
+            "平台管理員要看到 {href}"
+        );
+    }
+    assert!(html.contains(">設定<"));
+
+    let g = s.login_as("gary", Role::GroupAdmin, &["台北總部"]).await;
+    let (_, html) = s.page(&g, "/").await;
+    assert!(html.contains(r#"href="/tokens""#) && html.contains(">設定<"));
+    for href in settings.iter().filter(|h| **h != "/tokens") {
+        assert!(
+            !html.contains(&format!(r#"href="{href}""#)),
+            "群組管理員不應看到 {href}"
+        );
+    }
+
+    let v = s.login_as("vera", Role::Viewer, &["台北總部"]).await;
+    let (_, html) = s.page(&v, "/").await;
+    assert!(!html.contains(">設定<") && !html.contains(r#"href="/tokens""#));
+}
+
+#[sqlx::test(migrations = false)]
+async fn current_section_is_marked(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(1).await;
+    let a = s.enroll_ok(&tok, None, None).await;
+    let c = s.admin_client().await;
+    let (_, html) = s.page(&c, &format!("/devices/{}", a.device_id)).await;
+    assert!(
+        html.contains(r#"<a href="/devices" class="on" aria-current="page">"#),
+        "{html}"
+    );
+    assert_eq!(html.matches(r#"aria-current="page""#).count(), 1);
+}
+
+#[sqlx::test(migrations = false)]
+async fn ui_status_counts_by_scope(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tp = s.create_group_token("台北總部", 1).await;
+    let kh = s.create_group_token("高雄廠", 1).await;
+    s.enroll_ok(&tp, None, None).await;
+    s.enroll_ok(&kh, None, None).await;
+    sqlx::query("UPDATE devices SET last_seen_at = now()")
+        .execute(&s.pool)
+        .await
+        .unwrap();
+    let rule: i64 = sqlx::query_scalar(
+        "INSERT INTO compliance_rules (name, kind, severity, params, created_by) \
+         VALUES ('r', 'forbidden_software', 'high', '{\"name\":\"x\"}'::jsonb, 't') RETURNING id",
+    )
+    .fetch_one(&s.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO device_violations (device_id, rule_id, status, detail) \
+         SELECT id, $1, 'violating', '{}'::jsonb FROM devices",
+    )
+    .bind(rule)
+    .execute(&s.pool)
+    .await
+    .unwrap();
+
+    let r = s
+        .web_client()
+        .get(s.web_url("/ui/status"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 401, "未登入不能取得數字");
+
+    let admin = s.admin_client().await;
+    let (st, body) = s.page(&admin, "/ui/status").await;
+    assert_eq!(st, 200);
+    assert!(
+        body.contains(r#"<span id="st-online" hx-swap-oob="true">2 台在線</span>"#),
+        "{body}"
+    );
+    assert!(
+        body.contains(r#"id="st-devices" hx-swap-oob="true">2<"#),
+        "{body}"
+    );
+    assert!(
+        body.contains(r#"class="count num hot" id="st-violating" hx-swap-oob="true">2<"#),
+        "{body}"
+    );
+
+    let g = s.login_as("gary", Role::GroupAdmin, &["台北總部"]).await;
+    let (_, body) = s.page(&g, "/ui/status").await;
+    assert!(
+        body.contains(">1 台在線<"),
+        "群組管理員只算自己的群組：{body}"
+    );
+    assert!(
+        body.contains(r#"id="st-devices" hx-swap-oob="true">1<"#),
+        "{body}"
+    );
+    assert!(
+        body.contains(r#"id="st-violating" hx-swap-oob="true">1<"#),
+        "{body}"
+    );
+}
+
+#[sqlx::test(migrations = false)]
+async fn device_status_uses_tag(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(1).await;
+    s.enroll_ok(&tok, None, None).await;
+    sqlx::query("UPDATE devices SET last_seen_at = now()")
+        .execute(&s.pool)
+        .await
+        .unwrap();
+    let c = s.admin_client().await;
+    let (_, html) = s.page(&c, "/devices").await;
+    assert!(
+        html.contains(r#"<span class="tag ok">在線</span>"#),
+        "{html}"
+    );
+}
+
+#[sqlx::test(migrations = false)]
 async fn static_assets_served(pool: PgPool) {
     let s = TestServer::start(pool).await;
     let c = s.web_client();
@@ -147,6 +288,64 @@ async fn static_assets_served(pool: PgPool) {
             .unwrap()
             .contains("css")
     );
+    for (path, ty) in [
+        ("/static/app.js", "text/javascript"),
+        ("/static/theme.js", "text/javascript"),
+        ("/static/icons.svg", "image/svg+xml"),
+        ("/static/favicon.svg", "image/svg+xml"),
+    ] {
+        let r = c.get(s.web_url(path)).send().await.unwrap();
+        assert_eq!(r.status(), 200, "{path}");
+        assert!(
+            r.headers()["content-type"]
+                .to_str()
+                .unwrap()
+                .starts_with(ty),
+            "{path}"
+        );
+    }
+    let css = c
+        .get(s.web_url("/static/app.css"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    // 兩個主題、系統偏好、減少動態都要有
+    for needle in [
+        r#":root[data-theme="light"]"#,
+        "prefers-color-scheme: light",
+        "prefers-reduced-motion: reduce",
+        "@view-transition",
+    ] {
+        assert!(css.contains(needle), "app.css 缺少 {needle}");
+    }
+    // 收起的手機選單不能留在 Tab 順序裡（看不到焦點）
+    let drawer = css
+        .split(".js .sidebar {")
+        .nth(1)
+        .and_then(|r| r.split('}').next())
+        .expect("窄視窗的抽屜規則");
+    assert!(drawer.contains("visibility: hidden"), "{drawer}");
+}
+
+/// 靜態檔快取一天：網址帶版本，升級後瀏覽器才會拿新的 CSS／JS
+#[sqlx::test(migrations = false)]
+async fn static_links_carry_version(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let v = env!("CARGO_PKG_VERSION");
+    let (_, login) = s.page(&s.web_client(), "/login").await;
+    let admin = s.admin_client().await;
+    let (_, home) = s.page(&admin, "/").await;
+    for html in [&login, &home] {
+        for f in ["app.css", "app.js", "theme.js", "htmx.min.js"] {
+            assert!(
+                html.contains(&format!("/static/{f}?v={v}\"")),
+                "{f} 沒帶版本：{html}"
+            );
+        }
+    }
 }
 
 #[sqlx::test(migrations = false)]
@@ -179,7 +378,7 @@ async fn group_admin_sees_only_own_group(pool: PgPool) {
     assert!(!html.contains(&other.device_id.to_string()));
     let (_, html) = s.page(&c, "/").await;
     assert!(
-        html.contains("裝置總數<b>1</b>"),
+        html.contains(r#"裝置總數</div><div class="kpi-value num">1</div>"#),
         "儀表板只算自己群組：{html}"
     );
 }

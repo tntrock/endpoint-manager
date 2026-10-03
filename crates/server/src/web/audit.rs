@@ -90,7 +90,7 @@ pub async fn page(
     let has_next = rows.len() as i64 > PAGE_SIZE;
     rows.truncate(PAGE_SIZE as usize);
     Ok(render(&AuditPage {
-        nav: Nav::from(&s),
+        nav: Nav::new(&s, "audit"),
         rows: rows
             .into_iter()
             .map(|(at, actor, action, target, detail)| AuditRow {

@@ -1,18 +1,17 @@
 {% extends "base.html" %}
 {% block content %}
-<h1>登錄檔值查詢</h1>
-<form method="get" action="/registry">
-  <input name="path" value="{{ path }}" placeholder="HKLM\SOFTWARE\Policies\..." size="60" autofocus>
-  <input name="name" value="{{ name }}" placeholder="值名稱（留空＝預設值）">
-  <button>查詢</button>
+<div class="page-head"><div><h1>登錄檔</h1><div class="sub">只查得到有登錄檔規則在收集的值；路徑與名稱不分大小寫。</div></div></div>
+<form class="filters" method="get" action="/registry">
+  <input name="path" value="{{ path }}" placeholder="HKLM\SOFTWARE\Policies\..." size="60" aria-label="機碼路徑" autofocus>
+  <input name="name" value="{{ name }}" placeholder="值名稱（留空＝預設值）" aria-label="值名稱">
+  <button class="btn primary">查詢</button>
 </form>
-<p class="muted">只查得到有登錄檔規則在收集的值；路徑與名稱不分大小寫。</p>
-{% if let Some(e) = error %}<p class="error">{{ e }}</p>{% endif %}
+{% if let Some(e) = error %}<div class="notice error">{{ e }}</div>{% endif %}
 {% if searched %}
 <p>共 {{ total }} 台</p>
 <table>
-  <tr><th>狀態</th><th>類型</th><th>值</th><th>台數</th></tr>
-  {% for r in rows %}<tr><td>{{ r.state }}</td><td>{{ r.kind }}</td><td>{{ r.data }}</td><td><a href="{{ r.url }}">{{ r.count }}</a></td></tr>{% endfor %}
+  <tr><th>狀態</th><th>類型</th><th>值</th><th class="num">台數</th></tr>
+  {% for r in rows %}<tr><td>{{ r.state }}</td><td>{{ r.kind }}</td><td class="code">{{ r.data }}</td><td class="num"><a href="{{ r.url }}">{{ r.count }}</a></td></tr>{% endfor %}
 </table>
 {% if truncated %}<p class="muted">不同的值過多，只顯示前 500 種。</p>{% endif %}
 {% endif %}

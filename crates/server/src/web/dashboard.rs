@@ -2,7 +2,8 @@
 
 use askama::Template;
 use axum::extract::State;
-use axum::response::{IntoResponse, Response};
+use axum::http::StatusCode;
+use axum::response::{Html, IntoResponse, Response};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
@@ -54,9 +55,13 @@ pub(super) async fn with_result(
     }
 }
 
-async fn build(st: &AppState, s: &Session) -> Result<DashboardPage, AppError> {
+/// 範圍內的（總數, 在線, 疑似重複）；不含已除役與待核准
+pub(super) async fn device_counts(
+    st: &AppState,
+    s: &Session,
+) -> Result<(i64, i64, i64), sqlx::Error> {
     let cutoff = online_cutoff(st).await?;
-    let (total, online, duplicate): (i64, i64, i64) = sqlx::query_as(
+    sqlx::query_as(
         "SELECT count(*) FILTER (WHERE status NOT IN ('retired', 'pending_approval')), \
                 count(*) FILTER (WHERE status NOT IN ('retired', 'pending_approval') \
                                    AND last_seen_at > $1), \
@@ -67,7 +72,34 @@ async fn build(st: &AppState, s: &Session) -> Result<DashboardPage, AppError> {
     .bind(s.all_devices())
     .bind(&s.groups)
     .fetch_one(&st.pool)
-    .await?;
+    .await
+}
+
+/// 外殼的狀態數字：htmx out-of-band 片段，每 60 秒更新。未登入回 401（htmx 不更新畫面）
+pub async fn status(
+    State(st): State<AppState>,
+    session: Result<AdminSession, Response>,
+) -> Response {
+    let Ok(AdminSession(s)) = session else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let counts = async {
+        let (total, online, _) = device_counts(&st, &s).await?;
+        let violating = super::compliance::devices_violating(&st.pool, &s).await?;
+        Ok::<_, sqlx::Error>((total, online, violating))
+    };
+    match counts.await {
+        Ok((total, online, violating)) => Html(format!(
+            r#"<span id="st-online" hx-swap-oob="true">{online} 台在線</span><span class="count num" id="st-devices" hx-swap-oob="true">{total}</span><span class="count num{hot}" id="st-violating" hx-swap-oob="true">{violating}</span>"#,
+            hot = if violating > 0 { " hot" } else { "" },
+        ))
+        .into_response(),
+        Err(e) => AppError::from(e).into_response(),
+    }
+}
+
+async fn build(st: &AppState, s: &Session) -> Result<DashboardPage, AppError> {
+    let (total, online, duplicate) = device_counts(st, s).await?;
     let rows: Vec<PendingDbRow> = sqlx::query_as(
         "SELECT d.id, d.hostname, o.id, o.hostname, g.name, d.enrolled_at \
          FROM devices d JOIN devices o ON o.id = d.reenroll_of \
@@ -81,7 +113,7 @@ async fn build(st: &AppState, s: &Session) -> Result<DashboardPage, AppError> {
     .fetch_all(&st.pool)
     .await?;
     Ok(DashboardPage {
-        nav: Nav::from(s),
+        nav: Nav::new(s, "overview"),
         total,
         online,
         duplicate,

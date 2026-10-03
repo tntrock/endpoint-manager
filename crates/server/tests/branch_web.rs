@@ -548,7 +548,12 @@ async fn caches_are_platform_only(pool: PgPool) {
     let site = create_site(&s, "台北", "10.1.0.0/16").await;
     let id = insert_cache(&s, site, "台北快取", "active").await;
     let admin = s.admin_client().await;
-    assert!(s.page(&admin, "/").await.1.contains("href=\"/caches\""));
+    assert!(
+        s.page(&admin, "/sites")
+            .await
+            .1
+            .contains("href=\"/caches\"")
+    );
     let (st, _, _) = post(
         &s,
         &admin,
@@ -644,4 +649,19 @@ async fn site_delete_errors(pool: PgPool) {
     let (st, _, body) = post(&s, &admin, &format!("/sites/{id}/delete"), &[("csrf", &t)]).await;
     assert_eq!(st, 500, "{body}");
     assert!(!body.contains("boom"), "{body}");
+}
+
+#[sqlx::test(migrations = false)]
+async fn sites_tabs_mark_current(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let admin = s.admin_client().await;
+    let (_, html) = s.page(&admin, "/caches").await;
+    assert!(
+        html.contains(r#"<a href="/caches" class="on" aria-current="page">快取</a>"#),
+        "{html}"
+    );
+    assert!(
+        html.contains(r#"<a href="/sites" class="on" aria-current="page">"#),
+        "側邊欄標示據點與快取：{html}"
+    );
 }

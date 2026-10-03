@@ -1,22 +1,28 @@
 {% extends "base.html" %}
+{% import "_macros.html" as m %}
 {% block content %}
-<h1>據點</h1>
-<p><a href="/sites/new">新增據點</a> · <a href="/caches">快取</a></p>
+<div class="page-head">
+  <div><h1>據點與快取</h1></div>
+  <div class="actions"><a class="btn primary" href="/sites/new">＋ 新增據點</a></div>
+</div>
+{% call m::sites_tabs("sites") %}{% endcall %}
 <p class="muted">端點報到時依回報的本機 IP 對應據點（網段重疊時前綴最長的優先），並向該據點使用中的快取下載派送套件。裝置數依每台最後回報的 IP 計算；網段重疊時兩個據點都會計入。</p>
+{% if rows.is_empty() %}{% call m::empty("還沒有據點", "沒有據點時，所有端點都向中央下載") %}{% endcall %}{% else %}
 <table>
-  <tr><th>名稱</th><th>網段</th><th>快取</th><th>快取無法使用時</th><th>頻寬上限</th><th>磁碟上限</th><th>裝置數</th><th></th></tr>
+  <tr><th>名稱</th><th>網段</th><th>快取</th><th>快取無法使用時</th><th>頻寬上限</th><th class="num">磁碟上限</th><th class="num">裝置數</th><th></th></tr>
   {% for r in rows %}
   <tr>
     <td>{{ r.name }}</td>
-    <td>{% for c in r.cidrs %}{{ c }}<br>{% endfor %}</td>
+    <td><span class="num">{% for c in r.cidrs %}{{ c }}<br>{% endfor %}</span></td>
     <td>{{ r.cache }}</td>
     <td>{% if r.fallback %}改向中央{% else %}等快取恢復{% endif %}</td>
     <td>{{ r.bandwidth }}</td>
-    <td>{{ r.disk_gb }} GB</td>
+    <td class="num">{{ r.disk_gb }} GB</td>
     <td class="num">{{ r.devices }}</td>
-    <td><a href="/sites/{{ r.id }}/edit">編輯</a>
-      <form class="inline" method="post" action="/sites/{{ r.id }}/delete" onsubmit="return confirm('刪除據點？這個據點的端點會改向中央下載。')"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="danger">刪除</button></form></td>
+    <td><div class="actions"><a class="btn sm" href="/sites/{{ r.id }}/edit">編輯</a>
+      <form method="post" action="/sites/{{ r.id }}/delete" data-confirm="刪除據點？這個據點的端點會改向中央下載。"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="btn sm danger">刪除</button></form></div></td>
   </tr>
   {% endfor %}
 </table>
+{% endif %}
 {% endblock %}

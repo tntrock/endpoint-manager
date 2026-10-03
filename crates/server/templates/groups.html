@@ -1,16 +1,16 @@
 {% extends "base.html" %}
 {% block content %}
-<h1>群組</h1>
-<form method="post" action="/groups">
+<div class="page-head"><div><h1>群組</h1><div class="sub">沒有裝置、金鑰與規則的群組才能刪除</div></div></div>
+<form class="filters" method="post" action="/groups">
   <input type="hidden" name="csrf" value="{{ nav.csrf }}">
-  <input name="name" required maxlength="100" placeholder="新群組名稱"> <button>建立</button>
+  <input name="name" required maxlength="100" placeholder="新群組名稱" aria-label="新群組名稱"> <button class="btn primary">建立</button>
 </form>
 <table>
-  <tr><th>名稱</th><th>裝置</th><th>金鑰</th><th>管理員</th><th>規則、派送與原則</th><th></th></tr>
+  <tr><th>名稱</th><th class="num">裝置</th><th class="num">金鑰</th><th class="num">管理員</th><th class="num">規則、派送與原則</th><th></th></tr>
   {% for g in rows %}
-  <tr><td><a href="/devices?group={{ g.id }}">{{ g.name }}</a></td><td>{{ g.devices }}</td><td>{{ g.tokens }}</td><td>{{ g.admins }}</td><td>{{ g.rules }}</td>
+  <tr><td><a href="/devices?group={{ g.id }}">{{ g.name }}</a></td><td class="num">{{ g.devices }}</td><td class="num">{{ g.tokens }}</td><td class="num">{{ g.admins }}</td><td class="num">{{ g.rules }}</td>
     <td>{% if g.devices == 0 && g.tokens == 0 && g.rules == 0 %}
-      <form class="inline" method="post" action="/groups/{{ g.id }}/delete"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="danger">刪除</button></form>
+      <form class="inline" method="post" action="/groups/{{ g.id }}/delete"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="btn sm danger">刪除</button></form>
     {% endif %}</td></tr>
   {% endfor %}
 </table>

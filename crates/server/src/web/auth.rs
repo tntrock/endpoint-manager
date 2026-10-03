@@ -299,7 +299,7 @@ pub fn check_csrf(s: &Session, got: &str) -> Result<(), Response> {
     }
 }
 
-/// 版面共用資訊。
+/// 版面共用資訊。`section` 決定側邊欄標示哪一項（子頁面沿用上層的值）
 pub struct Nav {
     pub logged_in: bool,
     pub user: String,
@@ -307,9 +307,24 @@ pub struct Nav {
     pub csrf: String,
     pub platform: bool,
     pub manage: bool,
+    pub section: &'static str,
+    pub version: &'static str,
 }
 
 impl Nav {
+    pub fn new(s: &Session, section: &'static str) -> Nav {
+        Nav {
+            logged_in: true,
+            user: s.username.clone(),
+            role: s.role.label(),
+            csrf: s.csrf.clone(),
+            platform: s.all_devices(),
+            manage: s.can_manage(),
+            section,
+            version: env!("CARGO_PKG_VERSION"),
+        }
+    }
+
     pub fn anonymous() -> Nav {
         Nav {
             logged_in: false,
@@ -318,19 +333,8 @@ impl Nav {
             csrf: String::new(),
             platform: false,
             manage: false,
-        }
-    }
-}
-
-impl From<&Session> for Nav {
-    fn from(s: &Session) -> Nav {
-        Nav {
-            logged_in: true,
-            user: s.username.clone(),
-            role: s.role.label(),
-            csrf: s.csrf.clone(),
-            platform: s.all_devices(),
-            manage: s.can_manage(),
+            section: "",
+            version: env!("CARGO_PKG_VERSION"),
         }
     }
 }

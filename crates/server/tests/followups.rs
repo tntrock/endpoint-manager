@@ -186,7 +186,10 @@ async fn pending_devices_are_not_counted(pool: PgPool) {
     upload_software(&s, &new, "CountMe", "1").await;
     let c = s.admin_client().await;
     let (_, html) = s.page(&c, "/").await;
-    assert!(html.contains("裝置總數<b>1</b>"), "{html}");
+    assert!(
+        html.contains(r#"裝置總數</div><div class="kpi-value num">1</div>"#),
+        "{html}"
+    );
     let (_, html) = s.page(&c, "/software?q=CountMe").await;
     assert!(
         html.contains(">1</a>") && !html.contains(">2</a>"),

@@ -1,21 +1,23 @@
 {% extends "base.html" %}
 {% block content %}
-<h1>帳號</h1>
+<div class="page-head"><div><h1>帳號</h1><div class="sub">管理網頁的登入帳號與權限</div></div></div>
 <fieldset><legend>建立帳號</legend>
 <form method="post" action="/accounts">
   <input type="hidden" name="csrf" value="{{ nav.csrf }}">
-  <p><label>帳號 <input name="username" required maxlength="64" autocomplete="off"></label>
-  <label>初始密碼（至少 12 字元） <input name="password" type="password" required minlength="12" autocomplete="new-password"></label></p>
-  <p>角色：{% for r in roles %}<label><input type="radio" name="role" value="{{ r.value }}" {% if r.selected %}checked{% endif %}> {{ r.label }}</label> {% endfor %}</p>
-  <p>群組（群組管理員／檢視者必選）：{% for g in groups %}<label><input type="checkbox" name="groups" value="{{ g.value }}"> {{ g.label }}</label> {% endfor %}</p>
-  <button>建立</button>
+  <div class="row">
+    <label class="field">帳號 <input name="username" required maxlength="64" autocomplete="off"></label>
+    <label class="field">初始密碼（至少 12 字元） <input name="password" type="password" required minlength="12" autocomplete="new-password"></label>
+  </div>
+  <p class="checks">角色：{% for r in roles %}<label><input type="radio" name="role" value="{{ r.value }}" {% if r.selected %}checked{% endif %}> {{ r.label }}</label> {% endfor %}</p>
+  <p class="checks">群組（群組管理員／檢視者必選）：{% for g in groups %}<label><input type="checkbox" name="groups" value="{{ g.value }}"> {{ g.label }}</label> {% endfor %}</p>
+  <button class="btn primary">建立</button>
 </form>
 </fieldset>
 <table>
   <tr><th>帳號</th><th>角色</th><th>群組</th><th>狀態</th><th>建立時間</th></tr>
   {% for a in rows %}
   <tr><td><a href="/accounts/{{ a.id }}">{{ a.username }}</a></td><td>{{ a.role }}</td><td>{{ a.groups }}</td>
-    <td><span class="{{ a.state_class }}">{{ a.state }}</span></td><td>{{ a.created_at }}</td></tr>
+    <td><span class="tag {{ a.state_class }}">{{ a.state }}</span></td><td><span class="num">{{ a.created_at }}</span></td></tr>
   {% endfor %}
 </table>
 {% endblock %}

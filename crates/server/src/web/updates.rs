@@ -180,7 +180,7 @@ pub async fn list(
     let mut names = group_names(&st, &s).await?;
     let today = crate::compliance::today(Utc::now());
     Ok(render(&ListPage {
-        nav: Nav::from(&s),
+        nav: Nav::new(&s, "updates"),
         rows: rows
             .iter()
             .map(|r| ListRow {
@@ -330,7 +330,7 @@ async fn form_page(
     error: Option<String>,
 ) -> Result<FormPage, sqlx::Error> {
     Ok(FormPage {
-        nav: Nav::from(s),
+        nav: Nav::new(s, "updates"),
         id,
         groups: super::rules::group_checks(st, &f.groups).await?,
         f,
@@ -597,7 +597,7 @@ pub async fn detail(
         .join("、");
     let today = crate::compliance::today(Utc::now());
     Ok(render(&DetailPage {
-        nav: Nav::from(&s),
+        nav: Nav::new(&s, "updates"),
         id,
         name,
         revision,
@@ -700,7 +700,7 @@ pub async fn overview(
     let now = Utc::now();
     let dash = |v: Option<String>| v.unwrap_or_else(|| "—".into());
     Ok(render(&OverviewPage {
-        nav: Nav::from(&s),
+        nav: Nav::new(&s, "updates"),
         builds: builds
             .into_iter()
             .map(|(b, u, n)| (dash(b), dash(u.map(|u| u.to_string())), n))

@@ -1,20 +1,25 @@
 {% extends "base.html" %}
+{% import "_macros.html" as m %}
 {% block content %}
-<h1>套件</h1>
-<p><a href="/deployments">← 派送</a>　<a href="/packages/upload">上傳套件</a></p>
+<div class="page-head">
+  <div><h1>派送</h1></div>
+  <div class="actions"><a class="btn primary" href="/packages/upload">＋ 上傳套件</a></div>
+</div>
+{% call m::deploy_tabs("packages") %}{% endcall %}
+{% if rows.is_empty() %}{% call m::empty("還沒有套件", "上傳 MSI 或 EXE 後建立派送") %}{% endcall %}{% else %}
 <table>
-  <tr><th>名稱</th><th>版本</th><th>類型</th><th>檔案</th><th>大小</th><th>派送</th><th>上傳時間</th></tr>
+  <tr><th>名稱</th><th>版本</th><th>類型</th><th>檔案</th><th class="num">大小</th><th class="num">派送</th><th>上傳時間</th></tr>
   {% for r in rows %}
   <tr>
     <td><a href="/packages/{{ r.id }}">{{ r.name }}</a></td>
     <td>{{ r.version }}</td>
     <td>{{ r.kind }}</td>
     <td>{{ r.file_name }}</td>
-    <td>{{ r.size }}</td>
-    <td>{{ r.used }}</td>
-    <td>{{ r.created }}</td>
+    <td class="num">{{ r.size }}</td>
+    <td class="num">{{ r.used }}</td>
+    <td><span class="num">{{ r.created }}</span></td>
   </tr>
   {% endfor %}
 </table>
-{% if rows.is_empty() %}<p class="muted">還沒有套件。</p>{% endif %}
+{% endif %}
 {% endblock %}

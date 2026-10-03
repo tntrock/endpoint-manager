@@ -1,61 +1,65 @@
 {% extends "base.html" %}
+{% import "_macros.html" as m %}
 {% block content %}
-<h1>分點快取</h1>
-<p><a href="/sites">據點</a></p>
+<div class="page-head"><div><h1>據點與快取</h1></div></div>
+{% call m::sites_tabs("caches") %}{% endcall %}
 {% if let Some(t) = new_token %}
-<div class="notice">
+<div class="notice ok">
   <p>快取註冊金鑰已建立。<b>明碼只顯示這一次</b>：</p>
   <p><code id="new-token">{{ t }}</code></p>
   <p>在快取主機上以系統管理員（Linux 為服務帳號）執行：</p>
   <p><code>endpoint-cache enroll --server {% if server_url.is_empty() %}https://&lt;中央&gt;:8443{% else %}{{ server_url }}{% endif %} --root root.pem --token {{ t }} --name &lt;名稱&gt; --url https://&lt;快取主機&gt;:8443 --dns &lt;快取主機&gt;</code></p>
 </div>
 {% endif %}
+{% if rows.is_empty() %}{% call m::empty("還沒有快取", "建立快取註冊金鑰後，在分點主機執行 endpoint-cache enroll") %}{% endcall %}{% else %}
 <table>
   <tr><th>名稱</th><th>據點</th><th>網址</th><th>狀態</th><th>最後回報</th><th>版本</th><th>磁碟用量</th><th>預先下載</th><th></th></tr>
   {% for c in rows %}
   <tr>
-    <td>{{ c.name }}</td><td>{{ c.site }}</td><td>{{ c.url }}</td><td>{{ c.status_label }}</td>
-    <td>{{ c.last_seen }}</td><td>{{ c.version }}</td><td>{{ c.disk }}</td><td>{{ c.progress }}</td>
-    <td>
+    <td>{{ c.name }}</td><td>{{ c.site }}</td><td>{{ c.url }}</td>
+    <td>{% if c.status == "active" %}<span class="tag ok">{{ c.status_label }}</span>{% else if c.status == "pending" %}<span class="tag warn">{{ c.status_label }}</span>{% else if c.status == "disabled" %}<span class="tag off">{{ c.status_label }}</span>{% else %}<span class="tag bad">{{ c.status_label }}</span>{% endif %}</td>
+    <td><span class="num">{{ c.last_seen }}</span></td><td>{{ c.version }}</td><td class="num">{{ c.disk }}</td><td>{{ c.progress }}</td>
+    <td><div class="actions">
       {% if c.status == "pending" %}
-      <form class="inline" method="post" action="/caches/{{ c.id }}/approve"><input type="hidden" name="csrf" value="{{ nav.csrf }}">
-        <select name="site" required><option value="">選擇據點</option>{% for o in free_sites %}<option value="{{ o.id }}">{{ o.name }}</option>{% endfor %}</select>
-        <button>核准</button></form>
-      <form class="inline" method="post" action="/caches/{{ c.id }}/reject"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="danger">拒絕</button></form>
+      <form method="post" action="/caches/{{ c.id }}/approve"><input type="hidden" name="csrf" value="{{ nav.csrf }}">
+        <select name="site" required aria-label="據點"><option value="">選擇據點</option>{% for o in free_sites %}<option value="{{ o.id }}">{{ o.name }}</option>{% endfor %}</select>
+        <button class="btn sm">核准</button></form>
+      <form method="post" action="/caches/{{ c.id }}/reject"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="btn sm danger">拒絕</button></form>
       {% endif %}
       {% if c.status == "active" %}
-      <form class="inline" method="post" action="/caches/{{ c.id }}/disable"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button>停用</button></form>
+      <form method="post" action="/caches/{{ c.id }}/disable"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="btn sm">停用</button></form>
       {% endif %}
       {% if c.status == "disabled" %}
-      <form class="inline" method="post" action="/caches/{{ c.id }}/enable"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button>啟用</button></form>
+      <form method="post" action="/caches/{{ c.id }}/enable"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="btn sm">啟用</button></form>
       {% endif %}
       {% if c.status == "active" || c.status == "disabled" %}
-      <form class="inline" method="post" action="/caches/{{ c.id }}/site"><input type="hidden" name="csrf" value="{{ nav.csrf }}">
-        <select name="site"><option value="">不指定</option>{% if let Some(cur) = c.site_id %}<option value="{{ cur }}" selected>{{ c.site }}</option>{% endif %}{% for o in free_sites %}<option value="{{ o.id }}">{{ o.name }}</option>{% endfor %}</select>
-        <button>改據點</button></form>
+      <form method="post" action="/caches/{{ c.id }}/site"><input type="hidden" name="csrf" value="{{ nav.csrf }}">
+        <select name="site" aria-label="據點"><option value="">不指定</option>{% if let Some(cur) = c.site_id %}<option value="{{ cur }}" selected>{{ c.site }}</option>{% endif %}{% for o in free_sites %}<option value="{{ o.id }}">{{ o.name }}</option>{% endfor %}</select>
+        <button class="btn sm">改據點</button></form>
       {% endif %}
-      <form class="inline" method="post" action="/caches/{{ c.id }}/delete" onsubmit="return confirm('刪除快取？之後要重新註冊才能使用。')"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="danger">刪除</button></form>
-    </td>
+      <form method="post" action="/caches/{{ c.id }}/delete" data-confirm="刪除快取？之後要重新註冊才能使用。"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="btn sm danger">刪除</button></form>
+    </div></td>
   </tr>
   {% endfor %}
 </table>
+{% endif %}
 <h2>快取註冊金鑰</h2>
 <fieldset><legend>建立金鑰</legend>
-<form method="post" action="/caches/tokens">
+<form class="row" method="post" action="/caches/tokens">
   <input type="hidden" name="csrf" value="{{ nav.csrf }}">
-  <label>名稱 <input name="name" required maxlength="100"></label>
-  <label>可使用次數 <input name="max_uses" type="number" min="1" value="1" required></label>
-  <label>有效天數 <input name="valid_days" type="number" min="1" value="7" placeholder="不限"></label>
-  <button>建立</button>
+  <label class="field">名稱 <input name="name" required maxlength="100"></label>
+  <label class="field">可使用次數 <input name="max_uses" type="number" min="1" value="1" required></label>
+  <label class="field">有效天數 <input name="valid_days" type="number" min="1" value="7" placeholder="不限"></label>
+  <div class="field"><button class="btn primary">建立</button></div>
 </form>
 </fieldset>
 <table>
-  <tr><th>名稱</th><th>已用／上限</th><th>到期</th><th>建立者</th><th>狀態</th></tr>
+  <tr><th>名稱</th><th class="num">已用／上限</th><th>到期</th><th>建立者</th><th>狀態</th></tr>
   {% for t in tokens %}
-  <tr><td>{{ t.name }}</td><td>{{ t.used }} / {{ t.max }}</td><td>{{ t.expires }}</td><td>{{ t.created_by }}</td>
+  <tr><td>{{ t.name }}</td><td class="num">{{ t.used }} / {{ t.max }}</td><td><span class="num">{{ t.expires }}</span></td><td>{{ t.created_by }}</td>
     <td>{% if t.state.is_empty() %}
-      <form class="inline" method="post" action="/caches/tokens/{{ t.id }}/revoke"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="danger">作廢</button></form>
-    {% else %}<span class="muted">{{ t.state }}</span>{% endif %}</td></tr>
+      <form class="inline" method="post" action="/caches/tokens/{{ t.id }}/revoke"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="btn sm danger">作廢</button></form>
+    {% else %}<span class="tag off">{{ t.state }}</span>{% endif %}</td></tr>
   {% endfor %}
 </table>
 {% endblock %}

@@ -1,24 +1,28 @@
 {% extends "base.html" %}
+{% import "_macros.html" as m %}
 {% block content %}
-<h1>派送</h1>
-{% if nav.platform %}<p><a href="/deployments/new">建立派送</a>　<a href="/packages">套件</a></p>{% endif %}
+<div class="page-head">
+  <div><h1>派送</h1>{% if !nav.platform %}<div class="sub">台數只計算你管理範圍內的裝置。</div>{% endif %}</div>
+  {% if nav.platform %}<div class="actions"><a class="btn primary" href="/deployments/new">＋ 建立派送</a></div>{% endif %}
+</div>
+{% call m::deploy_tabs("deployments") %}{% endcall %}
+{% if rows.is_empty() %}{% call m::empty("還沒有派送", "上傳套件後就能建立第一個派送") %}{% endcall %}{% else %}
 <table>
-  <tr><th>名稱</th><th>套件</th><th>動作</th><th>狀態</th><th>對象</th><th>等待中</th><th>成功</th><th>待重開機</th><th>已符合</th><th>失敗</th></tr>
+  <tr><th>名稱</th><th>套件</th><th>動作</th><th>狀態</th><th class="num">對象</th><th class="num">等待中</th><th class="num">成功</th><th class="num">待重開機</th><th class="num">已符合</th><th class="num">失敗</th></tr>
   {% for r in rows %}
   <tr>
     <td><a href="/deployments/{{ r.id }}">{{ r.name }}</a></td>
     <td>{{ r.package }}</td>
     <td>{{ r.action }}</td>
-    <td>{{ r.stage }}</td>
-    <td>{{ r.counts.targeted }}</td>
-    <td>{{ r.counts.pending() }}</td>
-    <td>{{ r.counts.succeeded }}</td>
-    <td>{{ r.counts.reboot }}</td>
-    <td>{{ r.counts.compliant }}</td>
-    <td>{% if r.counts.failed > 0 %}<span class="error">{{ r.counts.failed }}</span>{% else %}0{% endif %}</td>
+    <td>{% if r.stage == "已暫停" %}<span class="tag warn">{{ r.stage }}</span>{% else if r.stage == "已停止" %}<span class="tag off">{{ r.stage }}</span>{% else %}<span class="tag info">{{ r.stage }}</span>{% endif %}</td>
+    <td class="num">{{ r.counts.targeted }}</td>
+    <td class="num">{{ r.counts.pending() }}</td>
+    <td class="num">{{ r.counts.succeeded }}</td>
+    <td class="num">{{ r.counts.reboot }}</td>
+    <td class="num">{{ r.counts.compliant }}</td>
+    <td class="num">{% if r.counts.failed > 0 %}<span class="error">{{ r.counts.failed }}</span>{% else %}0{% endif %}</td>
   </tr>
   {% endfor %}
 </table>
-{% if rows.is_empty() %}<p class="muted">還沒有派送。</p>{% endif %}
-{% if !nav.platform %}<p class="muted">台數只計算你管理範圍內的裝置。</p>{% endif %}
+{% endif %}
 {% endblock %}

@@ -450,7 +450,8 @@ async fn retry_counts_only_current_revision(pool: PgPool) {
     );
     let summary = html.split("<h2>裝置</h2>").next().unwrap();
     assert!(
-        summary.contains("<td>第二輪失敗</td><td>1</td>") && !summary.contains("第一輪失敗"),
+        summary.contains(r#"<td>第二輪失敗</td><td class="num">1</td>"#)
+            && !summary.contains("第一輪失敗"),
         "主要失敗原因只算目前這一輪：{html}"
     );
     let (_, html) = s.page(&admin, "/deployments").await;
@@ -461,4 +462,19 @@ async fn retry_counts_only_current_revision(pool: PgPool) {
         "{html}"
     );
     assert!(!html.contains(&a1.device_id.to_string()), "{html}");
+}
+
+#[sqlx::test(migrations = false)]
+async fn deploy_tabs_mark_current(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let admin = s.admin_client().await;
+    let (_, html) = s.page(&admin, "/packages").await;
+    assert!(
+        html.contains(r#"<a href="/packages" class="on" aria-current="page">套件</a>"#),
+        "{html}"
+    );
+    assert!(
+        html.contains(r#"<a href="/deployments" class="on" aria-current="page">"#),
+        "側邊欄仍標示派送：{html}"
+    );
 }

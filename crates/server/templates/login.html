@@ -1,10 +1,13 @@
 {% extends "base.html" %}
 {% block content %}
-<h1>Endpoint Manager</h1>
-{% if let Some(e) = error %}<p class="error">{{ e }}</p>{% endif %}
-<form method="post" action="/login">
-  <p><label>帳號<br><input name="username" autocomplete="username" required autofocus></label></p>
-  <p><label>密碼<br><input name="password" type="password" autocomplete="current-password" required></label></p>
-  <p><button>登入</button></p>
-</form>
+<main class="login-box" id="main">
+  <div class="brand"><span class="logo"></span><b>Endpoint Manager</b></div>
+  {% if let Some(e) = error %}<div class="notice error" role="alert">{{ e }}</div>{% endif %}
+  <form method="post" action="/login">
+    <label class="field">帳號 <input name="username" autocomplete="username" required autofocus></label>
+    <label class="field">密碼 <input name="password" type="password" autocomplete="current-password" required></label>
+    <button class="btn primary">登入</button>
+  </form>
+  <p class="foot">連續失敗多次會暫時鎖定帳號。</p>
+</main>
 {% endblock %}

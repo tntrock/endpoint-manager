@@ -1,12 +1,12 @@
 {% if manage %}
 <div class="actions">
-  <form method="post" action="/devices/{{ device }}/commands"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><input type="hidden" name="action" value="collect"><button>重新收集</button></form>
-  <form method="post" action="/devices/{{ device }}/commands"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><input type="hidden" name="action" value="apply"><button>立即套用</button></form>
-  <form method="post" action="/devices/{{ device }}/commands" onsubmit="return confirm('確定要重新開機這台電腦？使用者會收到通知。')"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><input type="hidden" name="action" value="reboot"><label>延遲 <input name="delay_minutes" value="10" size="2" inputmode="numeric"> 分鐘</label> <button>重新開機</button></form>
-  <form method="post" action="/devices/{{ device }}/commands" onsubmit="return confirm('確定要關閉這台電腦？使用者會收到通知。')"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><input type="hidden" name="action" value="shutdown"><label>延遲 <input name="delay_minutes" value="10" size="2" inputmode="numeric"> 分鐘</label> <button>關機</button></form>
+  <form method="post" action="/devices/{{ device }}/commands"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><input type="hidden" name="action" value="collect"><button class="btn sm">重新收集</button></form>
+  <form method="post" action="/devices/{{ device }}/commands"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><input type="hidden" name="action" value="apply"><button class="btn sm">立即套用</button></form>
+  <form method="post" action="/devices/{{ device }}/commands" data-confirm="確定要重新開機這台電腦？使用者會收到通知。"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><input type="hidden" name="action" value="reboot"><label>延遲 <input name="delay_minutes" value="10" size="2" inputmode="numeric"> 分鐘</label> <button class="btn sm danger">重新開機</button></form>
+  <form method="post" action="/devices/{{ device }}/commands" data-confirm="確定要關閉這台電腦？使用者會收到通知。"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><input type="hidden" name="action" value="shutdown"><label>延遲 <input name="delay_minutes" value="10" size="2" inputmode="numeric"> 分鐘</label> <button class="btn sm danger">關機</button></form>
   {% if nav.platform %}
-  <form method="post" action="/devices/{{ device }}/commands" onsubmit="return confirm('確定要在這台電腦以 SYSTEM 執行腳本？')"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><input type="hidden" name="action" value="script">
-    <select name="script_id">{% for sc in scripts %}<option value="{{ sc.value }}">{{ sc.label }}</option>{% endfor %}</select> <button>執行腳本</button></form>
+  <form method="post" action="/devices/{{ device }}/commands" data-confirm="確定要在這台電腦以 SYSTEM 執行腳本？"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><input type="hidden" name="action" value="script">
+    <select name="script_id" aria-label="腳本">{% for sc in scripts %}<option value="{{ sc.value }}">{{ sc.label }}</option>{% endfor %}</select> <button class="btn sm">執行腳本</button></form>
   {% endif %}
 </div>
 <p class="muted">指令在這台下次報到時送達（預設約 1 分鐘內）。</p>
@@ -15,9 +15,9 @@
 <p class="muted">這台還沒有遠端指令。</p>
 {% else %}
 <table>
-  <tr><th>動作</th><th>建立者</th><th>時間</th><th>狀態</th><th>結束碼</th><th>輸出</th></tr>
+  <tr><th>動作</th><th>建立者</th><th>時間</th><th>狀態</th><th class="num">結束碼</th><th>輸出</th></tr>
   {% for r in rows %}
-  <tr><td><a href="/commands/{{ r.run }}">{{ r.action }}</a></td><td>{{ r.created_by }}</td><td>{{ r.created }}</td><td>{{ r.status }}</td><td>{{ r.exit_code }}</td>
+  <tr><td><a href="/commands/{{ r.run }}">{{ r.action }}</a></td><td>{{ r.created_by }}</td><td><span class="num">{{ r.created }}</span></td><td>{{ r.status }}</td><td class="num">{{ r.exit_code }}</td>
     <td>{% if !r.output.is_empty() %}<details><summary>輸出</summary><pre>{{ r.output }}</pre></details>{% endif %}</td></tr>
   {% endfor %}
 </table>
