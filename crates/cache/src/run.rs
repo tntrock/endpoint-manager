@@ -265,6 +265,8 @@ impl Cache {
             Err(e) => return Err(e.into()),
         };
         st.catalog.replace(&resp);
+        // 中央已恢復：不再因先前的授權失敗回 503
+        st.auth.clear_failure();
         if resp.renew_certificate
             && let Err(e) = self.renew().await
         {

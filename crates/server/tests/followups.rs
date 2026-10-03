@@ -127,9 +127,18 @@ async fn approve_all_requires_confirmation_and_skips_failures(pool: PgPool) {
         Some("pending_approval")
     );
 
+    // 表單帶著頁面上列出的裝置
+    let mut form = vec![
+        ("csrf".to_string(), csrf.clone()),
+        ("confirm".into(), "1".into()),
+    ];
+    for id in ids_from(&html) {
+        form.push(("ids".into(), id));
+    }
+    assert_eq!(form.len(), 4, "頁面列出 2 台");
     let r = c
         .post(s.web_url("/devices/approve-all"))
-        .form(&[("csrf", csrf.as_str()), ("confirm", "1")])
+        .form(&form)
         .send()
         .await
         .unwrap();
@@ -139,6 +148,21 @@ async fn approve_all_requires_confirmation_and_skips_failures(pool: PgPool) {
     // 偽造的連結不顯示核准結果
     let (_, html) = s.page(&c, "/?approved=99&skipped=0").await;
     assert!(!html.contains("已核准"), "{html}");
+    // 重新整理（重送同一個表單）：只處理當時列出的裝置，之後才出現的待核准裝置不受影響
+    let _c_old = s.enroll_ok(&t, Some("UUID-C"), Some("SN-C")).await;
+    let c_new = s.enroll_ok(&t, Some("UUID-C"), Some("SN-C")).await;
+    let r = c
+        .post(s.web_url("/devices/approve-all"))
+        .form(&form)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(
+        status(&s, c_new.device_id).await.as_deref(),
+        Some("pending_approval"),
+        "不是當時頁面上列出的裝置"
+    );
     assert_eq!(
         status(&s, b_new.device_id).await,
         None,
@@ -250,4 +274,12 @@ async fn uploads_only_touch_the_authenticated_device(pool: PgPool) {
     };
     assert_eq!(names(b.device_id).await, vec!["B-App".to_string()]);
     assert_eq!(names(a.device_id).await, vec!["A-App".to_string()]);
+}
+
+/// 「全部核准」表單裡的裝置 id
+fn ids_from(html: &str) -> Vec<String> {
+    let key = r#"name="ids" value=""#;
+    html.match_indices(key)
+        .map(|(i, _)| html[i + key.len()..].split('"').next().unwrap().to_string())
+        .collect()
 }

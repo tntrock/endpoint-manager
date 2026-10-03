@@ -60,11 +60,12 @@ impl FromRequestParts<AppState> for AuthedCache {
 pub async fn enroll(
     State(st): State<AppState>,
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
-    Json(req): Json<CacheEnrollRequest>,
+    Json(mut req): Json<CacheEnrollRequest>,
 ) -> Result<Json<CacheEnrollResponse>, AppError> {
     if !st.enroll_limiter.check(remote.ip(), Instant::now()) {
         return Err(AppError::TooManyRequests);
     }
+    req.normalize();
     req.validate().map_err(|e| AppError::BadRequest(e.into()))?;
     // 快取憑證有 serverAuth、由同一個 CA 簽發：拿到中央伺服器的名稱就能冒充中央
     if req

@@ -31,6 +31,11 @@ impl AuthCache {
         *self.failed_until.lock().expect("auth lock") = Some(Instant::now() + for_);
     }
 
+    /// 中央恢復（報到成功）時呼叫：不必等記憶期滿
+    pub fn clear_failure(&self) {
+        *self.failed_until.lock().expect("auth lock") = None;
+    }
+
     pub fn failing(&self) -> bool {
         self.failed_until
             .lock()
@@ -99,6 +104,14 @@ mod tests {
         assert_eq!(a.len(), 2);
         a.prune();
         assert_eq!(a.len(), 0);
+    }
+
+    #[test]
+    fn failure_can_be_cleared() {
+        let a = AuthCache::new(Duration::from_secs(60));
+        a.fail(Duration::from_secs(30));
+        a.clear_failure();
+        assert!(!a.failing());
     }
 
     #[test]

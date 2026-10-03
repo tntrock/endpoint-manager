@@ -15,8 +15,8 @@ use protocol::{InventoryPayload, Section, SoftwareItem};
 use tokio::sync::watch;
 
 use super::logic::{
-    Cmd, Outcome, Plan, RETRY_AFTER_HOURS, decide, install_cmd, is_installed, outcome,
-    uninstall_cmd,
+    Cmd, MAX_REINSTALLS, Outcome, Plan, RETRY_AFTER_HOURS, decide, install_cmd, is_installed,
+    outcome, uninstall_cmd,
 };
 use super::state::DeployState;
 use crate::backoff::{jitter, with_jitter};
@@ -341,7 +341,10 @@ impl<C: Collector, R: Runner> Worker<C, R> {
                         a,
                         DeployStatus::Failed,
                         None,
-                        "安裝後一再被移除（24 小時內已安裝 3 次），24 小時後再試".into(),
+                        format!(
+                            "安裝後一再被移除（{RETRY_AFTER_HOURS} 小時內已安裝 {MAX_REINSTALLS} 次），\
+                             {RETRY_AFTER_HOURS} 小時後再試"
+                        ),
                         attempts,
                     )
                     .await;

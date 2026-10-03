@@ -1,7 +1,7 @@
 //! 裝置列表、詳細資料與動作。所有查詢都以工作階段的群組範圍過濾；範圍外一律 404。
 
 use askama::Template;
-use axum::extract::{Form, Path, Query, State};
+use axum::extract::{Form, Path, Query, RawForm, State};
 use axum::response::{IntoResponse, Redirect, Response};
 use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
@@ -299,23 +299,26 @@ pub async fn reject(
     Ok(Redirect::to("/").into_response())
 }
 
-#[derive(Deserialize)]
-pub struct ApproveAllForm {
-    csrf: String,
-    #[serde(default)]
-    confirm: String,
-}
-
 pub async fn approve_all(
     State(st): State<AppState>,
     AdminSession(s): AdminSession,
-    Form(f): Form<ApproveAllForm>,
+    RawForm(raw): RawForm,
 ) -> Result<Response, Response> {
-    check_csrf(&s, &f.csrf)?;
+    // ids 可重複：表單帶著頁面當時列出的裝置，重送或之後才出現的待核准裝置都不會被核准
+    let (mut csrf, mut confirm, mut shown) = (String::new(), false, Vec::<Uuid>::new());
+    for (k, v) in form_urlencoded::parse(&raw) {
+        match k.as_ref() {
+            "csrf" => csrf = v.into_owned(),
+            "confirm" => confirm = !v.is_empty(),
+            "ids" => shown.extend(v.parse::<Uuid>().ok()),
+            _ => {}
+        }
+    }
+    check_csrf(&s, &csrf)?;
     if !s.can_manage() {
         return Err(forbidden());
     }
-    if f.confirm.is_empty() {
+    if !confirm {
         return Err((
             axum::http::StatusCode::BAD_REQUEST,
             "請勾選確認後再全部核准",
@@ -324,12 +327,13 @@ pub async fn approve_all(
     }
     let ids: Vec<Uuid> = sqlx::query_scalar(
         "SELECT d.id FROM devices d JOIN devices o ON o.id = d.reenroll_of \
-         WHERE d.status = 'pending_approval' \
+         WHERE d.status = 'pending_approval' AND d.id = ANY($3) \
            AND ($1::bool OR (d.group_id = ANY($2::bigint[]) AND o.group_id = ANY($2::bigint[]))) \
          ORDER BY d.enrolled_at",
     )
     .bind(s.all_devices())
     .bind(&s.groups)
+    .bind(&shown)
     .fetch_all(&st.pool)
     .await
     .map_err(db_error)?;
