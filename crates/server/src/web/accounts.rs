@@ -66,11 +66,11 @@ fn to_row(st: &AppState, r: Row) -> (AccountRow, Vec<i64>) {
     let (id, username, role, groups, locked_until, disabled_at, created_at, group_ids) = r;
     let locked = locked_until.is_some_and(|t| t > Utc::now());
     let (state, state_class) = if disabled_at.is_some() {
-        ("已停用", "disabled")
+        ("已停用", "bad")
     } else if locked {
-        ("已鎖定", "locked")
+        ("已鎖定", "warn")
     } else {
-        ("啟用中", "online")
+        ("啟用中", "ok")
     };
     (
         AccountRow {

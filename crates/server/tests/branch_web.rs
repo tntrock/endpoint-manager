@@ -650,3 +650,18 @@ async fn site_delete_errors(pool: PgPool) {
     assert_eq!(st, 500, "{body}");
     assert!(!body.contains("boom"), "{body}");
 }
+
+#[sqlx::test(migrations = false)]
+async fn sites_tabs_mark_current(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let admin = s.admin_client().await;
+    let (_, html) = s.page(&admin, "/caches").await;
+    assert!(
+        html.contains(r#"<a href="/caches" class="on" aria-current="page">快取</a>"#),
+        "{html}"
+    );
+    assert!(
+        html.contains(r#"<a href="/sites" class="on" aria-current="page">"#),
+        "側邊欄標示據點與快取：{html}"
+    );
+}

@@ -1,8 +1,8 @@
 {% extends "base.html" %}
 {% block content %}
-<h1>註冊金鑰</h1>
+<div class="page-head"><div><h1>註冊金鑰</h1><div class="sub">Agent 安裝時用來註冊到這台伺服器</div></div></div>
 {% if let Some(t) = new_token %}
-<div class="notice">
+<div class="notice ok">
   <p>金鑰已建立。<b>明碼只顯示這一次</b>，請立即複製到安裝參數 <code>ENROLL_TOKEN=</code>：</p>
   <p><code id="new-token">{{ t }}</code></p>
 </div>
@@ -10,29 +10,31 @@
 <fieldset><legend>建立金鑰</legend>
 <form method="post" action="/tokens">
   <input type="hidden" name="csrf" value="{{ nav.csrf }}">
-  <label>名稱 <input name="name" required maxlength="100"></label>
-  <label>可使用次數 <input name="max_uses" type="number" min="1" value="100" required></label>
-  <label>群組 <select name="group">{% for o in groups %}<option value="{{ o.value }}">{{ o.label }}</option>{% endfor %}</select></label>
-  <label>有效天數 <input name="valid_days" type="number" min="1" placeholder="不限"></label>
-  <button>建立</button>
+  <div class="row">
+    <label class="field">名稱 <input name="name" required maxlength="100"></label>
+    <label class="field">可使用次數 <input name="max_uses" type="number" min="1" value="100" required></label>
+    <label class="field">群組 <select name="group">{% for o in groups %}<option value="{{ o.value }}">{{ o.label }}</option>{% endfor %}</select></label>
+    <label class="field">有效天數 <input name="valid_days" type="number" min="1" placeholder="不限"></label>
+    <div class="field"><button class="btn primary">建立</button></div>
+  </div>
   {% if installer %}
-  <p>
-    <label>伺服器網址 <input name="server_url" value="{{ public_url }}" placeholder="https://em.example.com:8443" size="40"></label>
-    <button name="download" value="1">建立並下載安裝檔</button>
-  </p>
+  <div class="row">
+    <label class="field">伺服器網址 <input name="server_url" value="{{ public_url }}" placeholder="https://em.example.com:8443" size="40"></label>
+    <div class="field"><button class="btn" name="download" value="1">建立並下載安裝檔</button></div>
+  </div>
   <p class="muted">安裝檔內含這把金鑰，可直接用 GPO 或 <code>msiexec /i endpoint-agent.msi /qn</code> 安裝。Windows 會把安裝檔快取在每台電腦的 <code>C:\Windows\Installer</code>（一般使用者可讀），所以下載安裝檔時有效天數必填（最多 90 天），派送完成後請作廢這把金鑰。</p>
   {% endif %}
 </form>
 </fieldset>
 <table>
-  <tr><th>名稱</th><th>群組</th><th>已用／上限</th><th>到期</th><th>建立者</th><th>建立時間</th><th>狀態</th></tr>
+  <tr><th>名稱</th><th>群組</th><th class="num">已用／上限</th><th>到期</th><th>建立者</th><th>建立時間</th><th>狀態</th></tr>
   {% for t in rows %}
   <tr>
-    <td>{{ t.name }}</td><td>{{ t.group }}</td><td>{{ t.used }} / {{ t.max }}</td><td>{{ t.expires }}</td>
-    <td>{{ t.created_by }}</td><td>{{ t.created_at }}</td>
+    <td>{{ t.name }}</td><td>{{ t.group }}</td><td class="num">{{ t.used }} / {{ t.max }}</td><td class="num">{{ t.expires }}</td>
+    <td>{{ t.created_by }}</td><td class="num">{{ t.created_at }}</td>
     <td>{% if t.active %}
-      <form class="inline" method="post" action="/tokens/{{ t.id }}/revoke"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="danger">作廢</button></form>
-    {% else %}<span class="muted">{{ t.state }}</span>{% endif %}</td>
+      <form class="inline" method="post" action="/tokens/{{ t.id }}/revoke"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="btn sm danger">作廢</button></form>
+    {% else %}<span class="tag off">{{ t.state }}</span>{% endif %}</td>
   </tr>
   {% endfor %}
 </table>

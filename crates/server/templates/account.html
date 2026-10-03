@@ -1,26 +1,28 @@
 {% extends "base.html" %}
 {% block content %}
-<h1>帳號：{{ a.username }} <span class="badge {{ a.state_class }}">{{ a.state }}</span></h1>
+<div class="page-head">
+  <div><div class="crumb"><a href="/accounts">帳號</a> ／ {{ a.username }}</div><h1>{{ a.username }} <span class="tag {{ a.state_class }}">{{ a.state }}</span></h1></div>
+  <div class="actions">
+    {% if a.locked %}<form method="post" action="/accounts/{{ a.id }}/unlock"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="btn">解除鎖定</button></form>{% endif %}
+    {% if a.disabled %}
+    <form method="post" action="/accounts/{{ a.id }}/enable"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="btn">啟用</button></form>
+    {% else %}
+    <form method="post" action="/accounts/{{ a.id }}/disable"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="btn danger">停用</button></form>
+    {% endif %}
+  </div>
+</div>
 <fieldset><legend>角色與群組</legend>
 <form method="post" action="/accounts/{{ a.id }}">
   <input type="hidden" name="csrf" value="{{ nav.csrf }}">
-  <p>{% for r in roles %}<label><input type="radio" name="role" value="{{ r.value }}" {% if r.selected %}checked{% endif %}> {{ r.label }}</label> {% endfor %}</p>
-  <p>{% for g in groups %}<label><input type="checkbox" name="groups" value="{{ g.value }}" {% if g.selected %}checked{% endif %}> {{ g.label }}</label> {% endfor %}</p>
-  <button>儲存</button>
+  <p class="checks">{% for r in roles %}<label><input type="radio" name="role" value="{{ r.value }}" {% if r.selected %}checked{% endif %}> {{ r.label }}</label> {% endfor %}</p>
+  <p class="checks">{% for g in groups %}<label><input type="checkbox" name="groups" value="{{ g.value }}" {% if g.selected %}checked{% endif %}> {{ g.label }}</label> {% endfor %}</p>
+  <button class="btn primary">儲存</button>
 </form>
 </fieldset>
 <fieldset><legend>重設密碼</legend>
-<form method="post" action="/accounts/{{ a.id }}/password">
+<form class="filters" method="post" action="/accounts/{{ a.id }}/password">
   <input type="hidden" name="csrf" value="{{ nav.csrf }}">
-  <input name="password" type="password" required minlength="12" autocomplete="new-password"> <button>重設（同時解除鎖定、登出對方）</button>
+  <input name="password" type="password" required minlength="12" autocomplete="new-password" aria-label="新密碼"> <button class="btn">重設（同時解除鎖定、登出對方）</button>
 </form>
 </fieldset>
-<p>
-{% if a.locked %}<form class="inline" method="post" action="/accounts/{{ a.id }}/unlock"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button>解除鎖定</button></form>{% endif %}
-{% if a.disabled %}
-<form class="inline" method="post" action="/accounts/{{ a.id }}/enable"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button>啟用</button></form>
-{% else %}
-<form class="inline" method="post" action="/accounts/{{ a.id }}/disable"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="danger">停用</button></form>
-{% endif %}
-</p>
 {% endblock %}
