@@ -548,7 +548,12 @@ async fn caches_are_platform_only(pool: PgPool) {
     let site = create_site(&s, "台北", "10.1.0.0/16").await;
     let id = insert_cache(&s, site, "台北快取", "active").await;
     let admin = s.admin_client().await;
-    assert!(s.page(&admin, "/").await.1.contains("href=\"/caches\""));
+    assert!(
+        s.page(&admin, "/sites")
+            .await
+            .1
+            .contains("href=\"/caches\"")
+    );
     let (st, _, _) = post(
         &s,
         &admin,

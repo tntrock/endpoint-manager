@@ -1,6 +1,23 @@
 {% extends "base.html" %}
 {% block content %}
-<h1>{{ d.hostname }} <span class="badge {{ d.badge }}">{{ d.badge_label }}</span></h1>
+<div class="page-head">
+  <div><div class="crumb"><a href="/devices">裝置</a> ／ {{ d.hostname }}</div><h1>{{ d.hostname }} <span class="tag {{ d.badge }}">{{ d.badge_label }}</span></h1></div>
+  <div class="actions">
+    {% if nav.platform %}
+    <form method="post" action="/devices/{{ d.id }}/group">
+      <input type="hidden" name="csrf" value="{{ nav.csrf }}">
+      <select name="group" aria-label="移到群組">{% for o in groups %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}</select>
+      <button class="btn">移到群組</button>
+    </form>
+    {% endif %}
+    {% if nav.manage && d.can_retire %}
+    <form method="post" action="/devices/{{ d.id }}/retire" data-confirm="除役會撤銷憑證，Agent 將停止報到。確定除役？">
+      <input type="hidden" name="csrf" value="{{ nav.csrf }}">
+      <button class="btn danger">除役</button>
+    </form>
+    {% endif %}
+  </div>
+</div>
 <table>
   <tr><th>裝置 ID</th><td>{{ d.id }}</td><th>群組</th><td>{{ d.group }}</td></tr>
   <tr><th>網域</th><td>{{ d.domain }}</td><th>作業系統</th><td>{{ d.os }}（{{ d.build }}）</td></tr>
@@ -12,24 +29,13 @@
   <tr><th>註冊時間</th><td>{{ d.enrolled }}</td><th>Agent 版本</th><td>{{ d.agent }}</td></tr>
 </table>
 {% if !d.errors.is_empty() %}
+<div class="card">
 <h2>收集錯誤</h2>
 <table>{% for e in d.errors %}<tr><th>{{ e.0 }}</th><td class="error">{{ e.1 }}</td></tr>{% endfor %}</table>
-{% endif %}
-{% if nav.platform %}
-<form method="post" action="/devices/{{ d.id }}/group">
-  <input type="hidden" name="csrf" value="{{ nav.csrf }}">
-  <label>移到群組 <select name="group">{% for o in groups %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}</select></label>
-  <button>移動</button>
-</form>
-{% endif %}
-{% if nav.manage && d.can_retire %}
-<form method="post" action="/devices/{{ d.id }}/retire">
-  <input type="hidden" name="csrf" value="{{ nav.csrf }}">
-  <button class="danger">除役（撤銷憑證，Agent 將停止報到）</button>
-</form>
-{% endif %}
-<div class="tabs">
-  {% for t in tabs %}<button hx-get="/devices/{{ d.id }}/tab/{{ t.0 }}" hx-target="#tab">{{ t.1 }}</button>{% endfor %}
 </div>
+{% endif %}
+<nav class="tabs" aria-label="裝置資料">
+  {% for t in tabs %}<button hx-get="/devices/{{ d.id }}/tab/{{ t.0 }}" hx-target="#tab">{{ t.1 }}</button>{% endfor %}
+</nav>
 <div id="tab" hx-get="/devices/{{ d.id }}/tab/software" hx-trigger="load"></div>
 {% endblock %}

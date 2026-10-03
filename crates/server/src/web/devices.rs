@@ -25,11 +25,11 @@ pub async fn online_cutoff(st: &AppState) -> Result<DateTime<Utc>, sqlx::Error> 
 
 pub fn status_label(status: &str, online: bool) -> (&'static str, &'static str) {
     match status {
-        "retired" => ("retired", "已除役"),
-        "pending_approval" => ("pending_approval", "待核准"),
-        "duplicate_suspect" => ("duplicate_suspect", "疑似重複"),
-        _ if online => ("online", "在線"),
-        _ => ("offline", "離線"),
+        "retired" => ("bad", "已除役"),
+        "pending_approval" => ("warn", "待核准"),
+        "duplicate_suspect" => ("warn", "疑似重複"),
+        _ if online => ("ok", "在線"),
+        _ => ("off", "離線"),
     }
 }
 

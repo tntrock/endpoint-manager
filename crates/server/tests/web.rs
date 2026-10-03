@@ -50,7 +50,7 @@ async fn login_logout_roundtrip_and_security_headers(pool: PgPool) {
     assert_eq!(h["x-content-type-options"], "nosniff");
     assert_eq!(h["cache-control"], "no-store");
     let html = r.text().await.unwrap();
-    assert!(html.contains("儀表板") && html.contains("平台管理員"));
+    assert!(html.contains("<h1>總覽</h1>") && html.contains("平台管理員"));
 
     let csrf = csrf_from(&html);
     let r = c
@@ -249,6 +249,23 @@ async fn ui_status_counts_by_scope(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = false)]
+async fn device_status_uses_tag(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(1).await;
+    s.enroll_ok(&tok, None, None).await;
+    sqlx::query("UPDATE devices SET last_seen_at = now()")
+        .execute(&s.pool)
+        .await
+        .unwrap();
+    let c = s.admin_client().await;
+    let (_, html) = s.page(&c, "/devices").await;
+    assert!(
+        html.contains(r#"<span class="tag ok">在線</span>"#),
+        "{html}"
+    );
+}
+
+#[sqlx::test(migrations = false)]
 async fn static_assets_served(pool: PgPool) {
     let s = TestServer::start(pool).await;
     let c = s.web_client();
@@ -335,7 +352,7 @@ async fn group_admin_sees_only_own_group(pool: PgPool) {
     assert!(!html.contains(&other.device_id.to_string()));
     let (_, html) = s.page(&c, "/").await;
     assert!(
-        html.contains("裝置總數<b>1</b>"),
+        html.contains(r#"裝置總數</div><div class="kpi-value num">1</div>"#),
         "儀表板只算自己群組：{html}"
     );
 }
