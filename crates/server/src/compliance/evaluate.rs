@@ -442,9 +442,25 @@ fn check_one(c: &Check, f: &DeviceFacts) -> Option<(Status, Value)> {
                 Ok(v) => v,
                 Err(u) => return u,
             };
+            // 以 S-1- 或 *- 開頭的樣式比對 SID（例如 *-500 是內建 Administrator，改名後也認得），
+            // 其他比對名稱
+            let sid_pattern = |g: &&Glob| {
+                let p = g.as_str().trim();
+                p.len() > 2
+                    && (p[..2].eq_ignore_ascii_case("*-")
+                        || p.get(..4).is_some_and(|x| x.eq_ignore_ascii_case("S-1-")))
+            };
             let bad: Vec<&str> = admins
                 .iter()
-                .filter(|a| !allowed.iter().any(|g| g.is_match(&a.name)))
+                .filter(|a| {
+                    !allowed.iter().any(|g| {
+                        if sid_pattern(&g) {
+                            g.is_match(&a.sid)
+                        } else {
+                            g.is_match(&a.name)
+                        }
+                    })
+                })
                 .map(|a| a.name.as_str())
                 .collect();
             (!bad.is_empty()).then(|| {
@@ -1021,6 +1037,38 @@ mod tests {
             status(
                 "local_admins",
                 json!({"allowed": ["*\\Administrator", "CORP\\*"]})
+            ),
+            None
+        );
+    }
+
+    /// 允許清單可以用 SID 樣式（S-1-… 或 *-500）：改名後的內建 Administrator 仍符合；
+    /// 名稱剛好像 SID 的帳號不會因此符合
+    #[test]
+    fn local_admins_matches_sid_patterns() {
+        let mut f = cfg_facts();
+        if let Some(s) = f.security.as_mut() {
+            s.admins = Probe::Ok(vec![
+                AccountInfo {
+                    name: r"PC\LocalBoss".into(),
+                    sid: "S-1-5-21-1-500".into(),
+                },
+                AccountInfo {
+                    name: r"PC\x-500".into(),
+                    sid: "S-1-5-21-1-1001".into(),
+                },
+            ]);
+        }
+        let (st, d) = one(&f, "local_admins", json!({"allowed": ["*-500"]})).unwrap();
+        assert_eq!(
+            (st, d["accounts"].clone()),
+            (Status::Violating, json!([r"PC\x-500"]))
+        );
+        assert_eq!(
+            one(
+                &f,
+                "local_admins",
+                json!({"allowed": ["*-500", "S-1-5-21-1-1001"]})
             ),
             None
         );

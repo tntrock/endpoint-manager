@@ -261,7 +261,8 @@ async fn insert_events(
     Ok(())
 }
 
-type ExistingRow = (i64, String, String, String, String);
+/// (rule_id, status, detail, rule_name, severity, logged)
+type ExistingRow = (i64, String, String, String, String, bool);
 
 /// 與目前的違規比對差異：新增、狀態改變寫歷程；只有細節改變時只更新違規列。
 /// 已停用規則的舊結果不在 outcomes 內，會被刪除並寫「→ none」事件。
@@ -273,7 +274,7 @@ async fn apply(
     outcomes: Vec<Outcome>,
 ) -> Result<(), sqlx::Error> {
     let existing: Vec<ExistingRow> = sqlx::query_as(
-        "SELECT v.rule_id, v.status, v.detail::text, r.name, r.severity \
+        "SELECT v.rule_id, v.status, v.detail::text, r.name, r.severity, v.logged \
          FROM device_violations v JOIN compliance_rules r ON r.id = v.rule_id \
          WHERE v.device_id = $1",
     )
@@ -309,11 +310,11 @@ async fn apply(
                 event("none");
                 inserts.push((o.rule_id, status, detail));
             }
-            Some((_, from, _, _, _)) if from != status => {
+            Some((_, from, _, _, _, _)) if from != status => {
                 event(&from);
                 updates.push((o.rule_id, status, detail, true));
             }
-            Some((_, _, old_detail, _, _)) => {
+            Some((_, _, old_detail, _, _, _)) => {
                 if serde_json::from_str::<Value>(&old_detail).ok().as_ref() != Some(&o.detail) {
                     updates.push((o.rule_id, status, detail, false));
                 }
@@ -321,16 +322,25 @@ async fn apply(
         }
     }
     let deletes: Vec<i64> = old.keys().copied().collect();
-    for (rule_id, status, detail, name, severity) in old.into_values() {
-        events.push((rule_id, name, severity, status, "none".into(), detail));
+    // 寫過「→ 未知」歷程的列回到符合時要補一筆，否則歷程停在「→ 未知」
+    let mut resolved_unknown = vec![];
+    for (rule_id, status, detail, name, severity, logged) in old.into_values() {
+        let e = (rule_id, name, severity, status, "none".into(), detail);
+        if e.3 == "unknown" && logged {
+            resolved_unknown.push(e);
+        } else {
+            events.push(e);
+        }
     }
     events.retain(|e| recorded(&e.3, &e.4));
+    events.extend(resolved_unknown);
 
     if !inserts.is_empty() {
         sqlx::query(
-            "INSERT INTO device_violations (device_id, rule_id, status, detail) \
-             SELECT $1, r, s, d::jsonb FROM UNNEST($2::bigint[], $3::text[], $4::text[]) \
-                  AS x(r, s, d)",
+            // 「無 → 未知」不寫歷程：logged = false
+            "INSERT INTO device_violations (device_id, rule_id, status, detail, logged) \
+             SELECT $1, r, s, d::jsonb, s <> 'unknown' \
+             FROM UNNEST($2::bigint[], $3::text[], $4::text[]) AS x(r, s, d)",
         )
         .bind(device)
         .bind(inserts.iter().map(|i| i.0).collect::<Vec<i64>>())
@@ -343,7 +353,8 @@ async fn apply(
         // 狀態改變時 since 重新起算；只有細節改變時保留原本的 since
         sqlx::query(
             "UPDATE device_violations v SET status = x.s, detail = x.d::jsonb, \
-               since = CASE WHEN x.changed THEN now() ELSE v.since END, updated_at = now() \
+               since = CASE WHEN x.changed THEN now() ELSE v.since END, \
+               logged = CASE WHEN x.changed THEN true ELSE v.logged END, updated_at = now() \
              FROM UNNEST($2::bigint[], $3::text[], $4::text[], $5::bool[]) AS x(r, s, d, changed) \
              WHERE v.device_id = $1 AND v.rule_id = x.r",
         )
