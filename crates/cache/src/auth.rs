@@ -7,9 +7,14 @@ use std::time::{Duration, Instant};
 
 pub const AUTH_TTL: Duration = Duration::from_secs(5 * 60);
 
+/// 向中央詢問授權失敗（逾時、連不上）後多久內不再詢問、直接回 503
+pub const FAIL_MEMORY: Duration = Duration::from_secs(30);
+
 pub struct AuthCache {
     ttl: Duration,
     entries: Mutex<HashMap<(String, i64), (Instant, bool)>>,
+    /// 最近一次詢問失敗後，到這個時間前直接回 503（中央卡住時不讓每個請求都等）
+    failed_until: Mutex<Option<Instant>>,
 }
 
 impl AuthCache {
@@ -17,7 +22,20 @@ impl AuthCache {
         AuthCache {
             ttl,
             entries: Mutex::new(HashMap::new()),
+            failed_until: Mutex::new(None),
         }
+    }
+
+    /// 記住詢問失敗，`for_` 期間內 `failing()` 為 true
+    pub fn fail(&self, for_: Duration) {
+        *self.failed_until.lock().expect("auth lock") = Some(Instant::now() + for_);
+    }
+
+    pub fn failing(&self) -> bool {
+        self.failed_until
+            .lock()
+            .expect("auth lock")
+            .is_some_and(|t| Instant::now() < t)
     }
 
     /// 未過期的結果
@@ -55,6 +73,14 @@ impl AuthCache {
     }
 }
 
+/// 每隔 `every` 移除過期項目（與報到成敗無關）
+pub async fn prune_loop(auth: std::sync::Arc<AuthCache>, every: Duration) {
+    loop {
+        tokio::time::sleep(every).await;
+        auth.prune();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -73,5 +99,25 @@ mod tests {
         assert_eq!(a.len(), 2);
         a.prune();
         assert_eq!(a.len(), 0);
+    }
+
+    #[test]
+    fn failure_is_remembered() {
+        let a = AuthCache::new(Duration::from_secs(60));
+        assert!(!a.failing());
+        a.fail(Duration::from_millis(50));
+        assert!(a.failing());
+        std::thread::sleep(Duration::from_millis(60));
+        assert!(!a.failing());
+    }
+
+    #[tokio::test]
+    async fn prune_runs_on_its_own() {
+        let a = std::sync::Arc::new(AuthCache::new(Duration::from_millis(10)));
+        a.put("fp", 1, true);
+        let task = tokio::spawn(prune_loop(a.clone(), Duration::from_millis(20)));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        task.abort();
+        assert!(a.is_empty());
     }
 }

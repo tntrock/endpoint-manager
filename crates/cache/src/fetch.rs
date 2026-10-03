@@ -18,8 +18,6 @@ pub const FAILURE_MEMO: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FetchError {
-    /// 套件不在中央的清單上
-    NotListed,
     /// 中央連不上、忙碌或拒絕
     Unavailable,
     /// 中央給的檔案與 sha256／大小不符
@@ -43,8 +41,21 @@ pub struct Catalog {
 
 impl Catalog {
     pub fn replace(&self, r: &CacheCheckinResponse) {
+        // sha256 是檔名：格式不對的（中央資料損壞）略過，避免寫到資料目錄以外
+        let valid = |p: &&CachePackage| {
+            let ok = p.sha256.len() == 64 && p.sha256.bytes().all(|b| b.is_ascii_hexdigit());
+            if !ok {
+                tracing::warn!(package_id = p.id, sha256 = %p.sha256, "ignoring package with bad sha256");
+            }
+            ok
+        };
         *self.state.write().expect("catalog lock") = CatalogState {
-            packages: r.packages.iter().map(|p| (p.id, p.clone())).collect(),
+            packages: r
+                .packages
+                .iter()
+                .filter(valid)
+                .map(|p| (p.id, p.clone()))
+                .collect(),
             bandwidth_limit_mbps: r.bandwidth_limit_mbps,
             disk_limit_gb: Some(r.disk_limit_gb),
         };
@@ -214,5 +225,28 @@ mod tests {
         assert_eq!(c.limits(), (Some(20), 5 * GB));
         assert_eq!(c.listed_shas().len(), 2);
         assert_eq!(c.all().len(), 2);
+    }
+
+    #[test]
+    fn bad_sha_is_filtered() {
+        let c = Catalog::default();
+        let bad = |id, sha: &str| CachePackage {
+            id,
+            sha256: sha.into(),
+            size: 1,
+        };
+        c.replace(&CacheCheckinResponse {
+            packages: vec![
+                pkg(1, 'a'),
+                bad(2, "../../etc/passwd"),
+                bad(3, &"g".repeat(64)),
+                bad(4, "ab"),
+            ],
+            bandwidth_limit_mbps: None,
+            disk_limit_gb: 5,
+            renew_certificate: false,
+        });
+        assert_eq!(c.all().len(), 1);
+        assert!(c.get(2).is_none() && c.get(3).is_none() && c.get(4).is_none());
     }
 }

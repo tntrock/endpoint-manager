@@ -219,6 +219,43 @@ async fn disabled_cache_recovers_after_enable(pool: PgPool) {
     c.checkin_once().await.unwrap();
 }
 
+/// 換發時中央已收下新的 CSR，但回應遺失（快取沒換上新憑證）；之後停用再啟用，
+/// 中央以新的 CSR 簽發：快取要用換發前存下的那把金鑰
+#[sqlx::test(migrations = false)]
+async fn renew_lost_response_then_reenable_uses_new_key(pool: PgPool) {
+    let e = common::central(pool).await;
+    let (dir, id, c) = started(&e).await;
+    sqlx::query(
+        "UPDATE cache_certs SET not_after = now() + interval '10 days' WHERE cache_id = $1",
+    )
+    .bind(id)
+    .execute(&e.pool)
+    .await
+    .unwrap();
+    let current = identity::load_identity(dir.path()).unwrap().unwrap();
+    let (key_pem, csr_pem) = identity::new_key_and_csr().unwrap();
+    // 快取在送出前先存下金鑰（這是被測的行為；這裡模擬送出後回應遺失）
+    identity::save_renew_key(dir.path(), &key_pem).unwrap();
+    let r = common::client(&e, Some(&current))
+        .post(format!("{}/v1/cache/renew", e.url))
+        .json(&serde_json::json!({ "csr_pem": csr_pem }))
+        .send()
+        .await
+        .unwrap();
+    assert!(r.status().is_success(), "{}", r.status());
+    caches::set_disabled(&e.pool, &e.state.ca, id, true, "admin")
+        .await
+        .unwrap();
+    caches::set_disabled(&e.pool, &e.state.ca, id, false, "admin")
+        .await
+        .unwrap();
+    assert!(c.recover().await.unwrap());
+    let now = identity::load_identity(dir.path()).unwrap().unwrap();
+    assert_eq!(now.key_pem, key_pem, "換上與新憑證相符的金鑰");
+    assert!(identity::key_matches(&now.key_pem, &now.chain_pem));
+    c.checkin_once().await.unwrap();
+}
+
 fn serve_cache(c: &Cache) -> u16 {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();

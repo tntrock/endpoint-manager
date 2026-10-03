@@ -14,6 +14,8 @@ const CERT_FILE: &str = "cert.pem";
 const KEY_NEW: &str = "key.pem.new";
 const CERT_NEW: &str = "cert.pem.new";
 const PENDING_KEY: &str = "pending.key";
+/// 換發時送出 CSR 前先存下的新金鑰：回應遺失後重新啟用時，中央可能用它的 CSR 簽發
+const RENEW_KEY: &str = "renew.key";
 const ROOT_FILE: &str = "root.pem";
 
 /// 註冊後中央給的 id 與輪詢密鑰（停用後重新啟用時也靠它取得新憑證）
@@ -77,6 +79,38 @@ pub fn remove_pending_key(dir: &Path) -> anyhow::Result<()> {
     }
 }
 
+pub fn save_renew_key(dir: &Path, key_pem: &str) -> anyhow::Result<()> {
+    write_atomic(&dir.join(RENEW_KEY), key_pem.as_bytes())?;
+    Ok(())
+}
+
+pub fn load_renew_key(dir: &Path) -> anyhow::Result<Option<String>> {
+    read_optional(&dir.join(RENEW_KEY))
+}
+
+pub fn remove_renew_key(dir: &Path) -> anyhow::Result<()> {
+    match std::fs::remove_file(dir.join(RENEW_KEY)) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+        _ => Ok(()),
+    }
+}
+
+/// 金鑰與憑證鏈第一張的公鑰相符
+pub fn key_matches(key_pem: &str, chain_pem: &str) -> bool {
+    use rustls::pki_types::{CertificateDer, pem::PemObject};
+    let Ok(key) = rcgen::KeyPair::from_pem(key_pem) else {
+        return false;
+    };
+    let Some(Ok(der)) = CertificateDer::pem_slice_iter(chain_pem.as_bytes()).next() else {
+        return false;
+    };
+    let Ok((_, cert)) = x509_parser::parse_x509_certificate(&der) else {
+        return false;
+    };
+    use rcgen::PublicKeyData;
+    cert.public_key().raw == key.subject_public_key_info().as_slice()
+}
+
 /// 順序：寫 key.pem.new → 寫 cert.pem.new → 改名金鑰 → 改名憑證。
 /// 任何一步中斷，load_identity 都能從殘檔還原出成對的金鑰與憑證。
 pub fn save_identity(dir: &Path, id: &Identity) -> anyhow::Result<()> {
@@ -128,6 +162,19 @@ mod tests {
             key_pem: format!("KEY {tag}"),
             chain_pem: format!("CERT {tag}"),
         }
+    }
+
+    #[test]
+    fn key_matches_certificate() {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let cert = rcgen::CertificateParams::new(vec!["cache.test".into()])
+            .unwrap()
+            .self_signed(&key)
+            .unwrap();
+        let other = rcgen::KeyPair::generate().unwrap();
+        assert!(key_matches(&key.serialize_pem(), &cert.pem()));
+        assert!(!key_matches(&other.serialize_pem(), &cert.pem()));
+        assert!(!key_matches("garbage", &cert.pem()));
     }
 
     #[test]

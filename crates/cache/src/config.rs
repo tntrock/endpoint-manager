@@ -64,6 +64,17 @@ pub fn secure_data_dir(dir: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     #[cfg(windows)]
     {
+        // 先清掉既有的明確授權（例如安裝前就有人加過的），再只留 SYSTEM 與 Administrators
+        let out = std::process::Command::new("icacls")
+            .arg(dir)
+            .args(["/reset", "/T", "/Q"])
+            .output()
+            .context("running icacls /reset")?;
+        anyhow::ensure!(
+            out.status.success(),
+            "icacls /reset failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
         let out = std::process::Command::new("icacls")
             .arg(dir)
             .args([
