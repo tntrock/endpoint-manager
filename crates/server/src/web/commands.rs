@@ -45,6 +45,8 @@ fn form_error(e: &anyhow::Error) -> Option<(StatusCode, String)> {
     match cmd_error_kind(e)? {
         CmdError::Invalid(m) => Some((StatusCode::UNPROCESSABLE_ENTITY, m.clone())),
         CmdError::Conflict(m) => Some((StatusCode::CONFLICT, m.clone())),
+        // 送出時腳本剛被刪除：重新顯示表單讓使用者改選
+        CmdError::NotFound(m) => Some((StatusCode::NOT_FOUND, m.clone())),
         _ => None,
     }
 }

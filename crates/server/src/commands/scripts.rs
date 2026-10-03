@@ -35,7 +35,10 @@ fn platform(actor: &Actor) -> anyhow::Result<()> {
 
 fn validate(i: &ScriptInput) -> anyhow::Result<Valid> {
     // 格式字元（例如 U+202E）會讓名稱與說明顯示成別的樣子
-    let name = protocol::command::strip_format_chars(i.name.trim());
+    // 先過濾格式字元再修剪：開頭的不可見字元加空白不會留下空白
+    let name = protocol::command::strip_format_chars(&i.name)
+        .trim()
+        .to_string();
     check!(
         !name.is_empty() && name.chars().count() <= MAX_NAME_LEN,
         Invalid,
@@ -46,7 +49,9 @@ fn validate(i: &ScriptInput) -> anyhow::Result<Valid> {
         Invalid,
         "腳本名稱不能包含控制字元"
     );
-    let description = protocol::command::strip_format_chars(i.description.trim());
+    let description = protocol::command::strip_format_chars(&i.description)
+        .trim()
+        .to_string();
     check!(
         description.chars().count() <= MAX_DESCRIPTION_LEN,
         Invalid,
@@ -91,8 +96,14 @@ pub async fn set_require_second_approver(
     actor: &Actor,
 ) -> anyhow::Result<()> {
     platform(actor)?;
-    let old = require_second_approver(pool).await?;
     let mut tx = pool.begin().await?;
+    // 在交易內鎖住設定列再讀舊值：兩人同時切換時，稽核記錄的舊值才正確
+    let old: Option<Option<String>> =
+        sqlx::query_scalar("SELECT value #>> '{}' FROM settings WHERE key = $1 FOR UPDATE")
+            .bind(SETTING)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let old = old.flatten().as_deref() != Some("false");
     sqlx::query(
         "INSERT INTO settings (key, value) VALUES ($1, $2::jsonb) \
          ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",

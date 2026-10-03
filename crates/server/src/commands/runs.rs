@@ -105,7 +105,7 @@ pub async fn create_run(pool: &PgPool, i: &RunInput, actor: &Actor) -> anyhow::R
             .bind(d)
             .fetch_optional(&mut *tx)
             .await?;
-            let forbidden = || CmdError::Forbidden("這台裝置不在你的管理範圍".into());
+            let forbidden = || CmdError::Forbidden("裝置不存在、未啟用或不在你的管理範圍".into());
             // 群組管理員：不存在與範圍外是同一個錯誤
             let (hostname, group) = match row {
                 Some(r) => r,
@@ -194,10 +194,15 @@ pub async fn cancel_run(pool: &PgPool, id: i64, actor: &Actor) -> anyhow::Result
     .bind(id)
     .fetch_optional(&mut *tx)
     .await?;
-    let (label, created_by, canceled) =
-        row.ok_or_else(|| CmdError::NotFound("指令不存在".into()))?;
+    // 群組管理員：不存在與不是自己建立的回同一個錯誤，無法藉此探測指令編號
+    let not_allowed = || CmdError::Forbidden("只有建立者或平台管理員能取消".into());
+    let (label, created_by, canceled) = match row {
+        Some(r) => r,
+        None if actor.platform => return Err(CmdError::NotFound("指令不存在".into()).into()),
+        None => return Err(not_allowed().into()),
+    };
     if !actor.platform && created_by != actor.username {
-        return Err(CmdError::Forbidden("只有建立者或平台管理員能取消".into()).into());
+        return Err(not_allowed().into());
     }
     check!(!canceled, Conflict, "指令已取消");
     sqlx::query("UPDATE command_runs SET canceled_at = now(), canceled_by = $2 WHERE id = $1")

@@ -405,7 +405,16 @@ async fn cancel_rules(pool: PgPool) {
     let (id, _) = runs::create_run(&s.pool, &run("collect", Target::Group(f.tp)), &gary)
         .await
         .unwrap();
-    assert!(runs::cancel_run(&s.pool, id, &other).await.is_err());
+    let not_mine = runs::cancel_run(&s.pool, id, &other).await.unwrap_err();
+    let missing = runs::cancel_run(&s.pool, 999_999, &other)
+        .await
+        .unwrap_err();
+    assert!(endpoint_server::commands::is_forbidden(&not_mine));
+    assert!(
+        endpoint_server::commands::is_forbidden(&missing),
+        "{missing:#}"
+    );
+    assert_eq!(err(not_mine), err(missing), "不能藉錯誤得知指令是否存在");
     runs::cancel_run(&s.pool, id, &gary).await.unwrap();
     assert_eq!(targets(&s.pool, id).await, vec!["canceled"; 3]);
     let e = err(runs::cancel_run(&s.pool, id, &platform("admin"))
@@ -926,6 +935,13 @@ async fn data_integrity_audit_and_format_chars(pool: PgPool) {
     .execute(&s.pool)
     .await;
     assert!(bad.is_err(), "collect 不能有延遲");
+    let bad = sqlx::query(
+        "INSERT INTO command_runs (action, script_content, target_label, created_by, expires_at) \
+         VALUES ('collect', 'x', 'x', 'admin', now() + interval '1 day')",
+    )
+    .execute(&s.pool)
+    .await;
+    assert!(bad.is_err(), "只有腳本有快照欄位");
     // 稽核：更新腳本記錄舊的 sha256；切換雙人核准記錄舊值
     let id = scripts::create_script(&s.pool, &input("dir"), &admin)
         .await
@@ -970,4 +986,84 @@ async fn data_integrity_audit_and_format_chars(pool: PgPool) {
     assert_eq!(st, 204);
     let (_, _, output) = target_state(&s.pool, cmd).await;
     assert_eq!(output, "oktxt.exe\n第二行\t😀");
+}
+
+/// 2：先過濾格式字元再修剪空白，名稱開頭不會留下空白
+#[sqlx::test(migrations = false)]
+async fn script_name_is_stripped_then_trimmed(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let id = scripts::create_script(
+        &s.pool,
+        &ScriptInput {
+            name: "\u{FEFF} 清暫存 \u{200B}".into(),
+            ..input("Write-Output 1")
+        },
+        &platform("admin"),
+    )
+    .await
+    .unwrap();
+    let name: String = sqlx::query_scalar("SELECT name FROM scripts WHERE id = $1")
+        .bind(id)
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    assert_eq!(name, "清暫存");
+}
+
+/// 4：另一個交易正在改設定時，稽核記錄的舊值是它改完的值
+#[sqlx::test(migrations = false)]
+async fn second_approver_old_value_is_read_under_lock(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let admin = platform("admin");
+    scripts::set_require_second_approver(&s.pool, false, &admin)
+        .await
+        .unwrap();
+    let mut other = s.pool.begin().await.unwrap();
+    sqlx::query(
+        "SELECT value FROM settings WHERE key = 'scripts_require_second_approver' FOR UPDATE",
+    )
+    .execute(&mut *other)
+    .await
+    .unwrap();
+    let pool = s.pool.clone();
+    let task = tokio::spawn(async move {
+        scripts::set_require_second_approver(&pool, false, &platform("bob")).await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    sqlx::query("UPDATE settings SET value = 'true' WHERE key = 'scripts_require_second_approver'")
+        .execute(&mut *other)
+        .await
+        .unwrap();
+    other.commit().await.unwrap();
+    task.await.unwrap().unwrap();
+    let old: serde_json::Value = sqlx::query_scalar(
+        "SELECT detail->'old' FROM audit_log WHERE action = 'setting_scripts_second_approver' \
+         AND actor = 'bob'",
+    )
+    .fetch_one(&s.pool)
+    .await
+    .unwrap();
+    assert_eq!(old, serde_json::json!(true));
+}
+
+/// 6：群組管理員選到自己群組裡未啟用的裝置：訊息不能說成「不在範圍」
+#[sqlx::test(migrations = false)]
+async fn inactive_device_message_is_neutral(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let f = fleet(&s).await;
+    let gary = Actor {
+        username: "gary".into(),
+        platform: false,
+        groups: vec![f.tp],
+    };
+    let d = f.tp_dev[0].device_id;
+    endpoint_server::devices::retire(&s.pool, d, "admin")
+        .await
+        .unwrap();
+    let e = err(
+        runs::create_run(&s.pool, &run("collect", Target::Device(d)), &gary)
+            .await
+            .unwrap_err(),
+    );
+    assert!(e.contains("不存在、未啟用或不在你的管理範圍"), "{e}");
 }
