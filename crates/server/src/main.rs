@@ -66,23 +66,12 @@ async fn main() -> anyhow::Result<()> {
                 .map(|d| d.parse())
                 .transpose()
                 .context("valid_days")?;
-            let group_id = match args.get(3) {
-                Some(name) => {
-                    let mut c = pool.acquire().await?;
-                    Some(endpoint_server::groups::find_or_create(&mut c, name).await?)
-                }
-                None => None,
-            };
-            let (id, token) = tokens::create_token_audited(
+            let (id, token) = tokens::create_token_cli(
                 &pool,
-                &tokens::NewToken {
-                    name: args[1].clone(),
-                    group_id,
-                    expires_at: days.map(|d| chrono::Utc::now() + chrono::Duration::days(d)),
-                    max_uses,
-                    created_by: "cli".into(),
-                    kind: tokens::TokenKind::Device,
-                },
+                &args[1],
+                max_uses,
+                args.get(3).map(String::as_str),
+                days,
             )
             .await?;
             println!("token id {id}：{token}\n（明碼只顯示這一次）");

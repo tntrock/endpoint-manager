@@ -1,10 +1,9 @@
 //! 儀表板：範圍內的數量統計與待核准清單。
 
 use askama::Template;
-use axum::extract::{Query, State};
+use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use chrono::{DateTime, Utc};
-use serde::Deserialize;
 use uuid::Uuid;
 
 use super::auth::{AdminSession, Nav, Session};
@@ -36,24 +35,19 @@ struct DashboardPage {
     approve_result: Option<(u32, u32)>,
 }
 
-#[derive(Deserialize)]
-pub struct DashboardQuery {
-    #[serde(default)]
-    approved: Option<String>,
-    #[serde(default)]
-    skipped: Option<String>,
+pub async fn page(State(st): State<AppState>, AdminSession(s): AdminSession) -> Response {
+    with_result(&st, &s, None).await
 }
 
-pub async fn page(
-    State(st): State<AppState>,
-    AdminSession(s): AdminSession,
-    Query(q): Query<DashboardQuery>,
+/// 儀表板；`approve_result` 只由「全部核准」的 POST 帶入（不從網址參數讀，連結無法偽造結果）
+pub(super) async fn with_result(
+    st: &AppState,
+    s: &Session,
+    approve_result: Option<(u32, u32)>,
 ) -> Response {
-    let num = |v: &Option<String>| v.as_deref().and_then(|v| v.parse::<u32>().ok());
-    let result = num(&q.approved).map(|a| (a, num(&q.skipped).unwrap_or(0)));
-    match build(&st, &s).await {
+    match build(st, s).await {
         Ok(mut p) => {
-            p.approve_result = result;
+            p.approve_result = approve_result;
             render(&p)
         }
         Err(e) => e.into_response(),

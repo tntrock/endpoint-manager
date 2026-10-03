@@ -344,8 +344,8 @@ pub async fn approve_all(
             }
         }
     }
-    // 儀表板顯示結果（略過的仍留在待核准清單）
-    Ok(Redirect::to(&format!("/?approved={approved}&skipped={skipped}")).into_response())
+    // 直接顯示儀表板與結果（略過的仍留在待核准清單）
+    Ok(super::dashboard::with_result(&st, &s, Some((approved, skipped))).await)
 }
 
 pub struct DeviceView {
