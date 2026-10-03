@@ -403,13 +403,18 @@ async fn write_payload(
             .bind(&names)
             .execute(&mut *conn)
             .await?;
-            // 同一個值重複時只取第一筆（ON CONFLICT DO UPDATE 不能在同一句更新同一列兩次）
+            // 同一個值重複時只取第一筆（ON CONFLICT DO UPDATE 不能在同一句更新同一列兩次）；
+            // 與現有資料完全相同的值不進 ON CONFLICT（否則即使不更新也會鎖住那一列）
             sqlx::query(
                 "INSERT INTO device_registry (device_id, path, name, state, kind, data) \
-                 SELECT DISTINCT ON (p, n) $1, p, n, s, k, d \
-                 FROM UNNEST($2::text[], $3::text[], $4::text[], $5::text[], $6::text[]) \
-                      WITH ORDINALITY AS x(p, n, s, k, d, i) \
-                 ORDER BY p, n, i \
+                 SELECT $1, u.p, u.n, u.s, u.k, u.d FROM ( \
+                   SELECT DISTINCT ON (p, n) p, n, s, k, d \
+                   FROM UNNEST($2::text[], $3::text[], $4::text[], $5::text[], $6::text[]) \
+                        WITH ORDINALITY AS x(p, n, s, k, d, i) \
+                   ORDER BY p, n, i) u \
+                 WHERE NOT EXISTS (SELECT 1 FROM device_registry r \
+                   WHERE r.device_id = $1 AND r.path = u.p AND r.name = u.n \
+                     AND (r.state, r.kind, r.data) IS NOT DISTINCT FROM (u.s, u.k, u.d)) \
                  ON CONFLICT (device_id, path, name) DO UPDATE \
                  SET state = EXCLUDED.state, kind = EXCLUDED.kind, data = EXCLUDED.data \
                  WHERE (device_registry.state, device_registry.kind, device_registry.data) \

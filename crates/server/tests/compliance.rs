@@ -451,7 +451,35 @@ async fn daily_snapshot_and_history_cleanup(pool: PgPool) {
         .execute(&s.pool)
         .await
         .unwrap();
-    assert_eq!(worker::cleanup_history(&s.pool).await.unwrap(), 1);
+    assert_eq!(worker::cleanup_history(&s.pool, today).await.unwrap(), 1);
+}
+
+/// 快照的保留期以顯示時區的「今天」計算（由呼叫端傳入），不用資料庫的日期
+#[sqlx::test(migrations = false)]
+async fn cleanup_uses_given_today(pool: PgPool) {
+    let (s, _a) = setup(pool).await;
+    let rule = admin::create_rule(&s.pool, &kb_rule("KB5031455"), "admin")
+        .await
+        .unwrap();
+    let future = chrono::Utc::now().date_naive() + chrono::Duration::days(500);
+    sqlx::query(
+        "INSERT INTO compliance_daily (day, rule_id, violating, unknown, exempt) VALUES ($1, $2, 0, 0, 0)",
+    )
+    .bind(future)
+    .bind(rule)
+    .execute(&s.pool)
+    .await
+    .unwrap();
+    // 保留天數預設 365：以 future + 400 天為今天，future 已超過保留期
+    worker::cleanup_history(&s.pool, future + chrono::Duration::days(400))
+        .await
+        .unwrap();
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM compliance_daily WHERE day = $1")
+        .bind(future)
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 0);
 }
 
 /// 上傳評估拿到舊規則集（背景重算已先處理過這台）時，不能把已停用規則的違規寫回去

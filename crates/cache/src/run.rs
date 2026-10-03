@@ -270,7 +270,6 @@ impl Cache {
         {
             tracing::warn!(error = %format!("{e:#}"), "certificate renewal failed");
         }
-        st.auth.prune();
         let (_, disk_limit) = st.catalog.limits();
         st.store
             .evict(&st.catalog.listed_shas(), disk_limit, store::now_secs())?;
@@ -279,9 +278,11 @@ impl Cache {
     }
 
     async fn renew(&self) -> anyhow::Result<()> {
-        let (key_pem, csr_pem) = identity::new_key_and_csr()?;
+        // 送出前先存（或沿用上次沒完成的）：回應遺失時中央已記下這把金鑰的 CSR
+        let (key_pem, csr_pem) = identity::renew_key_and_csr(&self.dir)?;
         let chain_pem = self.state.central.renew(&csr_pem).await?;
         self.install(&Identity { key_pem, chain_pem })?;
+        identity::remove_renew_key(&self.dir)?;
         tracing::info!("certificate renewed");
         Ok(())
     }
@@ -301,11 +302,15 @@ impl Cache {
             Some(chain_pem)
                 if p.state == CacheEnrollState::Approved && chain_pem != current.chain_pem =>
             {
-                // 重新啟用時中央用最新的 CSR（也就是目前的金鑰）簽發
-                self.install(&Identity {
-                    key_pem: current.key_pem,
-                    chain_pem,
-                })?;
+                // 重新啟用時中央用最新的 CSR 簽發：通常是目前的金鑰；
+                // 換發回應遺失時則是換發前存下的那把
+                let key_pem = [Some(current.key_pem), identity::load_renew_key(&self.dir)?]
+                    .into_iter()
+                    .flatten()
+                    .find(|k| identity::key_matches(k, &chain_pem))
+                    .context("no local key matches the re-issued certificate")?;
+                self.install(&Identity { key_pem, chain_pem })?;
+                identity::remove_renew_key(&self.dir)?;
                 tracing::info!("cache re-enabled; new certificate installed");
                 Ok(true)
             }
@@ -347,6 +352,11 @@ pub async fn run(dir: &Path, mut stop: watch::Receiver<bool>) -> anyhow::Result<
         cache.router(),
         MAX_CONNS,
     ));
+    // 授權快取每分鐘清一次，與報到成敗無關
+    let prune = tokio::spawn(crate::auth::prune_loop(
+        cache.state.auth.clone(),
+        Duration::from_secs(60),
+    ));
     // 預先下載在自己的 task：限速下載可能很久，報到、換發、清除照常進行，停止時立即中斷
     let wake = Arc::new(tokio::sync::Notify::new());
     let prefetch = {
@@ -372,6 +382,7 @@ pub async fn run(dir: &Path, mut stop: watch::Receiver<bool>) -> anyhow::Result<
         }
     }
     prefetch.abort();
+    prune.abort();
     server.abort();
     tracing::info!("cache stopped");
     Ok(())

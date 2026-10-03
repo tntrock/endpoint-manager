@@ -156,7 +156,17 @@ async fn check_registry_cap(
     Ok(())
 }
 
-pub const TEMPLATE_EXISTS: &str = "這個範本已經建立過";
+/// 同一個範本已建立過（唯一索引擋下）
+#[derive(Debug)]
+pub struct TemplateExists;
+
+impl std::fmt::Display for TemplateExists {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("這個範本已經建立過")
+    }
+}
+
+impl std::error::Error for TemplateExists {}
 
 pub async fn create_rule(pool: &PgPool, i: &RuleInput, actor: &str) -> anyhow::Result<i64> {
     let v = validate(i)?;
@@ -179,7 +189,7 @@ pub async fn create_rule(pool: &PgPool, i: &RuleInput, actor: &str) -> anyhow::R
     .await
     .map_err(|e| match &e {
         sqlx::Error::Database(d) if d.constraint() == Some("compliance_rules_template_key_idx") => {
-            anyhow::anyhow!(TEMPLATE_EXISTS)
+            anyhow::Error::from(TemplateExists)
         }
         _ => e.into(),
     })?;

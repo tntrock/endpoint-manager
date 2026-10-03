@@ -89,6 +89,46 @@ async fn revoked_device_loses_access_after_ttl(pool: PgPool) {
     assert_eq!(get(&e, &r, Some(&dev), pkg).await.unwrap().status(), 403);
 }
 
+/// 中央接受連線但永遠不回應：授權最多等 10 秒，之後一段時間內直接回 503
+#[sqlx::test(migrations = false)]
+async fn authorize_failure_is_fast_and_remembered(pool: PgPool) {
+    let e = common::central(pool).await;
+    let (dir, _) = common::approved_cache(&e).await;
+    let (pkg, _) = common::package(&e, b"bytes").await;
+    let dev = common::device(&e).await;
+    let hang = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let hang_url = format!("https://127.0.0.1:{}", hang.local_addr().unwrap().port());
+    tokio::spawn(async move {
+        let mut held = vec![];
+        while let Ok((s, _)) = hang.accept().await {
+            held.push(s);
+        }
+    });
+    let r = start_cache(
+        &e,
+        dir.path(),
+        Opts {
+            central_url: Some(hang_url),
+            ..Opts::default()
+        },
+    )
+    .await;
+    let t = std::time::Instant::now();
+    assert_eq!(get(&e, &r, Some(&dev), pkg).await.unwrap().status(), 503);
+    assert!(
+        t.elapsed() < std::time::Duration::from_secs(15),
+        "{:?}",
+        t.elapsed()
+    );
+    let t = std::time::Instant::now();
+    assert_eq!(get(&e, &r, Some(&dev), pkg).await.unwrap().status(), 503);
+    assert!(
+        t.elapsed() < std::time::Duration::from_secs(2),
+        "失敗記住：{:?}",
+        t.elapsed()
+    );
+}
+
 #[sqlx::test(migrations = false)]
 async fn central_down_serves_previously_allowed_only(pool: PgPool) {
     let e = common::central(pool).await;

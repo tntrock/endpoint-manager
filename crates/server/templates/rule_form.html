@@ -80,7 +80,7 @@
   {% else if kind == "local_admins" %}
     <p><label>允許的 Administrators 成員<br>
        <textarea name="p_admins_allowed" rows="8" cols="60">{{ p.admins_allowed }}</textarea></label></p>
-    <p class="muted">每行一個，<code>*</code> 代表任意字元，不分大小寫，例如 <code>*\Administrator</code>、<code>CORP\Domain Admins</code>。清單外的成員算違規。</p>
+    <p class="muted">每行一個，<code>*</code> 代表任意字元，不分大小寫，例如 <code>*\Administrator</code>、<code>CORP\Domain Admins</code>。以 <code>S-1-</code> 或 <code>*-</code> 開頭的比對 SID，例如 <code>*-500</code> 是內建 Administrator（改名後也認得）。清單外的成員算違規。</p>
   {% endif %}
   </fieldset>
 

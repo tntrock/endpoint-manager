@@ -230,10 +230,14 @@ async fn device_counts_and_device_page(pool: PgPool) {
         .await
         .unwrap();
     let html = page(ids[0]).await;
-    assert!(html.contains("已停用"), "{html}");
+    assert!(html.contains("已停用，向中央下載"), "{html}");
+    assert!(html.contains("依最後回報的 IP"), "{html}");
     for id in &ids[1..] {
         let html = page(*id).await;
-        assert!(html.contains("<th>據點</th><td>—</td>"), "{html}");
+        assert!(
+            html.contains("<th>據點（依最後回報的 IP）</th><td>—</td>"),
+            "{html}"
+        );
     }
 }
 
@@ -617,4 +621,27 @@ async fn deployment_detail_shows_source(pool: PgPool) {
     let (_, html) = s.page(&admin, &format!("/deployments/{d}")).await;
     assert!(html.contains("<th>來源</th>"), "{html}");
     assert!(html.contains("<td>快取</td>"), "{html}");
+}
+
+#[sqlx::test(migrations = false)]
+async fn site_delete_errors(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let admin = s.admin_client().await;
+    let t = csrf(&s, &admin, "/sites/new").await;
+    let id = create_site(&s, "台北", "10.1.0.0/16").await;
+    let (st, _, _) = post(&s, &admin, "/sites/999999/delete", &[("csrf", &t)]).await;
+    assert_eq!(st, 404);
+    // 資料庫錯誤不是「不存在」
+    sqlx::raw_sql(
+        "CREATE FUNCTION fail_site_delete() RETURNS trigger LANGUAGE plpgsql AS \
+         $$ BEGIN RAISE EXCEPTION 'boom'; END $$; \
+         CREATE TRIGGER fail_site_delete BEFORE DELETE ON sites \
+         FOR EACH ROW EXECUTE FUNCTION fail_site_delete();",
+    )
+    .execute(&s.pool)
+    .await
+    .unwrap();
+    let (st, _, body) = post(&s, &admin, &format!("/sites/{id}/delete"), &[("csrf", &t)]).await;
+    assert_eq!(st, 500, "{body}");
+    assert!(!body.contains("boom"), "{body}");
 }

@@ -880,10 +880,12 @@ mod tests {
                 "defender",
                 json!({"realtime": true, "max_signature_age_days": 7}),
             ),
+            ("defender", json!({"tamper": true})),
             (
                 "password_policy",
                 json!({"min_length": 12, "max_lockout_threshold": 10}),
             ),
+            ("password_policy", json!({"max_age_days": 90})),
             (
                 "local_admins",
                 json!({"allowed": ["*\\Administrator", "CORP\\Domain Admins"]}),

@@ -133,16 +133,12 @@ async fn approve_all_requires_confirmation_and_skips_failures(pool: PgPool) {
         .send()
         .await
         .unwrap();
-    assert_eq!(r.status(), 303);
-    assert_eq!(
-        r.headers()["location"],
-        "/?approved=2&skipped=0",
-        "回報核准與略過台數"
-    );
-    let (_, html) = s.page(&c, "/?approved=2&skipped=0").await;
+    assert_eq!(r.status(), 200, "直接顯示結果，不用網址參數");
+    let html = r.text().await.unwrap();
     assert!(html.contains("已核准 2 台"), "{html}");
-    let (_, html) = s.page(&c, "/?approved=1&skipped=3").await;
-    assert!(html.contains("略過 3 台"), "{html}");
+    // 偽造的連結不顯示核准結果
+    let (_, html) = s.page(&c, "/?approved=99&skipped=0").await;
+    assert!(!html.contains("已核准"), "{html}");
     assert_eq!(
         status(&s, b_new.device_id).await,
         None,

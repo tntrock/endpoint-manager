@@ -400,7 +400,7 @@ impl<C: Collector> Agent<C> {
         self.backing_off = false;
         self.intervals = resp.collection_intervals.clone();
         if let Some(tx) = &self.deploy_tx {
-            // 伺服器沒有 deployments_hash（舊版）：停止派送。只在指派變動時喚醒 worker，
+            // 伺服器沒有 deployments_hash（舊版）：停止派送。只在指派或下載來源變動時喚醒 worker，
             // 連線資訊（憑證可能已更新）則每次都更新
             let work = resp.deployments_hash.as_ref().map(|_| Work {
                 assignments: resp.deployments.clone(),
@@ -410,8 +410,11 @@ impl<C: Collector> Agent<C> {
                 package_source: resp.package_source.clone(),
             });
             tx.send_if_modified(|cur| {
-                let changed =
-                    cur.as_ref().map(|w| &w.assignments) != work.as_ref().map(|w| &w.assignments);
+                let key = |w: &Option<Work>| {
+                    w.as_ref()
+                        .map(|w| (w.assignments.clone(), w.package_source.clone()))
+                };
+                let changed = key(cur) != key(&work);
                 *cur = work;
                 changed
             });

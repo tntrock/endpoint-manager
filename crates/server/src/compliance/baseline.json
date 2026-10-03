@@ -133,10 +133,10 @@
     "key": "local_admins_builtin_only",
     "category": "帳號與密碼",
     "name": "本機管理員只允許內建 Administrator",
-    "description": "建立後請自行補上公司的網域管理群組，例如 網域\\Domain Admins。",
+    "description": "以 SID 比對內建 Administrator（*-500），改名後也認得。建立後請自行補上公司的網域管理群組，例如 網域\\Domain Admins。",
     "severity": "high",
     "kind": "local_admins",
-    "params": {"allowed": ["*\\Administrator"]},
+    "params": {"allowed": ["*-500"]},
     "source": "https://learn.microsoft.com/windows-server/identity/ad-ds/plan/security-best-practices/implementing-least-privilege-administrative-models"
   },
   {

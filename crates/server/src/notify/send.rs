@@ -60,9 +60,43 @@ fn describe(e: reqwest::Error) -> String {
         causes.push(s.to_string());
         src = s.source();
     }
-    if causes.is_empty() {
-        e.to_string()
+    join_causes(e.to_string(), causes)
+}
+
+/// 把底層原因接在錯誤後面；已出現在前面文字裡的原因不再重複
+fn join_causes(top: String, causes: Vec<String>) -> String {
+    let mut kept: Vec<String> = vec![];
+    for c in causes {
+        if c.is_empty() || top.contains(&c) || kept.iter().any(|k| k.contains(&c)) {
+            continue;
+        }
+        kept.push(c);
+    }
+    if kept.is_empty() {
+        top
     } else {
-        format!("{e}（{}）", causes.join("："))
+        format!("{top}（{}）", kept.join("："))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn causes_are_not_repeated() {
+        let s = join_causes(
+            "error sending request（connection refused）".into(),
+            vec![
+                "connection refused".into(),
+                "tcp connect error".into(),
+                "tcp connect error".into(),
+                "os error 10061".into(),
+            ],
+        );
+        assert_eq!(s.matches("connection refused").count(), 1, "{s}");
+        assert_eq!(s.matches("tcp connect error").count(), 1, "{s}");
+        assert!(s.contains("os error 10061"), "{s}");
+        assert_eq!(join_causes("x".into(), vec![]), "x");
     }
 }

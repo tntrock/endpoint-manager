@@ -196,6 +196,8 @@ grep -a "compliance recompute finished" server.log        # 等重算完成，el
 ./loadsim config    --server https://127.0.0.1:18443 --root pki/root.pem --devices devices.json --concurrency 100 --max-secs 3600
 ```
 
+`config` 的 `--max-secs 3600` 只是防止卡住的上限，不是效能目標：3 萬台各上傳 1,000 個登錄檔值，且同時有全量重算占用資料庫，所以給一小時。實際耗時看輸出的 `elapsed`。
+
 單台評估的 p99 用和合規部分相同的指令，從 `config` 開始後的日誌計算。
 
 派送部分：

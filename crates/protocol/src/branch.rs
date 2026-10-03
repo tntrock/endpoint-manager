@@ -58,11 +58,15 @@ impl CacheEnrollRequest {
         if self.dns_names.is_empty() || self.dns_names.len() > 10 {
             return Err("dns_names must have 1-10 entries");
         }
+        // IP 位址，或合法主機名稱（每段 1–63 個英數字或 -，不以 - 開頭結尾）
+        let label = |l: &str| {
+            (1..=63).contains(&l.len())
+                && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                && !l.starts_with('-')
+                && !l.ends_with('-')
+        };
         let ok = |d: &str| {
-            !d.is_empty()
-                && d.len() <= 253
-                && d.chars()
-                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':'))
+            d.parse::<std::net::IpAddr>().is_ok() || (d.len() <= 253 && d.split('.').all(label))
         };
         if !self.dns_names.iter().all(|d| ok(d)) {
             return Err("dns_names must be host names or IP addresses");
@@ -274,6 +278,23 @@ mod tests {
             },
             CacheEnrollRequest {
                 dns_names: vec!["cache tp".into()],
+                ..enroll()
+            },
+            // 不是 IP 也不是合法主機名稱：簽得出憑證，但沒有任何端點能用它連線
+            CacheEnrollRequest {
+                dns_names: vec!["cache-tp.corp".into(), "a..b".into()],
+                ..enroll()
+            },
+            CacheEnrollRequest {
+                dns_names: vec!["cache-tp.corp".into(), "a:b".into()],
+                ..enroll()
+            },
+            CacheEnrollRequest {
+                dns_names: vec!["cache-tp.corp".into(), "-a.corp".into()],
+                ..enroll()
+            },
+            CacheEnrollRequest {
+                dns_names: vec!["cache-tp.corp".into(), format!("{}.corp", "a".repeat(64))],
                 ..enroll()
             },
             CacheEnrollRequest {

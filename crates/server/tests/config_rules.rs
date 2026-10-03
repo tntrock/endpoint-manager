@@ -344,8 +344,9 @@ fn fw(public: bool) -> protocol::Probe<protocol::FirewallInfo> {
     })
 }
 
-/// 「未知」的進出不寫歷程（規則上線時三萬台 × 每條規則都會是未知）；
-/// 但未知 ↔ 違規照常記錄，刪除規則時也不為未知寫事件
+/// 「無 → 未知 → 符合」不寫歷程（規則上線時三萬台 × 每條規則都會是未知）；
+/// 未知 ↔ 違規照常記錄；從違規轉入未知後回到符合，要記錄「未知 → 符合」，
+/// 否則歷程停在「→ 未知」而裝置其實符合
 #[sqlx::test(migrations = false)]
 async fn unknown_transitions_are_not_recorded(pool: PgPool) {
     let (s, a) = setup(pool).await;
@@ -372,18 +373,19 @@ async fn unknown_transitions_are_not_recorded(pool: PgPool) {
     );
     // 違規 → 未知（收集失敗）：記錄
     put(&s, &a, sec(protocol::Probe::Error("boom".into()))).await;
-    // 未知 → 符合：不記錄
+    // 未知 → 符合：前一筆歷程是「→ 未知」，要記錄
     put(&s, &a, sec(fw(true))).await;
     // 符合 → 未知：不記錄
     put(&s, &a, sec(protocol::Probe::Error("boom2".into()))).await;
     assert_eq!(violations(&s, &a).await, vec![(id, "unknown".into())]);
-    // 刪除規則：未知的列不寫「→ none」
+    // 刪除規則：沒寫過歷程的未知列不寫「→ none」
     admin::delete_rule(&s.pool, id, "admin").await.unwrap();
     assert_eq!(
         rule_events(&s, &a).await,
         vec![
             ("unknown".into(), "violating".into()),
             ("violating".into(), "unknown".into()),
+            ("unknown".into(), "none".into()),
         ]
     );
 }
@@ -441,4 +443,55 @@ async fn registry_writes_only_changes(pool: PgPool) {
     assert_eq!(now[0], first[0], "V1 未變");
     assert_eq!((now[1].0.as_str(), now[1].1.as_str()), ("V2", "2"));
     assert_ne!(now[1].2, first[1].2, "V2 已更新");
+}
+
+fn regval(name: &str, data: &str) -> protocol::RegistryValue {
+    protocol::RegistryValue {
+        path: r"HKLM\X".into(),
+        name: name.into(),
+        state: protocol::RegState::Present,
+        kind: protocol::RegKind::Dword,
+        data: data.into(),
+    }
+}
+
+/// 同一次上傳中同一個值出現兩次：先出現的優先（後面的值排序較前也一樣）
+#[sqlx::test(migrations = false)]
+async fn duplicate_registry_first_wins(pool: PgPool) {
+    let (s, a) = setup(pool).await;
+    admin::create_rule(&s.pool, &reg_rule(r"HKLM\X", "V1"), "admin")
+        .await
+        .unwrap();
+    put(
+        &s,
+        &a,
+        InventoryPayload::Registry(vec![regval("V1", "z"), regval("V1", "a")]),
+    )
+    .await;
+    let data: String = sqlx::query_scalar("SELECT data FROM device_registry WHERE device_id = $1")
+        .bind(a.device_id)
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    assert_eq!(data, "z");
+}
+
+/// 值沒變時不進 ON CONFLICT：不鎖住列，其他交易持有共享鎖時上傳不會被擋
+#[sqlx::test(migrations = false)]
+async fn unchanged_registry_rows_are_not_locked(pool: PgPool) {
+    let (s, a) = setup(pool).await;
+    admin::create_rule(&s.pool, &reg_rule(r"HKLM\X", "V1"), "admin")
+        .await
+        .unwrap();
+    let up = || InventoryPayload::Registry(vec![regval("V1", "1")]);
+    put(&s, &a, up()).await;
+    let mut holder = s.pool.begin().await.unwrap();
+    sqlx::query("SELECT 1 FROM device_registry WHERE device_id = $1 FOR SHARE")
+        .bind(a.device_id)
+        .execute(&mut *holder)
+        .await
+        .unwrap();
+    let r = tokio::time::timeout(std::time::Duration::from_secs(3), put(&s, &a, up())).await;
+    holder.rollback().await.unwrap();
+    assert!(r.is_ok(), "相同的值不應等待列鎖");
 }

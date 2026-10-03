@@ -170,6 +170,27 @@ async fn served_cert(e: &common::Env, c: &Cache, dev: &identity::Identity) -> Ve
         .to_vec()
 }
 
+/// 上次換發的回應遺失時留下的 renew.key 要沿用：中央可能已記下它的 CSR，
+/// 換一把新的會讓重新啟用時找不到相符的金鑰
+#[sqlx::test(migrations = false)]
+async fn pending_renew_key_is_reused(pool: PgPool) {
+    let e = common::central(pool).await;
+    let (dir, id, c) = started(&e).await;
+    let (pending, _) = identity::new_key_and_csr().unwrap();
+    identity::save_renew_key(dir.path(), &pending).unwrap();
+    sqlx::query(
+        "UPDATE cache_certs SET not_after = now() + interval '10 days' WHERE cache_id = $1",
+    )
+    .bind(id)
+    .execute(&e.pool)
+    .await
+    .unwrap();
+    c.checkin_once().await.unwrap();
+    let now = identity::load_identity(dir.path()).unwrap().unwrap();
+    assert_eq!(now.key_pem, pending, "沿用尚未完成的換發金鑰");
+    assert!(identity::load_renew_key(dir.path()).unwrap().is_none());
+}
+
 #[sqlx::test(migrations = false)]
 async fn renews_and_hot_swaps_certificate(pool: PgPool) {
     let e = common::central(pool).await;
@@ -216,6 +237,43 @@ async fn disabled_cache_recovers_after_enable(pool: PgPool) {
         .await
         .unwrap();
     assert!(c.recover().await.unwrap());
+    c.checkin_once().await.unwrap();
+}
+
+/// 換發時中央已收下新的 CSR，但回應遺失（快取沒換上新憑證）；之後停用再啟用，
+/// 中央以新的 CSR 簽發：快取要用換發前存下的那把金鑰
+#[sqlx::test(migrations = false)]
+async fn renew_lost_response_then_reenable_uses_new_key(pool: PgPool) {
+    let e = common::central(pool).await;
+    let (dir, id, c) = started(&e).await;
+    sqlx::query(
+        "UPDATE cache_certs SET not_after = now() + interval '10 days' WHERE cache_id = $1",
+    )
+    .bind(id)
+    .execute(&e.pool)
+    .await
+    .unwrap();
+    let current = identity::load_identity(dir.path()).unwrap().unwrap();
+    let (key_pem, csr_pem) = identity::new_key_and_csr().unwrap();
+    // 快取在送出前先存下金鑰（這是被測的行為；這裡模擬送出後回應遺失）
+    identity::save_renew_key(dir.path(), &key_pem).unwrap();
+    let r = common::client(&e, Some(&current))
+        .post(format!("{}/v1/cache/renew", e.url))
+        .json(&serde_json::json!({ "csr_pem": csr_pem }))
+        .send()
+        .await
+        .unwrap();
+    assert!(r.status().is_success(), "{}", r.status());
+    caches::set_disabled(&e.pool, &e.state.ca, id, true, "admin")
+        .await
+        .unwrap();
+    caches::set_disabled(&e.pool, &e.state.ca, id, false, "admin")
+        .await
+        .unwrap();
+    assert!(c.recover().await.unwrap());
+    let now = identity::load_identity(dir.path()).unwrap().unwrap();
+    assert_eq!(now.key_pem, key_pem, "換上與新憑證相符的金鑰");
+    assert!(identity::key_matches(&now.key_pem, &now.chain_pem));
     c.checkin_once().await.unwrap();
 }
 

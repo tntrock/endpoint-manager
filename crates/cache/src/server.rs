@@ -29,7 +29,10 @@ use tokio::sync::Semaphore;
 use tokio_rustls::TlsAcceptor;
 use tower::ServiceExt;
 
-use crate::auth::AuthCache;
+use crate::auth::{AuthCache, FAIL_MEMORY};
+
+/// 向中央詢問授權的上限：中央卡住時不讓端點等到請求逾時
+pub const AUTHORIZE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 use crate::central::Central;
 use crate::fetch::{Catalog, FetchError, Fetcher};
 use crate::identity::Identity;
@@ -151,23 +154,31 @@ async fn content(
     };
     let allowed = match st.auth.get(&peer.fingerprint, id) {
         Some(a) => a,
-        None => match st
-            .central
-            .authorize(&CacheAuthorize {
+        // 中央剛詢問失敗：先不再問，直接請端點稍後再試
+        None if st.auth.failing() => return busy(),
+        None => {
+            let req = CacheAuthorize {
                 device_cert_fingerprint: peer.fingerprint.clone(),
                 package_id: id,
-            })
-            .await
-        {
-            Ok(a) => {
-                st.auth.put(&peer.fingerprint, id, a);
-                a
+            };
+            let ask = st.central.authorize(&req);
+            match tokio::time::timeout(AUTHORIZE_TIMEOUT, ask).await {
+                Ok(Ok(a)) => {
+                    st.auth.put(&peer.fingerprint, id, a);
+                    a
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, "authorize failed");
+                    st.auth.fail(FAIL_MEMORY);
+                    return busy();
+                }
+                Err(_) => {
+                    tracing::warn!("authorize timed out");
+                    st.auth.fail(FAIL_MEMORY);
+                    return busy();
+                }
             }
-            Err(e) => {
-                tracing::warn!(error = %e, "authorize failed");
-                return busy();
-            }
-        },
+        }
     };
     if !allowed {
         return StatusCode::FORBIDDEN.into_response();
@@ -178,7 +189,6 @@ async fn content(
     let path = match st.fetcher.ensure(&pkg, None, Some(ENSURE_WAIT)).await {
         Ok(p) => p,
         Err(FetchError::Mismatch) => return StatusCode::BAD_GATEWAY.into_response(),
-        Err(FetchError::NotListed) => return StatusCode::NOT_FOUND.into_response(),
         Err(FetchError::Unavailable | FetchError::Disk) => return busy(),
     };
     // 檔案備妥才佔用下載數：等待中央的請求不會擋住本機已有的檔案。許可跟著串流歸還

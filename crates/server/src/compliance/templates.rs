@@ -66,7 +66,9 @@ pub async fn create(pool: &PgPool, keys: &[String], actor: &str) -> Result<Creat
         match admin::create_rule(pool, &input, actor).await {
             Ok(_) => out.created.push(t.name.clone()),
             // 兩個管理員同時建立：唯一索引擋下，當作已存在
-            Err(e) if e.to_string() == admin::TEMPLATE_EXISTS => out.skipped.push(t.name.clone()),
+            Err(e) if e.downcast_ref::<admin::TemplateExists>().is_some() => {
+                out.skipped.push(t.name.clone())
+            }
             Err(e) => out.failed.push((t.name.clone(), format!("{e:#}"))),
         }
     }

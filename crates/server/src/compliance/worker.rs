@@ -219,7 +219,8 @@ pub async fn history_days(pool: &PgPool) -> Result<i64, sqlx::Error> {
         .clamp(30, 3650))
 }
 
-pub async fn cleanup_history(pool: &PgPool) -> Result<u64, sqlx::Error> {
+/// `today`：管理網頁時區的今天（與每日快照的日期一致）
+pub async fn cleanup_history(pool: &PgPool, today: chrono::NaiveDate) -> Result<u64, sqlx::Error> {
     let days = history_days(pool).await? as i32;
     let events =
         sqlx::query("DELETE FROM violation_events WHERE at < now() - make_interval(days => $1)")
@@ -227,12 +228,11 @@ pub async fn cleanup_history(pool: &PgPool) -> Result<u64, sqlx::Error> {
             .execute(pool)
             .await?
             .rows_affected();
-    sqlx::query(
-        "DELETE FROM compliance_daily WHERE day < (now() - make_interval(days => $1))::date",
-    )
-    .bind(days)
-    .execute(pool)
-    .await?;
+    sqlx::query("DELETE FROM compliance_daily WHERE day < $2::date - $1")
+        .bind(days)
+        .bind(today)
+        .execute(pool)
+        .await?;
     Ok(events)
 }
 
@@ -261,7 +261,7 @@ pub fn spawn(pool: PgPool, display_offset: chrono::FixedOffset) {
                 if let Err(e) = snapshot_daily(&pool, today).await {
                     tracing::error!(error = %e, "compliance snapshot failed");
                 }
-                if let Err(e) = cleanup_history(&pool).await {
+                if let Err(e) = cleanup_history(&pool, today).await {
                     tracing::error!(error = %e, "violation history cleanup failed");
                 }
             }

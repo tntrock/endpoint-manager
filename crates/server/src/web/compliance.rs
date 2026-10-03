@@ -323,7 +323,13 @@ pub async fn overview(
     let trend: Vec<(NaiveDate, i64)> = if s.all_devices() {
         sqlx::query_as(
             "SELECT day, sum(violating)::bigint FROM compliance_daily \
-             WHERE day > current_date - 30 GROUP BY day ORDER BY day",
+             WHERE day > $1::date - 30 GROUP BY day ORDER BY day",
+        )
+        // 快照以管理網頁時區的日期記錄：區間也用同一個「今天」
+        .bind(
+            chrono::Utc::now()
+                .with_timezone(&st.display_offset)
+                .date_naive(),
         )
         .fetch_all(&st.pool)
         .await?

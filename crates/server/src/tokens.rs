@@ -43,21 +43,68 @@ pub async fn create_token(pool: &PgPool, t: &NewToken) -> Result<(i64, String), 
     create_token_in(&mut *pool.acquire().await?, t).await
 }
 
-/// 建立並寫稽核記錄（指令列用；網頁另外在自己的交易內記錄更多細節）。
-pub async fn create_token_audited(
+/// 指令列 `token-create`：群組（不存在就建立）、金鑰與稽核記錄在同一個交易；
+/// 稽核內容的格式與網頁相同
+pub async fn create_token_cli(
     pool: &PgPool,
-    t: &NewToken,
+    name: &str,
+    max_uses: i32,
+    group: Option<&str>,
+    valid_days: Option<i64>,
 ) -> Result<(i64, String), sqlx::Error> {
+    const ACTOR: &str = "cli";
     let mut tx = pool.begin().await?;
-    let (id, token) = create_token_in(&mut tx, t).await?;
+    let group_id = match group {
+        Some(g) => {
+            let created: Option<i64> = sqlx::query_scalar(
+                "INSERT INTO device_groups (name) VALUES ($1) ON CONFLICT (name) DO NOTHING \
+                 RETURNING id",
+            )
+            .bind(g)
+            .fetch_optional(&mut *tx)
+            .await?;
+            match created {
+                Some(id) => {
+                    crate::audit::record(
+                        &mut tx,
+                        ACTOR,
+                        "group_create",
+                        Some(g),
+                        serde_json::json!({ "id": id }),
+                    )
+                    .await?;
+                    Some(id)
+                }
+                None => Some(
+                    sqlx::query_scalar("SELECT id FROM device_groups WHERE name = $1")
+                        .bind(g)
+                        .fetch_one(&mut *tx)
+                        .await?,
+                ),
+            }
+        }
+        None => None,
+    };
+    let (id, token) = create_token_in(
+        &mut tx,
+        &NewToken {
+            name: name.into(),
+            group_id,
+            expires_at: valid_days.map(|d| Utc::now() + chrono::Duration::days(d)),
+            max_uses,
+            created_by: ACTOR.into(),
+            kind: TokenKind::Device,
+        },
+    )
+    .await?;
     crate::audit::record(
         &mut tx,
-        &t.created_by,
+        ACTOR,
         "token_create",
         Some(&id.to_string()),
         serde_json::json!({
-            "name": t.name, "max_uses": t.max_uses, "group_id": t.group_id,
-            "expires_at": t.expires_at
+            "name": name, "max_uses": max_uses, "group_id": group_id, "valid_days": valid_days,
+            "installer": false, "server_url": null
         }),
     )
     .await?;
@@ -137,11 +184,7 @@ mod tests {
     #[sqlx::test(migrations = false)]
     async fn cli_token_create_is_audited(pool: PgPool) {
         crate::db::migrate(&pool).await.unwrap();
-        let t = NewToken {
-            created_by: "cli".into(),
-            ..new_token(5, None)
-        };
-        let (id, _) = create_token_audited(&pool, &t).await.unwrap();
+        let (id, _) = create_token_cli(&pool, "t", 5, None, None).await.unwrap();
         let (actor, target): (String, Option<String>) =
             sqlx::query_as("SELECT actor, target FROM audit_log WHERE action = 'token_create'")
                 .fetch_one(&pool)

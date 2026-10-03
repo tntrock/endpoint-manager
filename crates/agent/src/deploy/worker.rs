@@ -298,6 +298,11 @@ impl<C: Collector, R: Runner> Worker<C, R> {
         &self.state
     }
 
+    /// 快取暫停到什麼時候（連不上快取後改向中央的期間）
+    pub fn cache_paused_until(&self) -> Option<DateTime<Utc>> {
+        self.cache_paused_until
+    }
+
     pub async fn pass(&mut self, w: &Work) -> Option<DateTime<Utc>> {
         self.pass_at(w, Utc::now()).await
     }
@@ -513,8 +518,9 @@ impl<C: Collector, R: Runner> Worker<C, R> {
         central: &ServerClient,
         spec: &PackageSpec,
         file: &Path,
-        now: DateTime<Utc>,
     ) -> Result<(), DownloadError> {
+        // 暫停期用當下時間：一輪的起始時間可能早在前一個安裝開始前
+        let now = Utc::now();
         if let Some(src) = &w.package_source
             && self.cache_paused_until.is_none_or(|t| now >= t)
         {
@@ -593,7 +599,7 @@ impl<C: Collector, R: Runner> Worker<C, R> {
         // MSI 以 ProductCode 移除，不需要下載
         let needs_file = a.action == DeployAction::Install || spec.kind == PackageKind::Exe;
         if needs_file && !verified(&file, spec).await {
-            match self.download(w, client, spec, &file, now).await {
+            match self.download(w, client, spec, &file).await {
                 Ok(()) => {}
                 // 伺服器忙碌或連不上：不算嘗試，依 Retry-After（加上隨機延遲）再試
                 Err(e @ (DownloadError::Retry(_) | DownloadError::Unreachable)) => {

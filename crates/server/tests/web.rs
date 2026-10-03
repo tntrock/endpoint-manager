@@ -257,7 +257,7 @@ async fn approvals_respect_role_and_scope(pool: PgPool) {
         .send()
         .await
         .unwrap();
-    assert_eq!(r.status(), 303);
+    assert_eq!(r.status(), 200);
     let pending: Vec<uuid::Uuid> =
         sqlx::query_scalar("SELECT id FROM devices WHERE status = 'pending_approval'")
             .fetch_all(&s.pool)
@@ -991,4 +991,39 @@ async fn missing_template_hides_download_button(pool: PgPool) {
     let c = s.admin_client().await;
     let (_, html) = s.page(&c, "/tokens").await;
     assert!(!html.contains("建立並下載安裝檔"));
+}
+
+/// 指令列建立金鑰：新群組寫 group_create 稽核，金鑰稽核格式與網頁相同
+#[sqlx::test(migrations = false)]
+async fn cli_token_audits_group_and_token(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let detail = |action: &'static str| {
+        let pool = s.pool.clone();
+        async move {
+            sqlx::query_scalar::<_, serde_json::Value>(
+                "SELECT detail FROM audit_log WHERE action = $1 AND actor = 'cli' ORDER BY id",
+            )
+            .bind(action)
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    endpoint_server::tokens::create_token_cli(&s.pool, "分公司", 5, Some("新群組"), Some(7))
+        .await
+        .unwrap();
+    endpoint_server::tokens::create_token_cli(&s.pool, "分公司2", 5, Some("新群組"), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        detail("group_create").await.len(),
+        1,
+        "已存在的群組不再記錄"
+    );
+    let t = detail("token_create").await;
+    assert_eq!(t.len(), 2);
+    assert_eq!(t[0]["valid_days"], 7, "{}", t[0]);
+    assert_eq!(t[0]["installer"], false, "{}", t[0]);
+    assert!(t[0].get("expires_at").is_none(), "{}", t[0]);
+    assert!(t[0]["group_id"].is_i64(), "{}", t[0]);
 }

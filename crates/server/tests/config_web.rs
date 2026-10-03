@@ -208,3 +208,37 @@ async fn security_tab_shows_probes_and_errors(pool: PgPool) {
     let other = s.login_as("olga", Role::GroupAdmin, &["高雄"]).await;
     assert_eq!(s.page(&other, &tab).await.0, 404);
 }
+
+#[sqlx::test(migrations = false)]
+async fn template_exists_is_typed(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let input = endpoint_server::compliance::admin::RuleInput {
+        name: "a".into(),
+        description: String::new(),
+        kind: "firewall".into(),
+        severity: "high".into(),
+        enabled: true,
+        params: serde_json::json!({"profiles": ["public"]}),
+        include: vec![],
+        exclude: vec![],
+        template_key: Some("t1".into()),
+    };
+    endpoint_server::compliance::admin::create_rule(&s.pool, &input, "admin")
+        .await
+        .unwrap();
+    let e = endpoint_server::compliance::admin::create_rule(
+        &s.pool,
+        &endpoint_server::compliance::admin::RuleInput {
+            name: "b".into(),
+            ..input
+        },
+        "admin",
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        e.downcast_ref::<endpoint_server::compliance::admin::TemplateExists>()
+            .is_some(),
+        "{e:#}"
+    );
+}
