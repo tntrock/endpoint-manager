@@ -478,3 +478,18 @@ async fn deploy_tabs_mark_current(pool: PgPool) {
         "側邊欄仍標示派送：{html}"
     );
 }
+
+#[sqlx::test(migrations = false)]
+async fn package_form_has_detection_help(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let id = server_package(&s).await;
+    let admin = s.admin_client().await;
+    let (_, html) = s.page(&admin, &format!("/packages/{id}")).await;
+    for key in ["package", "detect"] {
+        assert!(
+            html.contains(&format!(r#"popovertarget="help-{key}""#))
+                && html.contains(&format!(r#"id="help-{key}" popover"#)),
+            "{key}：{html}"
+        );
+    }
+}

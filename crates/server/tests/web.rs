@@ -1233,3 +1233,49 @@ async fn cli_token_audits_group_and_token(pool: PgPool) {
     assert!(t[0].get("expires_at").is_none(), "{}", t[0]);
     assert!(t[0]["group_id"].is_i64(), "{}", t[0]);
 }
+
+/// 「?」說明：按鈕的 popovertarget 要對到頁面上真的存在的說明框，並有給報讀器的名稱
+fn assert_help(html: &str, key: &str) {
+    assert!(
+        html.contains(&format!(r#"popovertarget="help-{key}""#)),
+        "缺少 {key} 的說明按鈕：{html}"
+    );
+    assert!(
+        html.contains(&format!(r#"id="help-{key}" popover"#)),
+        "缺少 {key} 的說明框：{html}"
+    );
+}
+
+#[sqlx::test(migrations = false)]
+async fn help_popovers_on_complex_pages(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let admin = s.admin_client().await;
+    for (path, keys) in [
+        ("/compliance/rules", &["rules"][..]),
+        (
+            "/compliance/rules/new?kind=forbidden_software",
+            &["rule-form", "rule-pattern"][..],
+        ),
+        (
+            "/compliance/rules/new?kind=registry_value",
+            &["rule-form", "rule-registry"][..],
+        ),
+        ("/packages", &["packages"][..]),
+        ("/deployments/new", &["deploy", "autopause"][..]),
+        ("/updates", &["updates"][..]),
+        ("/updates/new", &["update-form", "active-hours"][..]),
+        ("/scripts", &["scripts"][..]),
+        ("/commands", &["commands"][..]),
+        ("/sites", &["sites"][..]),
+        ("/caches", &["sites"][..]),
+        ("/sites/new", &["site-fallback", "site-bandwidth"][..]),
+        ("/tokens", &["tokens"][..]),
+    ] {
+        let (st, html) = s.page(&admin, path).await;
+        assert_eq!(st, 200, "{path}");
+        for key in keys {
+            assert_help(&html, key);
+        }
+        assert!(html.contains(r#"aria-label="說明："#), "{path}");
+    }
+}

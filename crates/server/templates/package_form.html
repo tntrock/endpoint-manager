@@ -1,6 +1,7 @@
 {% extends "base.html" %}
+{% import "_macros.html" as m %}
 {% block content %}
-<div class="page-head"><div><div class="crumb"><a href="/deployments">派送</a> ／ <a href="/packages">套件</a> ／ {{ name }}</div><h1>{{ name }}</h1></div></div>
+<div class="page-head"><div><div class="crumb"><a href="/deployments">派送</a> ／ <a href="/packages">套件</a> ／ {{ name }}</div><h1>{{ name }}{% call m::help_btn("package", "安裝方式") %}{% endcall %}</h1></div></div>
 {% if let Some(e) = error %}<div class="notice error">{{ e }}</div>{% endif %}
 <table>
   <tr><th>類型</th><td>{% if kind == "msi" %}MSI{% else %}EXE{% endif %}</td></tr>
@@ -22,13 +23,11 @@
   <label class="field">移除參數 <input name="uninstall_args" value="{{ uninstall_args }}" maxlength="1000" size="60" placeholder="/uninstall /S"></label>
   <p class="muted">移除時以這個安裝檔加上移除參數執行；留空代表不能用來移除。</p>
   {% endif %}
-  <div class="row"><label class="field">額外的成功結束碼 <input name="success_codes" value="{{ success_codes }}" placeholder="例：1, 2"></label>
-     <span class="muted">0 一律算成功；3010、1641 為成功但需要重新開機；1618 會稍後重試。</span></div>
-  <fieldset><legend>偵測規則（判斷是否已安裝）</legend>
+  <div class="row"><label class="field">額外的成功結束碼 <input name="success_codes" value="{{ success_codes }}" placeholder="例：1, 2"></label></div>
+  <fieldset><legend>偵測規則（判斷是否已安裝）{% call m::help_btn("detect", "偵測規則") %}{% endcall %}</legend>
     <div class="row"><label class="field">軟體名稱 <input name="detect_name" value="{{ detect_name }}" required maxlength="256" size="40"></label>
        <label class="field">發行者（選填）<input name="detect_publisher" value="{{ detect_publisher }}" maxlength="256" size="30"></label>
        <label class="field">最低版本（選填）<input name="detect_min_version" value="{{ detect_min_version }}" maxlength="256"></label></div>
-    <p class="muted">比對「程式和功能」清單，<code>*</code> 代表任意字元、不分大小寫。安裝後偵測不到會算失敗，請確認名稱與版本正確。</p>
   </fieldset>
   <button class="btn primary">儲存</button>
 </form>
@@ -36,4 +35,17 @@
   <input type="hidden" name="csrf" value="{{ nav.csrf }}">
   <button class="btn danger">刪除套件</button> <span class="muted">有派送使用時不能刪除。</span>
 </form>
+{% call m::help_box("package", "安裝方式") %}
+<ul>
+<li><b>MSI</b>：固定執行 <code>msiexec /i 套件 /qn /norestart</code>，附加屬性加在後面；移除以 ProductCode 執行。</li>
+<li><b>EXE</b>：以靜默安裝參數執行；沒填移除參數就不能用來移除。</li>
+</ul>
+<p>結束碼：0 成功；3010、1641 為成功但需要重新開機（<b>不會自動重開機</b>）；1618 表示有其他安裝正在進行，稍後重試；其他都算失敗。額外的成功碼可以在表單填寫。</p>
+<p>超過 60 分鐘會結束整個安裝程序並算失敗。</p>
+{% endcall %}
+{% call m::help_box("detect", "偵測規則") %}
+<p>用來判斷這台電腦是否已經安裝：比對「程式和功能」清單，<code>*</code> 代表任意字元、不分大小寫。</p>
+<p>安裝程式回報成功、安裝後卻偵測不到，會算失敗，請確認名稱與版本正確。</p>
+<p>有填最低版本時，低於此版本視為沒裝（安裝類的派送會重新安裝）。</p>
+{% endcall %}
 {% endblock %}

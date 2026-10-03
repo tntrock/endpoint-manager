@@ -1,6 +1,7 @@
 {% extends "base.html" %}
+{% import "_macros.html" as m %}
 {% block content %}
-<div class="page-head"><div><div class="crumb"><a href="/updates">Windows Update</a> ／ {% if id.is_some() %}編輯{% else %}建立{% endif %}</div><h1>{% if id.is_some() %}編輯更新原則{% else %}建立更新原則{% endif %}</h1></div></div>
+<div class="page-head"><div><div class="crumb"><a href="/updates">Windows Update</a> ／ {% if id.is_some() %}編輯{% else %}建立{% endif %}</div><h1>{% if id.is_some() %}編輯更新原則{% else %}建立更新原則{% endif %}{% call m::help_btn("update-form", "延後、期限與寬限期") %}{% endcall %}</h1></div></div>
 {% if let Some(e) = error %}<div class="notice error">{{ e }}</div>{% endif %}
 <form class="card" method="post" action="{% if let Some(i) = id %}/updates/{{ i }}/edit{% else %}/updates{% endif %}">
   <input type="hidden" name="csrf" value="{{ nav.csrf }}">
@@ -8,12 +9,10 @@
   <label class="field">名稱 <input name="name" value="{{ f.name }}" required maxlength="100" size="40"></label>
   <fieldset><legend>套用群組（一個群組只能屬於一個原則）</legend>
     <p class="checks">{% for g in groups %}<label><input type="checkbox" name="groups" value="{{ g.value }}" {% if g.selected %}checked{% endif %}> {{ g.label }}</label> {% endfor %}</p>
-    <p class="muted">這些群組的電腦不要再用 GPO 管 Windows Update，否則會回報「衝突」。</p>
   </fieldset>
   <fieldset><legend>延後（空白＝不設定）</legend>
     <label class="field">品質更新延後 <input name="quality_defer_days" value="{{ f.quality_defer_days }}" inputmode="numeric" size="4"> 天（0–30）</label>
     <label class="field">功能更新延後 <input name="feature_defer_days" value="{{ f.feature_defer_days }}" inputmode="numeric" size="4"> 天（0–365）</label>
-    <p class="muted">暫停請在原則頁按「暫停」（Windows 最多暫停 35 天）。</p>
   </fieldset>
   <fieldset><legend>期限（空白＝不設定；寬限沒填時為 2 天）</legend>
     <div class="row"><label class="field">品質更新期限 <input name="quality_deadline" value="{{ f.quality_deadline }}" inputmode="numeric" size="4"> 天（0–30）</label>
@@ -22,10 +21,23 @@
        <label class="field">寬限 <input name="feature_grace" value="{{ f.feature_grace }}" inputmode="numeric" size="4"> 天（0–7）</label></div>
     <p class="checks"><label><input type="checkbox" name="no_auto_reboot" value="1" {% if f.no_auto_reboot %}checked{% endif %}> 寬限期結束前不自動重開機</label></p>
   </fieldset>
-  <fieldset><legend>使用中時段（這段時間內不自動重開機，最長 18 小時）</legend>
+  <fieldset><legend>使用中時段{% call m::help_btn("active-hours", "使用中時段") %}{% endcall %}</legend>
     <div class="row"><label class="field">開始 <select name="active_start"><option value="">不設定</option>{% for h in hours %}<option value="{{ h }}" {% if f.active_start == h.to_string() %}selected{% endif %}>{{ h }}:00</option>{% endfor %}</select></label>
        <label class="field">結束 <select name="active_end"><option value="">不設定</option>{% for h in hours %}<option value="{{ h }}" {% if f.active_end == h.to_string() %}selected{% endif %}>{{ h }}:00</option>{% endfor %}</select></label></div>
   </fieldset>
   <button class="btn primary">{% if id.is_some() %}儲存{% else %}建立{% endif %}</button>
 </form>
+{% call m::help_box("update-form", "延後、期限與寬限期") %}
+<ul>
+<li><b>延後</b>：更新發布後，等幾天才提供給這些電腦。</li>
+<li><b>期限</b>：更新提供後，使用者最多可以拖幾天；期限一到就強制安裝並重新開機。</li>
+<li><b>寬限期</b>：期限過後（或電腦長期離線回來後），至少再給使用者幾天才強制重新開機；沒填時為 2 天。</li>
+</ul>
+<p>空白的項目不寫入，維持 Windows 預設。</p>
+<p>這些群組的電腦不要再用 GPO 管 Windows Update，否則會回報「衝突」。暫停請在原則頁按「暫停」（Windows 最多暫停 35 天）。</p>
+{% endcall %}
+{% call m::help_box("active-hours", "使用中時段") %}
+<p>這段時間內，Windows 不會自動重新開機來完成更新。</p>
+<p>開始到結束最長 18 小時；兩個都選「不設定」時，維持 Windows 預設。</p>
+{% endcall %}
 {% endblock %}

@@ -2,7 +2,7 @@
 {% import "_macros.html" as m %}
 {% block content %}
 <div class="page-head">
-  <div><h1>合規</h1></div>
+  <div><h1>合規{% call m::help_btn("rules", "合規規則") %}{% endcall %}</h1></div>
   {% if nav.platform %}
   <div class="actions">
     <a class="btn" href="/compliance/rules/templates">從範本建立</a>
@@ -28,4 +28,14 @@
   {% endfor %}
 </table>
 {% endif %}
+{% call m::help_box("rules", "合規規則") %}
+<p>規則依 Agent 回報的盤點資料檢查每台電腦；規則新增或修改後，背景會重新評估所有裝置。</p>
+<ul>
+<li><b>違規</b>：不符合規則。</li>
+<li><b>未知</b>：資料不足以判斷，例如 Agent 版本太舊、還沒回報。</li>
+<li><b>豁免</b>：在裝置頁的「合規」分頁設定，必填原因與天數，最長 365 天。</li>
+</ul>
+<p>範圍都不勾＝全部裝置；可限定或排除群組，排除優先。</p>
+<p>組態規則需要 Agent 0.3.0 以上；更新相關的規則需要 0.5.0 以上。</p>
+{% endcall %}
 {% endblock %}

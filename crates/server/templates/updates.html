@@ -2,7 +2,7 @@
 {% import "_macros.html" as m %}
 {% block content %}
 <div class="page-head">
-  <div><h1>Windows Update</h1>{% if !nav.platform %}<div class="sub">台數只計算你管理範圍內的裝置。</div>{% endif %}</div>
+  <div><h1>Windows Update{% call m::help_btn("updates", "Windows Update 原則") %}{% endcall %}</h1>{% if !nav.platform %}<div class="sub">台數只計算你管理範圍內的裝置。</div>{% endif %}</div>
   {% if nav.platform %}<div class="actions"><a class="btn primary" href="/updates/new">＋ 建立原則</a></div>{% endif %}
 </div>
 {% call m::updates_tabs("policies") %}{% endcall %}
@@ -23,4 +23,13 @@
   {% endfor %}
 </table>
 {% endif %}
+{% call m::help_box("updates", "Windows Update 原則") %}
+<p>本系統把 Windows Update for Business 原則寫進每台電腦的登錄檔；更新檔本身仍由 Windows Update 或 WSUS 提供。</p>
+<ul>
+<li>一個群組只能屬於一個原則；沒有原則的群組，Agent 完全不改動 Windows Update 設定。</li>
+<li>受管群組不要再用 GPO 管 Windows Update：Agent 發現自己寫入的值被改掉時，會回報「衝突」並停止覆寫。</li>
+<li>暫停在原則頁設定；Windows 最多暫停 35 天，之後自動恢復。</li>
+</ul>
+<p>需要 Agent 0.5.0 以上。</p>
+{% endcall %}
 {% endblock %}

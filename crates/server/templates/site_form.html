@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_macros.html" as m %}
 {% block content %}
 <div class="page-head"><div><div class="crumb"><a href="/sites">據點與快取</a> ／ {% if id.is_some() %}編輯{% else %}新增{% endif %}</div><h1>{% if id.is_some() %}編輯據點{% else %}新增據點{% endif %}</h1></div></div>
 {% if let Some(e) = error %}<div class="notice error">{{ e }}</div>{% endif %}
@@ -7,12 +8,22 @@
   <label class="field">名稱 <input name="name" value="{{ f.name }}" required maxlength="100" size="40"></label>
   <label class="field">網段（每行一個，例如 10.1.0.0/16 或 fd00:1::/48）
     <textarea class="code" name="cidrs" rows="5" cols="40" required>{{ f.cidrs }}</textarea></label>
-  <p class="checks"><label><input type="checkbox" name="fallback" value="1" {% if f.fallback %}checked{% endif %}> 快取無法使用時改向中央下載</label></p>
-  <p class="muted">不勾選時，快取停機期間端點會等快取恢復後再下載（適合 WAN 頻寬很小的據點）。</p>
+  <p class="checks"><label><input type="checkbox" name="fallback" value="1" {% if f.fallback %}checked{% endif %}> 快取無法使用時改向中央下載</label>{% call m::help_btn("site-fallback", "快取無法使用時") %}{% endcall %}</p>
   <div class="row">
-    <label class="field">快取向中央下載的頻寬上限（Mbps）<input name="bandwidth" value="{{ f.bandwidth }}" inputmode="numeric" size="6"><span class="help">空白＝不限，只限制預先下載</span></label>
+    <label class="field">快取向中央下載的頻寬上限（Mbps）<input name="bandwidth" value="{{ f.bandwidth }}" inputmode="numeric" size="6"><span class="help">空白＝不限</span></label>{% call m::help_btn("site-bandwidth", "頻寬與磁碟上限") %}{% endcall %}
     <label class="field">快取磁碟上限（GB）<input name="disk_gb" value="{{ f.disk_gb }}" inputmode="numeric" size="6" required></label>
   </div>
   <button class="btn primary">{% if id.is_some() %}儲存{% else %}建立{% endif %}</button>
 </form>
+{% call m::help_box("site-fallback", "快取無法使用時") %}
+<ul>
+<li><b>勾選</b>：快取連不上時，端點改向中央下載（之後 5 分鐘內都直接向中央）。</li>
+<li><b>不勾選</b>：端點等快取恢復後再下載，適合 WAN 頻寬很小的據點。</li>
+</ul>
+<p>快取忙碌（回 503）時一律稍後再試，不會改向中央。</p>
+{% endcall %}
+{% call m::help_box("site-bandwidth", "頻寬與磁碟上限") %}
+<p>頻寬上限只限制快取向中央的<b>預先下載</b>；端點臨時需要、快取還沒有的套件不受限制。</p>
+<p>磁碟超過上限時，從最久沒用的套件開始刪除；進行中派送正在使用的套件不會刪。</p>
+{% endcall %}
 {% endblock %}

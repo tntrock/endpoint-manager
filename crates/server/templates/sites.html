@@ -2,11 +2,10 @@
 {% import "_macros.html" as m %}
 {% block content %}
 <div class="page-head">
-  <div><h1>據點與快取</h1></div>
+  <div><h1>據點與快取{% call m::help_btn("sites", "據點與快取") %}{% endcall %}</h1></div>
   <div class="actions"><a class="btn primary" href="/sites/new">＋ 新增據點</a></div>
 </div>
 {% call m::sites_tabs("sites") %}{% endcall %}
-<p class="muted">端點報到時依回報的本機 IP 對應據點（網段重疊時前綴最長的優先），並向該據點使用中的快取下載派送套件。裝置數依每台最後回報的 IP 計算；網段重疊時兩個據點都會計入。</p>
 {% if rows.is_empty() %}{% call m::empty("還沒有據點", "沒有據點時，所有端點都向中央下載") %}{% endcall %}{% else %}
 <table>
   <tr><th>名稱</th><th>網段</th><th>快取</th><th>快取無法使用時</th><th>頻寬上限</th><th class="num">磁碟上限</th><th class="num">裝置數</th><th></th></tr>
@@ -25,4 +24,13 @@
   {% endfor %}
 </table>
 {% endif %}
+{% call m::help_box("sites", "據點與快取") %}
+<ul>
+<li>端點報到時，依回報的本機 IP 對應據點；網段重疊時，前綴最長的優先。</li>
+<li>有快取的據點，端點改向快取下載派送套件；報到仍直接連中央。</li>
+<li>快取每 60 秒向中央報到，並預先下載進行中派送用到的套件；端點要的套件不在快取時，會立即向中央取得。</li>
+<li>裝置數依每台最後回報的 IP 計算；網段重疊時兩個據點都會計入。</li>
+</ul>
+<p>設定步驟：建立據點 → 在「快取」分頁建立快取註冊金鑰 → 在快取主機執行 <code>endpoint-cache enroll</code> → 回到「快取」分頁核准並指定據點。</p>
+{% endcall %}
 {% endblock %}
