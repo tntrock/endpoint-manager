@@ -16,6 +16,8 @@ use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+/// 建立連線的上限：封包被丟棄時不必等到整個請求逾時（中央與快取都套用）
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// 下載套件時兩次收到資料之間最長可以閒置多久（大檔案在慢速線路上總時間可以很長）
 pub const DOWNLOAD_IDLE: Duration = Duration::from_secs(2 * 60);
 /// 下載的總時間上限（只為了不讓連線永遠掛著）
@@ -107,6 +109,7 @@ impl ServerClient {
             .tls_certs_only([reqwest::Certificate::from_pem(root_pem.as_bytes())?])
             .http1_only()
             .timeout(REQUEST_TIMEOUT)
+            .connect_timeout(CONNECT_TIMEOUT)
             .user_agent(concat!("endpoint-agent/", env!("CARGO_PKG_VERSION")));
         if let Some(pem) = identity_pem {
             b = b.identity(reqwest::Identity::from_pem(pem.as_bytes())?);

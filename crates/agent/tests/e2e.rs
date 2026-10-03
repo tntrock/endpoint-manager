@@ -127,6 +127,24 @@ async fn client_maps_status_codes(pool: PgPool) {
     assert!(c.enroll(&enroll(&token, csr())).await.is_ok());
 }
 
+/// 封包被丟棄的位址：沒有連線逾時時要等到整個請求逾時（60 秒）
+#[tokio::test]
+async fn connect_timeout_is_short() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let pki = tempfile::tempdir().unwrap();
+    ca::init_ca(pki.path(), vec!["127.0.0.1".into()]).unwrap();
+    let root = std::fs::read_to_string(pki.path().join("root.pem")).unwrap();
+    let c = ServerClient::new("https://10.255.255.1:443", &root, None).unwrap();
+    let start = std::time::Instant::now();
+    let r = c.renew(&protocol::RenewRequest { csr_pem: csr() }).await;
+    assert!(r.is_err());
+    assert!(
+        start.elapsed() < Duration::from_secs(15),
+        "{:?}",
+        start.elapsed()
+    );
+}
+
 #[tokio::test]
 async fn unreachable_server_is_retry() {
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -1049,8 +1067,21 @@ mod deploy {
             ..Fake::new()
         };
         let mut hang = Worker::new(e.dir.path(), Arc::new(fake.clone()), Hang);
-        let r = tokio::time::timeout(Duration::from_millis(500), hang.pass(&w)).await;
-        assert!(r.is_err(), "安裝卡住時 pass 被中斷");
+        // 等「執行中」寫進狀態檔再中斷（不用固定時間：全套件負載下下載可能較慢）
+        let state_file = e.dir.path().join("deploy.json");
+        let started = async {
+            loop {
+                let s = std::fs::read_to_string(&state_file).unwrap_or_default();
+                if s.contains(r#""in_progress":true"#) {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        };
+        tokio::select! {
+            _ = hang.pass(&w) => panic!("安裝卡住時 pass 不會結束"),
+            _ = tokio::time::timeout(Duration::from_secs(60), started) => {}
+        }
         drop(hang);
         // 重新啟動：上次中斷算一次失敗，24 小時內不再執行
         let mut worker = Worker::new(e.dir.path(), Arc::new(fake), runner.clone());
@@ -1253,6 +1284,61 @@ mod deploy {
         );
         assert_eq!(runner.runs.load(Ordering::SeqCst), 0);
         assert!(status(&e, d).await.is_none(), "沒有回報、沒有向中央下載");
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn cache_pause_uses_current_time(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let (_a, mut worker, _runner, w, _d) = setup(&e, 0, false).await;
+        // 一輪的起始時間在 2 小時前（例如前面的安裝跑了很久）：暫停仍要從現在算 5 分鐘
+        worker
+            .pass_at(
+                &via(&w, &dead_url(), true),
+                chrono::Utc::now() - chrono::Duration::hours(2),
+            )
+            .await;
+        let until = worker.cache_paused_until().expect("快取連不上時暫停");
+        assert!(until > chrono::Utc::now(), "{until}");
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn package_source_change_wakes_worker(pool: PgPool) {
+        let e = env(pool, 1).await;
+        let (tx, mut rx) = tokio::sync::watch::channel(None);
+        let mut a = Agent::new(e.dir.path(), Fake::new())
+            .unwrap()
+            .with_deploy(tx);
+        a.run_cycle().await;
+        deployment(&e, b"x", "/S").await;
+        a.run_cycle().await;
+        rx.borrow_and_update();
+        let site = endpoint_server::branch::sites::create_site(
+            &e.pool,
+            &endpoint_server::branch::sites::SiteInput {
+                name: "總部".into(),
+                cidrs: vec!["10.0.0.0/8".into()],
+                fallback_to_central: false,
+                bandwidth_limit_mbps: None,
+                disk_limit_gb: 100,
+            },
+            "admin",
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO caches (name, site_id, url, dns_names, csr_pem, poll_secret_hash, status) \
+             VALUES ('c', $1, 'https://cache.corp:8443', ARRAY['cache.corp'], 'x', 'x', 'active')",
+        )
+        .bind(site)
+        .execute(&e.pool)
+        .await
+        .unwrap();
+        e.state.branch.invalidate();
+        a.run_cycle().await;
+        assert!(
+            rx.has_changed().unwrap(),
+            "據點的快取改變：喚醒等待重試的派送"
+        );
     }
 
     #[sqlx::test(migrations = false)]
