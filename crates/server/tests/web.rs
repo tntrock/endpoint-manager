@@ -31,6 +31,7 @@ async fn pages_require_login(pool: PgPool) {
     let (status, html) = s.page(&c, "/login").await;
     assert_eq!(status, 200);
     assert!(html.contains("登入"));
+    assert!(html.contains(r#"class="login-box""#) && html.contains("連續失敗多次會暫時鎖定帳號"));
 }
 
 #[sqlx::test(migrations = false)]
