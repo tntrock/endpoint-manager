@@ -162,6 +162,23 @@ async fn static_assets_served(pool: PgPool) {
             "{path}"
         );
     }
+    let css = c
+        .get(s.web_url("/static/app.css"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    // 兩個主題、系統偏好、減少動態都要有
+    for needle in [
+        r#":root[data-theme="light"]"#,
+        "prefers-color-scheme: light",
+        "prefers-reduced-motion: reduce",
+        "@view-transition",
+    ] {
+        assert!(css.contains(needle), "app.css 缺少 {needle}");
+    }
 }
 
 #[sqlx::test(migrations = false)]
