@@ -446,8 +446,9 @@ fn check_one(c: &Check, f: &DeviceFacts) -> Option<(Status, Value)> {
             // 其他比對名稱
             let sid_pattern = |g: &&Glob| {
                 let p = g.as_str().trim();
+                // get 以位元組切：非 ASCII 開頭時回 None，不會 panic
                 p.len() > 2
-                    && (p[..2].eq_ignore_ascii_case("*-")
+                    && (p.get(..2).is_some_and(|x| x.eq_ignore_ascii_case("*-"))
                         || p.get(..4).is_some_and(|x| x.eq_ignore_ascii_case("S-1-")))
             };
             let bad: Vec<&str> = admins
@@ -1064,6 +1065,14 @@ mod tests {
             (st, d["accounts"].clone()),
             (Status::Violating, json!([r"PC\x-500"]))
         );
+        // 非 ASCII 開頭的名稱樣式（例如中文網域）不能讓判斷崩潰
+        let (st, _) = one(
+            &f,
+            "local_admins",
+            json!({"allowed": [r"網域\Domain Admins", "管"]}),
+        )
+        .unwrap();
+        assert_eq!(st, Status::Violating);
         assert_eq!(
             one(
                 &f,

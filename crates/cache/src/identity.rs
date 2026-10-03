@@ -34,10 +34,27 @@ pub struct Identity {
 
 pub fn new_key_and_csr() -> anyhow::Result<(String, String)> {
     let key = rcgen::KeyPair::generate()?;
-    let csr = rcgen::CertificateParams::default()
-        .serialize_request(&key)?
-        .pem()?;
+    let csr = csr_for(&key)?;
     Ok((key.serialize_pem(), csr))
+}
+
+fn csr_for(key: &rcgen::KeyPair) -> anyhow::Result<String> {
+    Ok(rcgen::CertificateParams::default()
+        .serialize_request(key)?
+        .pem()?)
+}
+
+/// 換發用的金鑰與 CSR：上次換發沒完成（回應遺失）時沿用那把金鑰，
+/// 中央可能已記下它的 CSR，重新啟用時會用它簽發
+pub fn renew_key_and_csr(dir: &Path) -> anyhow::Result<(String, String)> {
+    if let Some(pem) = load_renew_key(dir)?
+        && let Ok(key) = rcgen::KeyPair::from_pem(&pem)
+    {
+        return Ok((pem, csr_for(&key)?));
+    }
+    let (key_pem, csr) = new_key_and_csr()?;
+    save_renew_key(dir, &key_pem)?;
+    Ok((key_pem, csr))
 }
 
 fn read_optional(path: &Path) -> anyhow::Result<Option<String>> {

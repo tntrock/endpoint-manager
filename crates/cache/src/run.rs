@@ -278,9 +278,8 @@ impl Cache {
     }
 
     async fn renew(&self) -> anyhow::Result<()> {
-        let (key_pem, csr_pem) = identity::new_key_and_csr()?;
-        // 送出前先存：回應遺失時中央已記下這把金鑰的 CSR，重新啟用時會用它簽發
-        identity::save_renew_key(&self.dir, &key_pem)?;
+        // 送出前先存（或沿用上次沒完成的）：回應遺失時中央已記下這把金鑰的 CSR
+        let (key_pem, csr_pem) = identity::renew_key_and_csr(&self.dir)?;
         let chain_pem = self.state.central.renew(&csr_pem).await?;
         self.install(&Identity { key_pem, chain_pem })?;
         identity::remove_renew_key(&self.dir)?;

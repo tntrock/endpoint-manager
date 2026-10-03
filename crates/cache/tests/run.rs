@@ -170,6 +170,27 @@ async fn served_cert(e: &common::Env, c: &Cache, dev: &identity::Identity) -> Ve
         .to_vec()
 }
 
+/// 上次換發的回應遺失時留下的 renew.key 要沿用：中央可能已記下它的 CSR，
+/// 換一把新的會讓重新啟用時找不到相符的金鑰
+#[sqlx::test(migrations = false)]
+async fn pending_renew_key_is_reused(pool: PgPool) {
+    let e = common::central(pool).await;
+    let (dir, id, c) = started(&e).await;
+    let (pending, _) = identity::new_key_and_csr().unwrap();
+    identity::save_renew_key(dir.path(), &pending).unwrap();
+    sqlx::query(
+        "UPDATE cache_certs SET not_after = now() + interval '10 days' WHERE cache_id = $1",
+    )
+    .bind(id)
+    .execute(&e.pool)
+    .await
+    .unwrap();
+    c.checkin_once().await.unwrap();
+    let now = identity::load_identity(dir.path()).unwrap().unwrap();
+    assert_eq!(now.key_pem, pending, "沿用尚未完成的換發金鑰");
+    assert!(identity::load_renew_key(dir.path()).unwrap().is_none());
+}
+
 #[sqlx::test(migrations = false)]
 async fn renews_and_hot_swaps_certificate(pool: PgPool) {
     let e = common::central(pool).await;

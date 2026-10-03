@@ -64,17 +64,9 @@ pub fn secure_data_dir(dir: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     #[cfg(windows)]
     {
-        // 先清掉既有的明確授權（例如安裝前就有人加過的），再只留 SYSTEM 與 Administrators
-        let out = std::process::Command::new("icacls")
-            .arg(dir)
-            .args(["/reset", "/T", "/Q"])
-            .output()
-            .context("running icacls /reset")?;
-        anyhow::ensure!(
-            out.status.success(),
-            "icacls /reset failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
+        // 先把目錄本身只留 SYSTEM 與 Administrators（不繼承上層），
+        // 再把裡面既有檔案的明確授權清掉、改為繼承這個目錄：
+        // 順序反過來時，/reset 之後到鎖住之前私鑰會短暫繼承上層（Users 可讀）
         let out = std::process::Command::new("icacls")
             .arg(dir)
             .args([
@@ -90,6 +82,18 @@ pub fn secure_data_dir(dir: &Path) -> anyhow::Result<()> {
             "icacls failed: {}",
             String::from_utf8_lossy(&out.stderr).trim()
         );
+        if std::fs::read_dir(dir)?.next().is_some() {
+            let out = std::process::Command::new("icacls")
+                .arg(dir.join("*"))
+                .args(["/reset", "/T", "/Q"])
+                .output()
+                .context("running icacls /reset")?;
+            anyhow::ensure!(
+                out.status.success(),
+                "icacls /reset failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
     }
     #[cfg(unix)]
     {
