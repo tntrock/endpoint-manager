@@ -2,7 +2,7 @@
 {% import "_macros.html" as m %}
 {% block content %}
 <div class="page-head">
-  <div><h1>腳本</h1><div class="sub">以 SYSTEM 執行的 PowerShell 腳本，需核准後才能使用</div></div>
+  <div><h1>腳本{% call m::help_btn("scripts", "腳本與核准") %}{% endcall %}</h1><div class="sub">以 SYSTEM 執行的 PowerShell 腳本，需核准後才能使用</div></div>
   <div class="actions"><a class="btn" href="/commands">遠端指令</a><a class="btn primary" href="/scripts/new">＋ 建立腳本</a></div>
 </div>
 <form class="card actions" method="post" action="/scripts/settings">
@@ -19,4 +19,12 @@
   {% endfor %}
 </table>
 {% endif %}
+{% call m::help_box("scripts", "腳本與核准") %}
+<ul>
+<li>腳本以 <b>SYSTEM</b> 用 Windows PowerShell 5.1 執行，收回結束碼與最後 64 KiB 的輸出；逾時會結束整個程序。</li>
+<li><b>雙人核准</b>（建議開啟）：上次核准後修改過內容或逾時的人都不能核准；核准的是畫面上顯示的那個版本（SHA-256）。</li>
+<li>改了內容或逾時就要重新核准。被指令使用過的腳本只能停用，不能刪除。</li>
+<li>Agent 狀態檔遺失時腳本可能重跑，請設計成可以重複執行。</li>
+</ul>
+{% endcall %}
 {% endblock %}

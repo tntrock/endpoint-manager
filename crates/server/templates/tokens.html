@@ -1,6 +1,7 @@
 {% extends "base.html" %}
+{% import "_macros.html" as m %}
 {% block content %}
-<div class="page-head"><div><h1>註冊金鑰</h1><div class="sub">Agent 安裝時用來註冊到這台伺服器</div></div></div>
+<div class="page-head"><div><h1>註冊金鑰{% call m::help_btn("tokens", "註冊金鑰") %}{% endcall %}</h1><div class="sub">Agent 安裝時用來註冊到這台伺服器</div></div></div>
 {% if let Some(t) = new_token %}
 <div class="notice ok">
   <p>金鑰已建立。<b>明碼只顯示這一次</b>，請立即複製到安裝參數 <code>ENROLL_TOKEN=</code>：</p>
@@ -22,7 +23,7 @@
     <label class="field">伺服器網址 <input name="server_url" value="{{ public_url }}" placeholder="https://em.example.com:8443" size="40"></label>
     <div class="field"><button class="btn" name="download" value="1">建立並下載安裝檔</button></div>
   </div>
-  <p class="muted">安裝檔內含這把金鑰，可直接用 GPO 或 <code>msiexec /i endpoint-agent.msi /qn</code> 安裝。Windows 會把安裝檔快取在每台電腦的 <code>C:\Windows\Installer</code>（一般使用者可讀），所以下載安裝檔時有效天數必填（最多 90 天），派送完成後請作廢這把金鑰。</p>
+  <p class="muted">安裝檔內含這把金鑰，可直接用 GPO 或 <code>msiexec /i endpoint-agent.msi /qn</code> 安裝；有效天數必填（最多 90 天），派送完成後請作廢。</p>
   {% endif %}
 </form>
 </fieldset>
@@ -38,4 +39,11 @@
   </tr>
   {% endfor %}
 </table>
+{% call m::help_box("tokens", "註冊金鑰") %}
+<ul>
+<li>Agent 第一次安裝時用金鑰註冊，電腦會歸到金鑰指定的群組。註冊成功後 Agent 改用自己的憑證，之後作廢金鑰不影響已註冊的電腦。</li>
+<li>可使用次數用完或過期的金鑰會自動失效。</li>
+{% if installer %}<li>「建立並下載安裝檔」產生的 MSI 內含金鑰。Windows 會把裝過的 MSI 快取在每台電腦的 <code>C:\Windows\Installer</code>（一般使用者讀得到），所以有效天數必填（最多 90 天），<b>派送完成後請作廢這把金鑰</b>。</li>{% endif %}
+</ul>
+{% endcall %}
 {% endblock %}

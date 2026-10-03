@@ -2,7 +2,7 @@
 {% import "_macros.html" as m %}
 {% block content %}
 <div class="page-head">
-  <div><h1>派送</h1></div>
+  <div><h1>派送{% call m::help_btn("packages", "套件") %}{% endcall %}</h1></div>
   <div class="actions"><a class="btn primary" href="/packages/upload">＋ 上傳套件</a></div>
 </div>
 {% call m::deploy_tabs("packages") %}{% endcall %}
@@ -22,4 +22,8 @@
   {% endfor %}
 </table>
 {% endif %}
+{% call m::help_box("packages", "套件") %}
+<p>上傳 .msi 或 .exe（最大 2 GiB）後，就能用來建立派送。MSI 會自動讀出名稱、版本、發行者與 ProductCode。</p>
+<p>有派送使用中的套件不能刪除。</p>
+{% endcall %}
 {% endblock %}

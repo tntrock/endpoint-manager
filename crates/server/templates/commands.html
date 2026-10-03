@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m %}
 {% block content %}
-<div class="page-head"><div><h1>遠端指令</h1><div class="sub">指令在裝置下次報到時送達</div></div>{% if nav.platform %}<div class="actions"><a class="btn" href="/scripts">腳本</a></div>{% endif %}</div>
+<div class="page-head"><div><h1>遠端指令{% call m::help_btn("commands", "遠端指令如何送達") %}{% endcall %}</h1><div class="sub">指令在裝置下次報到時送達</div></div>{% if nav.platform %}<div class="actions"><a class="btn" href="/scripts">腳本</a></div>{% endif %}</div>
 {% if let Some(e) = error %}<div class="notice error">{{ e }}</div>{% endif %}
 {% if nav.manage %}
 <form method="post" action="/commands" data-confirm="確定要對整個群組執行？" data-confirm-skip="collect apply">
@@ -39,4 +39,12 @@
 {% endif %}
 <div class="pager">{% if let Some(u) = prev %}<a class="btn sm" href="{{ u }}">← 上一頁</a>{% endif %}{% if let Some(u) = next %}<a class="btn sm" href="{{ u }}">下一頁 →</a>{% endif %}</div>
 {% if !nav.platform %}<p class="muted">只顯示含你管理範圍內裝置的指令，台數也只算範圍內的裝置。</p>{% endif %}
+{% call m::help_box("commands", "遠端指令如何送達") %}
+<ul>
+<li>指令在伺服器排隊，裝置<b>下次報到時</b>收到（預設約 1 分鐘內）；過期前沒報到的裝置不會執行。</li>
+<li>重新開機、關機會先通知登入的使用者，可延遲 0–60 分鐘。</li>
+<li>取消只對還沒開始的裝置有效；已在執行的腳本會跑完。</li>
+<li>群組管理員只能對自己的群組下固定動作；執行腳本只限平台管理員。</li>
+</ul>
+{% endcall %}
 {% endblock %}

@@ -39,3 +39,9 @@
   <a href="/caches"{% if on == "caches" %} class="on" aria-current="page"{% endif %}>快取</a>
 </nav>
 {% endmacro %}
+
+{% macro help_btn(key, title) %}<button type="button" class="help-btn" popovertarget="help-{{ key }}" aria-label="說明：{{ title }}">?</button>{% endmacro %}
+
+{% macro help_box(key, title) %}
+<div id="help-{{ key }}" popover class="help-pop"><h3>{{ title }}</h3>{{ caller() }}</div>
+{% endmacro %}

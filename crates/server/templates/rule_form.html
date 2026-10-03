@@ -1,6 +1,7 @@
 {% extends "base.html" %}
+{% import "_macros.html" as m %}
 {% block content %}
-<div class="page-head"><div><div class="crumb"><a href="/compliance">合規</a> ／ <a href="/compliance/rules">規則</a> ／ {% if id.is_some() %}編輯{% else %}新增{% endif %}</div><h1>{% if id.is_some() %}編輯{% else %}新增{% endif %}規則：{{ kind_label }}</h1></div></div>
+<div class="page-head"><div><div class="crumb"><a href="/compliance">合規</a> ／ <a href="/compliance/rules">規則</a> ／ {% if id.is_some() %}編輯{% else %}新增{% endif %}</div><h1>{% if id.is_some() %}編輯{% else %}新增{% endif %}規則：{{ kind_label }}{% call m::help_btn("rule-form", "建立規則") %}{% endcall %}</h1></div></div>
 {% if let Some(e) = error %}<div class="notice error">{{ e }}</div>{% endif %}
 <form method="post" action="{% if let Some(i) = id %}/compliance/rules/{{ i }}{% else %}/compliance/rules{% endif %}">
   <input type="hidden" name="csrf" value="{{ nav.csrf }}">
@@ -10,13 +11,12 @@
   <div class="row"><label class="field">嚴重度 <select name="severity">{% for o in severities %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}</select></label>
      <label><input type="checkbox" name="enabled" value="1" {% if enabled %}checked{% endif %}> 啟用</label></div>
 
-  <fieldset><legend>條件</legend>
+  <fieldset><legend>條件{% if kind == "forbidden_software" || kind == "required_software" || kind == "software_allowlist" || kind == "local_admins" %}{% call m::help_btn("rule-pattern", "名稱樣式") %}{% endcall %}{% else if kind == "registry_value" %}{% call m::help_btn("rule-registry", "登錄檔讀取範圍") %}{% endcall %}{% endif %}</legend>
   {% if kind == "forbidden_software" || kind == "required_software" %}
     <label class="field">軟體名稱 <input name="p_name" value="{{ p.name }}" required maxlength="256" size="40" placeholder="*TeamViewer*"></label>
     <label class="field">發行者（選填）<input name="p_publisher" value="{{ p.publisher }}" maxlength="256" size="40"></label>
     <div class="row"><label class="field">{% if kind == "forbidden_software" %}只禁止低於此版本（選填）{% else %}最低版本（選填）{% endif %}
        <input name="p_version" value="{{ p.version }}" maxlength="256"></label></div>
-    <p class="muted"><code>*</code> 代表任意字元，不分大小寫。</p>
   {% else if kind == "software_allowlist" %}
     <div class="row"><label class="field">允許的軟體（每行一筆：<code>名稱樣式 | 發行者樣式</code>，任一邊可留空）
        <textarea name="p_entries" rows="10" cols="70">{{ p.entries }}</textarea></label></div>
@@ -44,7 +44,6 @@
     </select></label>
        <label class="field">期望值 <input name="p_reg_expected" value="{{ p.reg_expected }}" maxlength="256"></label></div>
     <p class="checks"><label><input type="checkbox" name="p_reg_absent_ok" value="1" {% if p.reg_absent_ok %}checked{% endif %}> 未設定時視為符合</label></p>
-    <p class="muted">只能讀取 HKLM，不能讀取 SAM、SECURITY 與自動登入密碼；值名稱留空代表機碼的預設值。大於等於／小於等於的期望值必須是數字（可用 0x 十六進位）；存在／不存在不需要期望值。</p>
   {% else if kind == "service_state" %}
     <label class="field">服務名稱 <input name="p_svc_name" value="{{ p.svc_name }}" required maxlength="256" placeholder="RemoteRegistry"></label>
     <p class="checks"><label><input type="radio" name="p_svc_require" value="disabled" {% if p.svc_require != "running" %}checked{% endif %}> 必須停用</label>
@@ -79,7 +78,7 @@
   {% else if kind == "local_admins" %}
     <div class="row"><label class="field">允許的 Administrators 成員
        <textarea name="p_admins_allowed" rows="8" cols="60">{{ p.admins_allowed }}</textarea></label></div>
-    <p class="muted">每行一個，<code>*</code> 代表任意字元，不分大小寫，例如 <code>*\Administrator</code>、<code>CORP\Domain Admins</code>。以 <code>S-1-</code> 或 <code>*-</code> 開頭的比對 SID，例如 <code>*-500</code> 是內建 Administrator（改名後也認得）。清單外的成員算違規。</p>
+    <p class="muted">每行一個；清單外的成員算違規。</p>
   {% endif %}
   </fieldset>
 
@@ -97,5 +96,27 @@
   <input type="hidden" name="csrf" value="{{ nav.csrf }}">
   <button class="btn danger">刪除規則（一併刪除其違規與豁免，歷程保留）</button>
 </form>
+{% endif %}
+{% call m::help_box("rule-form", "建立規則") %}
+<p>儲存前可以按「預覽命中台數」，先看會有幾台違規。</p>
+<p>停用的規則不會出現在合規總覽。刪除規則會一併刪除它的違規與豁免，歷程保留。</p>
+<p>範圍都不勾＝全部裝置；可限定或排除群組，排除優先。</p>
+{% endcall %}
+{% if kind == "forbidden_software" || kind == "required_software" || kind == "software_allowlist" || kind == "local_admins" %}{% call m::help_box("rule-pattern", "名稱樣式") %}
+<ul>
+<li><code>*</code> 代表任意字元，不分大小寫，例如 <code>*TeamViewer*</code>。</li>
+<li>軟體規則比對「程式和功能」清單的名稱與發行者。版本逐段比較，所以 <code>10.0.9</code> 小於 <code>10.0.10</code>。</li>
+<li>本機管理員規則：以 <code>S-1-</code> 或 <code>*-</code> 開頭的樣式比對 SID，例如 <code>*-500</code> 是內建 Administrator（改名後也認得）；也可以寫 <code>*\Administrator</code>、<code>CORP\Domain Admins</code>。</li>
+</ul>
+{% endcall %}
+{% endif %}
+{% if kind == "registry_value" %}{% call m::help_box("rule-registry", "登錄檔讀取範圍") %}
+<ul>
+<li>只能讀 HKLM；SAM、SECURITY 子樹與 Winlogon 的自動登入密碼一律拒絕。</li>
+<li>值名稱留空代表機碼的預設值。</li>
+<li>大於等於／小於等於的期望值必須是數字（可用 0x 十六進位）；存在／不存在不需要期望值。</li>
+<li>所有啟用中的登錄檔規則加起來，最多讀取 1000 個不同的值（預設）。</li>
+</ul>
+{% endcall %}
 {% endif %}
 {% endblock %}

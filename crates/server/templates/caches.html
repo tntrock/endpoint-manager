@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m %}
 {% block content %}
-<div class="page-head"><div><h1>據點與快取</h1></div></div>
+<div class="page-head"><div><h1>據點與快取{% call m::help_btn("sites", "據點與快取") %}{% endcall %}</h1></div></div>
 {% call m::sites_tabs("caches") %}{% endcall %}
 {% if let Some(t) = new_token %}
 <div class="notice ok">
@@ -62,4 +62,13 @@
     {% else %}<span class="tag off">{{ t.state }}</span>{% endif %}</td></tr>
   {% endfor %}
 </table>
+{% call m::help_box("sites", "據點與快取") %}
+<ul>
+<li>端點報到時，依回報的本機 IP 對應據點；網段重疊時，前綴最長的優先。</li>
+<li>有快取的據點，端點改向快取下載派送套件；報到仍直接連中央。</li>
+<li>快取每 60 秒向中央報到，並預先下載進行中派送用到的套件；端點要的套件不在快取時，會立即向中央取得。</li>
+<li>裝置數依每台最後回報的 IP 計算；網段重疊時兩個據點都會計入。</li>
+</ul>
+<p>設定步驟：建立據點 → 在「快取」分頁建立快取註冊金鑰 → 在快取主機執行 <code>endpoint-cache enroll</code> → 回到「快取」分頁核准並指定據點。</p>
+{% endcall %}
 {% endblock %}

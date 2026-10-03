@@ -1,6 +1,7 @@
 {% extends "base.html" %}
+{% import "_macros.html" as m %}
 {% block content %}
-<div class="page-head"><div><div class="crumb"><a href="/deployments">派送</a> ／ 建立</div><h1>建立派送</h1></div></div>
+<div class="page-head"><div><div class="crumb"><a href="/deployments">派送</a> ／ 建立</div><h1>建立派送{% call m::help_btn("deploy", "派送如何運作") %}{% endcall %}</h1></div></div>
 {% if let Some(e) = error %}<div class="notice error">{{ e }}</div>{% endif %}
 {% if packages.is_empty() %}<div class="notice error">還沒有套件，請先<a href="/packages/upload">上傳套件</a>。</div>{% endif %}
 <form class="card" method="post" action="/deployments">
@@ -14,12 +15,20 @@
     <p class="checks">只派送給：{% for g in include %}<label><input type="checkbox" name="include" value="{{ g.value }}" {% if g.selected %}checked{% endif %}> {{ g.label }}</label> {% endfor %}</p>
     <p class="checks">排除：{% for g in exclude %}<label><input type="checkbox" name="exclude" value="{{ g.value }}" {% if g.selected %}checked{% endif %}> {{ g.label }}</label> {% endfor %}</p>
   </fieldset>
-  <fieldset><legend>分階段發布</legend>
+  <fieldset><legend>分階段發布{% call m::help_btn("autopause", "試點與自動暫停") %}{% endcall %}</legend>
     <label class="field">試點群組 <select name="pilot_group_id">{% for o in groups %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}</select></label>
-    <p class="muted">有設定時先只派送給試點群組，確認沒問題後在派送頁按「擴大到全部」。</p>
     <div class="row"><label class="field">失敗率超過 <input name="max_failure_pct" type="number" min="1" max="100" value="{{ max_failure_pct }}" required>%</label>
        <label class="field">（至少 <input name="min_samples" type="number" min="1" max="10000" value="{{ min_samples }}" required> 台有結果後）自動暫停</label></div>
   </fieldset>
   <button class="btn primary">建立</button>
 </form>
+{% call m::help_box("deploy", "派送如何運作") %}
+<p>派送是「期望狀態」：範圍內的電腦會一直維持已安裝（或已移除）。新加入範圍的電腦會自動補裝，被使用者移除的軟體會在下次檢查時重新安裝。</p>
+<p>Agent 在報到時取得派送，一次處理一個；失敗後 24 小時再試，同一輪最多 3 次。</p>
+<p>範圍都不勾＝全部裝置；排除優先。</p>
+{% endcall %}
+{% call m::help_box("autopause", "試點與自動暫停") %}
+<p>有設試點群組時，先只派送給試點群組；確認沒問題後，在派送頁按「擴大到全部」。</p>
+<p>失敗率超過門檻、而且至少有指定台數已經有結果時，派送會自動暫停。排除原因後按「重試失敗」，失敗的裝置會重新嘗試，失敗率也會重新計算。</p>
+{% endcall %}
 {% endblock %}

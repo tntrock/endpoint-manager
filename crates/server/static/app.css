@@ -215,6 +215,21 @@ progress { width: 12em; vertical-align: middle; accent-color: var(--accent); }
 .empty .icon { display: block; width: 32px; height: 32px; margin: 0 auto 8px; color: var(--faint); }
 .pager { display: flex; gap: 8px; align-items: center; margin: 0 0 14px; font-size: 12.5px; color: var(--muted); }
 
+/* 「?」說明：瀏覽器內建 popover，點擊開關、Esc 或點外面關閉 */
+.help-btn { display: inline-grid; place-items: center; width: 20px; height: 20px; margin-left: 6px; padding: 0;
+  border-radius: 50%; border: 1px solid var(--line2); background: var(--row); color: var(--muted);
+  font: 700 12px/1 var(--sans); vertical-align: middle; cursor: help; }
+.help-btn:hover { color: var(--accent); border-color: var(--accent); }
+.help-pop { width: min(480px, calc(100vw - 32px)); max-height: calc(100vh - 64px); overflow: auto; margin: auto;
+  padding: 18px 20px; border: 1px solid var(--line2); border-radius: 12px; background: var(--panel);
+  color: var(--text); box-shadow: var(--shadow); font: 400 13.5px/1.65 var(--sans); text-align: left; }
+.help-pop::backdrop { background: rgba(3,6,10,.35); }
+.help-pop h3 { margin: 0 0 10px; color: var(--text); font-size: 15px; letter-spacing: 0; }
+.help-pop p, .help-pop ul { margin: 0 0 8px; }
+.help-pop ul { padding-left: 20px; }
+.help-pop li { margin-bottom: 4px; }
+.help-pop > :last-child { margin-bottom: 0; }
+
 /* 登入頁 */
 .login { display: grid; place-items: center; padding: 24px;
   background-image: var(--glow), linear-gradient(color-mix(in srgb, var(--accent) 6%, transparent) 1px, transparent 1px),
