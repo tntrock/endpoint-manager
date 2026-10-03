@@ -34,7 +34,7 @@
         <select name="site"><option value="">不指定</option>{% if let Some(cur) = c.site_id %}<option value="{{ cur }}" selected>{{ c.site }}</option>{% endif %}{% for o in free_sites %}<option value="{{ o.id }}">{{ o.name }}</option>{% endfor %}</select>
         <button>改據點</button></form>
       {% endif %}
-      <form class="inline" method="post" action="/caches/{{ c.id }}/delete" onsubmit="return confirm('刪除快取？之後要重新註冊才能使用。')"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="danger">刪除</button></form>
+      <form class="inline" method="post" action="/caches/{{ c.id }}/delete" data-confirm="刪除快取？之後要重新註冊才能使用。"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="danger">刪除</button></form>
     </td>
   </tr>
   {% endfor %}

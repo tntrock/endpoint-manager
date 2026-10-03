@@ -254,6 +254,28 @@ pub fn web_router(state: AppState) -> Router {
                 )
             }),
         )
+        .route(
+            "/static/app.js",
+            get(|| async {
+                asset(
+                    include_str!("../../static/app.js"),
+                    "text/javascript; charset=utf-8",
+                )
+            }),
+        )
+        .route(
+            "/static/theme.js",
+            get(|| async {
+                asset(
+                    include_str!("../../static/theme.js"),
+                    "text/javascript; charset=utf-8",
+                )
+            }),
+        )
+        .route(
+            "/static/icons.svg",
+            get(|| async { asset(include_str!("../../static/icons.svg"), "image/svg+xml") }),
+        )
         .layer(middleware::from_fn(security_headers))
         .with_state(state)
 }
@@ -266,5 +288,35 @@ mod tests {
     fn escaping_helpers() {
         assert_eq!(escape_like("50%_off\\"), "%50\\%\\_off\\\\%");
         assert_eq!(enc("Google Chrome&x"), "Google%20Chrome%26x");
+    }
+
+    /// CSP 不允許 inline style、inline script 與事件屬性：寫了也不會生效
+    #[test]
+    fn templates_have_no_inline_code() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/templates");
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            let html = std::fs::read_to_string(&path).unwrap().to_lowercase();
+            let name = path.display();
+            assert!(
+                !html.contains("style=") && !html.contains("<style"),
+                "{name}: inline style"
+            );
+            for (i, _) in html.match_indices("<script") {
+                let tag = html[i..].split('>').next().unwrap();
+                assert!(tag.contains(" src="), "{name}: inline script");
+            }
+            for (i, _) in html.match_indices(" on") {
+                let rest = &html[i + 1..];
+                let attr: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphabetic())
+                    .collect();
+                assert!(
+                    !(attr.len() > 2 && rest[attr.len()..].starts_with('=')),
+                    "{name}: 事件屬性 {attr}"
+                );
+            }
+        }
     }
 }

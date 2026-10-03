@@ -2,10 +2,10 @@
 <div class="actions">
   <form method="post" action="/devices/{{ device }}/commands"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><input type="hidden" name="action" value="collect"><button>重新收集</button></form>
   <form method="post" action="/devices/{{ device }}/commands"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><input type="hidden" name="action" value="apply"><button>立即套用</button></form>
-  <form method="post" action="/devices/{{ device }}/commands" onsubmit="return confirm('確定要重新開機這台電腦？使用者會收到通知。')"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><input type="hidden" name="action" value="reboot"><label>延遲 <input name="delay_minutes" value="10" size="2" inputmode="numeric"> 分鐘</label> <button>重新開機</button></form>
-  <form method="post" action="/devices/{{ device }}/commands" onsubmit="return confirm('確定要關閉這台電腦？使用者會收到通知。')"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><input type="hidden" name="action" value="shutdown"><label>延遲 <input name="delay_minutes" value="10" size="2" inputmode="numeric"> 分鐘</label> <button>關機</button></form>
+  <form method="post" action="/devices/{{ device }}/commands" data-confirm="確定要重新開機這台電腦？使用者會收到通知。"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><input type="hidden" name="action" value="reboot"><label>延遲 <input name="delay_minutes" value="10" size="2" inputmode="numeric"> 分鐘</label> <button>重新開機</button></form>
+  <form method="post" action="/devices/{{ device }}/commands" data-confirm="確定要關閉這台電腦？使用者會收到通知。"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><input type="hidden" name="action" value="shutdown"><label>延遲 <input name="delay_minutes" value="10" size="2" inputmode="numeric"> 分鐘</label> <button>關機</button></form>
   {% if nav.platform %}
-  <form method="post" action="/devices/{{ device }}/commands" onsubmit="return confirm('確定要在這台電腦以 SYSTEM 執行腳本？')"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><input type="hidden" name="action" value="script">
+  <form method="post" action="/devices/{{ device }}/commands" data-confirm="確定要在這台電腦以 SYSTEM 執行腳本？"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><input type="hidden" name="action" value="script">
     <select name="script_id">{% for sc in scripts %}<option value="{{ sc.value }}">{{ sc.label }}</option>{% endfor %}</select> <button>執行腳本</button></form>
   {% endif %}
 </div>

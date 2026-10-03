@@ -11,7 +11,7 @@
   <tr><th>狀態</th><td>{% if canceled %}已取消{% else %}等待中 {{ run.counts.waiting }} 台{% endif %}</td></tr>
 </table>
 {% if can_cancel %}
-<form method="post" action="/commands/{{ run.id }}/cancel" onsubmit="return confirm('取消後還沒執行的裝置不會再執行；已在執行的無法中止。確定取消？')"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="danger">取消</button></form>
+<form method="post" action="/commands/{{ run.id }}/cancel" data-confirm="取消後還沒執行的裝置不會再執行；已在執行的無法中止。確定取消？"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="danger">取消</button></form>
 {% endif %}
 <p>{% for f in filters %}{% if f.active %}<strong>{{ f.label }}</strong>{% else %}<a href="{{ f.url }}">{{ f.label }}</a>{% endif %}　{% endfor %}</p>
 <table>

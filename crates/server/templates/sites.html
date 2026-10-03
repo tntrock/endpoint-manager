@@ -15,7 +15,7 @@
     <td>{{ r.disk_gb }} GB</td>
     <td class="num">{{ r.devices }}</td>
     <td><a href="/sites/{{ r.id }}/edit">編輯</a>
-      <form class="inline" method="post" action="/sites/{{ r.id }}/delete" onsubmit="return confirm('刪除據點？這個據點的端點會改向中央下載。')"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="danger">刪除</button></form></td>
+      <form class="inline" method="post" action="/sites/{{ r.id }}/delete" data-confirm="刪除據點？這個據點的端點會改向中央下載。"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="danger">刪除</button></form></td>
   </tr>
   {% endfor %}
 </table>

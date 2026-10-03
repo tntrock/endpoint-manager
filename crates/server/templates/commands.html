@@ -4,7 +4,7 @@
 {% if nav.platform %}<p><a href="/scripts">腳本</a></p>{% endif %}
 {% if let Some(e) = error %}<p class="error">{{ e }}</p>{% endif %}
 {% if nav.manage %}
-<form method="post" action="/commands">
+<form method="post" action="/commands" data-confirm="確定要對整個群組執行？" data-confirm-skip="collect apply">
   <input type="hidden" name="csrf" value="{{ nav.csrf }}">
   <fieldset><legend>對群組下指令（群組內目前使用中的裝置）</legend>
     <p><label>動作 <select name="action">
@@ -19,7 +19,7 @@
     {% if nav.platform %}<p><label>腳本 <select name="script_id"><option value="">（執行腳本時選擇）</option>{% for sc in scripts %}<option value="{{ sc.value }}">{{ sc.label }}</option>{% endfor %}</select></label></p>{% endif %}
     <p><label>過期 <select name="expires_hours">{% for e in expires %}<option value="{{ e.0 }}" {% if e.0 == 168 %}selected{% endif %}>{{ e.1 }}</option>{% endfor %}</select></label>
        <span class="muted">裝置在下次報到時收到；過期前沒報到的不會執行。</span></p>
-    <p><button onclick="return ['collect', 'apply'].includes(this.form.elements['action'].value) || confirm('確定要對整個群組執行？')">送出</button></p>
+    <p><button>送出</button></p>
   </fieldset>
 </form>
 {% endif %}

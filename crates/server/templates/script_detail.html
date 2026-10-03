@@ -18,7 +18,7 @@
   <form method="get" action="/scripts/{{ id }}/edit"><button>編輯</button></form>
   {% if status == "disabled" %}<form method="post" action="/scripts/{{ id }}/enable"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button>啟用</button></form>
   {% else %}<form method="post" action="/scripts/{{ id }}/disable"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button>停用</button></form>{% endif %}
-  {% if used == 0 %}<form method="post" action="/scripts/{{ id }}/delete" onsubmit="return confirm('確定刪除這個腳本？')"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="danger">刪除</button></form>
+  {% if used == 0 %}<form method="post" action="/scripts/{{ id }}/delete" data-confirm="確定刪除這個腳本？"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="danger">刪除</button></form>
   {% else %}<span class="muted">已被指令使用，只能停用。</span>{% endif %}
 </div>
 <h2>內容</h2>

@@ -8,7 +8,7 @@
   <p><label>名稱 <input name="name" value="{{ f.name }}" required maxlength="100" size="40"></label></p>
   <p><label>說明<br><textarea name="description" rows="3" cols="80" maxlength="1000">
 {{ f.description }}</textarea></label></p>
-  <p><label>內容（PowerShell，以 SYSTEM 執行，最多 64 KiB）<br><textarea name="content" rows="20" cols="100" style="font-family: monospace" required>
+  <p><label>內容（PowerShell，以 SYSTEM 執行，最多 64 KiB）<br><textarea name="content" rows="20" cols="100" class="code" required>
 {{ f.content }}</textarea></label></p>
   <p><label>逾時 <input name="timeout_minutes" value="{{ f.timeout_minutes }}" inputmode="numeric" size="4"> 分鐘（1–120）</label></p>
   <p class="muted">改了內容或逾時就要重新核准。腳本可能因 Agent 狀態檔遺失而重跑，請設計成可以重複執行。</p>

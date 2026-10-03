@@ -147,6 +147,21 @@ async fn static_assets_served(pool: PgPool) {
             .unwrap()
             .contains("css")
     );
+    for (path, ty) in [
+        ("/static/app.js", "text/javascript"),
+        ("/static/theme.js", "text/javascript"),
+        ("/static/icons.svg", "image/svg+xml"),
+    ] {
+        let r = c.get(s.web_url(path)).send().await.unwrap();
+        assert_eq!(r.status(), 200, "{path}");
+        assert!(
+            r.headers()["content-type"]
+                .to_str()
+                .unwrap()
+                .starts_with(ty),
+            "{path}"
+        );
+    }
 }
 
 #[sqlx::test(migrations = false)]
