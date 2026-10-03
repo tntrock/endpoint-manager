@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>登入頁與手機版面</title>
+<style>
+:root{--bg:#070b12;--panel:#0e1623;--line:#1b2738;--line2:#243349;--text:#dbe5f3;--muted:#7d8ba1;--faint:#4d5b70;--accent:#3fd0c9;--ok:#46c97a;--bad:#f0646b;--warn:#f2b24c}
+*{box-sizing:border-box}
+body{margin:0;background:#04070c;color:var(--text);font:14px/1.5 "Segoe UI","Microsoft JhengHei UI","Microsoft JhengHei",system-ui,sans-serif;padding:28px}
+h2.t{font-size:13px;letter-spacing:.14em;color:var(--faint);margin:0 0 12px;font-weight:600}
+.wrap{display:grid;grid-template-columns:1fr 330px;gap:28px;align-items:start}
+.num{font-family:"Cascadia Mono",Consolas,monospace}
+/* 登入 */
+.login{height:560px;border-radius:14px;overflow:hidden;border:1px solid var(--line);display:grid;grid-template-columns:1.1fr 1fr;background:var(--bg)}
+.hero{position:relative;padding:36px;background:radial-gradient(500px 340px at 30% 20%,rgba(63,208,201,.18),transparent 70%),radial-gradient(420px 300px at 90% 100%,rgba(143,140,247,.16),transparent 70%),#060a11;overflow:hidden}
+.hero .grid{position:absolute;inset:0;background-image:linear-gradient(rgba(63,208,201,.07) 1px,transparent 1px),linear-gradient(90deg,rgba(63,208,201,.07) 1px,transparent 1px);background-size:32px 32px;mask-image:radial-gradient(circle at 40% 40%,#000 0,transparent 75%)}
+.brand{position:relative;display:flex;gap:10px;align-items:center}
+.logo{width:34px;height:34px;border-radius:10px;background:conic-gradient(from 210deg,var(--accent),#8f8cf7,var(--accent));display:grid;place-items:center;box-shadow:0 0 30px rgba(63,208,201,.45)}
+.logo::after{content:"";width:13px;height:13px;border-radius:3px;background:var(--bg);transform:rotate(45deg)}
+.hero h1{position:relative;font-size:30px;line-height:1.25;margin:120px 0 10px;font-weight:700}
+.hero h1 span{background:linear-gradient(90deg,var(--accent),#8f8cf7);-webkit-background-clip:text;background-clip:text;color:transparent}
+.hero p{position:relative;color:var(--muted);max-width:340px}
+.stats{position:absolute;left:36px;bottom:32px;display:flex;gap:26px;color:var(--muted);font-size:12px}
+.stats b{display:block;font-size:20px;color:var(--text)}
+.form{padding:56px 48px;display:flex;flex-direction:column;justify-content:center;background:var(--panel);border-left:1px solid var(--line)}
+.form h3{margin:0 0 4px;font-size:20px}.form .sub{color:var(--muted);font-size:13px;margin-bottom:26px}
+.f{display:grid;gap:6px;margin-bottom:14px}.f label{font-size:12.5px;color:var(--muted)}
+.inp{background:#0a111b;border:1px solid var(--line2);border-radius:10px;padding:10px 12px;color:var(--text);font:inherit}
+.inp.focus{outline:2px solid var(--accent);outline-offset:1px}
+.btn{margin-top:8px;padding:10px;border-radius:10px;border:0;background:linear-gradient(180deg,#3fd0c9,#27a49e);color:#04221f;font:inherit;font-weight:700;box-shadow:0 8px 24px -8px rgba(63,208,201,.7)}
+.err{display:flex;gap:8px;font-size:12.5px;color:#ff9aa0;background:rgba(240,100,107,.1);border:1px solid rgba(240,100,107,.3);padding:8px 10px;border-radius:9px;margin-bottom:14px}
+.foot{margin-top:22px;font-size:11.5px;color:var(--faint)}
+/* 手機 */
+.phone{width:330px;height:640px;border-radius:34px;border:10px solid #1a2230;background:var(--bg);overflow:hidden;position:relative;box-shadow:0 30px 60px -20px #000}
+.ptop{display:flex;align-items:center;gap:10px;padding:14px 14px 10px;border-bottom:1px solid var(--line)}
+.burger{width:32px;height:32px;border-radius:9px;border:1px solid var(--line2);display:grid;place-items:center}
+.burger i,.burger i::before,.burger i::after{display:block;width:14px;height:2px;background:var(--text);border-radius:2px;position:relative}
+.burger i::before,.burger i::after{content:"";position:absolute}.burger i::before{top:-5px}.burger i::after{top:5px}
+.psearch{flex:1;background:var(--panel);border:1px solid var(--line2);border-radius:9px;padding:6px 10px;color:var(--faint);font-size:12.5px}
+.pbody{padding:14px}
+.pk{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px}
+.card .l{font-size:11.5px;color:var(--muted)}.card .v{font-size:24px;font-weight:600}
+.item{display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid var(--line);font-size:13px}
+.item:first-of-type{border-top:0}
+.bar{width:4px;align-self:stretch;border-radius:3px}
+.drawer{position:absolute;inset:0;background:rgba(3,6,10,.6);backdrop-filter:blur(2px)}
+.drawer .panel{position:absolute;left:0;top:0;bottom:0;width:230px;background:#0a1019;border-right:1px solid var(--line);padding:16px 12px}
+.drawer .g{font-size:10.5px;color:var(--faint);letter-spacing:.12em;margin:12px 8px 4px}
+.drawer a{display:block;padding:7px 10px;border-radius:8px;color:var(--muted);font-size:13px;text-decoration:none}
+.drawer a.on{background:rgba(63,208,201,.14);color:#e9fbfa}
+.phones{display:flex;gap:18px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div>
+    <h2 class="t">登入頁（桌面）</h2>
+    <div class="login">
+      <div class="hero"><div class="grid"></div>
+        <div class="brand"><div class="logo"></div><b style="font-size:16px">Endpoint Manager</b></div>
+        <h1>每一台電腦的狀態，<br><span>一眼看清楚。</span></h1>
+        <p>盤點、合規、派送、Windows Update 與遠端指令，集中在同一個地方。</p>
+        <div class="stats"><div><b class="num">40</b>受管裝置</div><div><b class="num">3</b>據點</div><div><b class="num">0.7.1</b>版本</div></div>
+      </div>
+      <div class="form">
+        <h3>登入</h3><div class="sub">使用管理員帳號登入</div>
+        <div class="err">⚠ 帳號或密碼錯誤</div>
+        <div class="f"><label>帳號</label><div class="inp">demo</div></div>
+        <div class="f"><label>密碼</label><div class="inp focus">••••••••••••••</div></div>
+        <button class="btn">登入</button>
+        <div class="foot">連續失敗多次會暫時鎖定帳號。忘記密碼請聯絡平台管理員。</div>
+      </div>
+    </div>
+    <p style="color:var(--faint);font-size:12px;margin-top:8px">左半邊的數字只在已登入過的伺服器才有意義——正式版會拿掉數字，改放產品說明，避免未登入的人看到內部資訊。</p>
+  </div>
+  <div>
+    <h2 class="t">手機（儀表板／展開選單）</h2>
+    <div class="phones">
+      <div class="phone">
+        <div class="ptop"><div class="burger"><i></i></div><div class="psearch">搜尋主機、使用者、IP</div></div>
+        <div class="pbody">
+          <div class="pk"><div class="card"><div class="l">在線</div><div class="v num" style="color:var(--ok)">35<span style="font-size:13px;color:var(--muted)"> /40</span></div></div><div class="card"><div class="l">待處理風險</div><div class="v num" style="color:#ff9aa0">22</div></div></div>
+          <div class="card"><div style="font-weight:600;margin-bottom:6px">需要處理</div>
+            <div class="item"><span class="bar" style="background:var(--bad)"></span>禁止軟體 uTorrent<b class="num" style="margin-left:auto">4</b></div>
+            <div class="item"><span class="bar" style="background:var(--bad)"></span>缺少 KB5044285<b class="num" style="margin-left:auto">7</b></div>
+            <div class="item"><span class="bar" style="background:var(--warn)"></span>BitLocker 未保護<b class="num" style="margin-left:auto">8</b></div>
+          </div>
+        </div>
+        <div class="drawer"><div class="panel">
+          <div style="display:flex;gap:8px;align-items:center;margin:0 6px 8px"><div class="logo" style="width:24px;height:24px;border-radius:7px"></div><b>Endpoint</b></div>
+          <a class="on" href="#">總覽</a><div class="g">資產</div><a href="#">裝置</a><a href="#">軟體</a><a href="#">登錄檔</a>
+          <div class="g">安全與合規</div><a href="#">合規</a><a href="#">Windows Update</a><div class="g">作業</div><a href="#">派送</a><a href="#">遠端指令</a>
+        </div></div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>
