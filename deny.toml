@@ -1,6 +1,10 @@
 [advisories]
 version = 2
 yanked = "deny"
+ignore = [
+    # basic-toml unmaintained; only used at compile time by askama_derive (latest askama 0.16.1). Drop once askama switches to toml.
+    { id = "RUSTSEC-2026-0374", reason = "compile-time only via askama_derive, no upgrade available" },
+]
 
 [licenses]
 version = 2
