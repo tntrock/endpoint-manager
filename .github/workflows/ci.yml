@@ -19,7 +19,7 @@ jobs:
     env:
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy, llvm-tools-preview
@@ -36,13 +36,13 @@ jobs:
   deny:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: EmbarkStudios/cargo-deny-action@v2
 
   agent-windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p endpoint-agent --lib --test windows
@@ -51,7 +51,7 @@ jobs:
   msi:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: dotnet tool install --global wix --version 5.0.2
@@ -66,7 +66,7 @@ jobs:
           ./target/release/endpoint-server.exe agent-msi target/template.msi target/a.msi https://localhost:9 ci-secret-token-8f3a
           ./target/release/endpoint-server.exe agent-msi target/template.msi target/b.msi https://localhost:10 ci-second-token-2c7e
           ./installer/test-msi.ps1 -Msi target/a.msi -Msi2 target/b.msi -UpgradeMsi target/upgrade.msi -Token ci-secret-token-8f3a -Token2 ci-second-token-2c7e -RootPem target/ci-pki/root.pem
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: agent-msi
           path: |
@@ -74,7 +74,7 @@ jobs:
             target/release/endpoint-agent.exe
             target/release/endpoint-cache.exe
       - if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: msi-logs
           path: "*.log"
@@ -82,6 +82,6 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: bash deploy/smoke.sh
       - run: docker build -f deploy/cache.Dockerfile -t endpoint-cache .
