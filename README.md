@@ -1,5 +1,12 @@
 # Endpoint Manager
 
+[![CI](https://github.com/tntrock/endpoint-manager/actions/workflows/ci.yml/badge.svg)](https://github.com/tntrock/endpoint-manager/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/tntrock/endpoint-manager/graph/badge.svg)](https://codecov.io/gh/tntrock/endpoint-manager)
+[![CodeQL](https://github.com/tntrock/endpoint-manager/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/tntrock/endpoint-manager/security/code-scanning)
+[![Audit](https://github.com/tntrock/endpoint-manager/actions/workflows/audit.yml/badge.svg)](https://github.com/tntrock/endpoint-manager/actions/workflows/audit.yml)
+[![Release](https://img.shields.io/github/v/release/tntrock/endpoint-manager)](https://github.com/tntrock/endpoint-manager/releases/latest)
+[![License: GPL-3.0](https://img.shields.io/github/license/tntrock/endpoint-manager)](LICENSE)
+
 企業 Windows 端點管理工具：資產盤點、合規檢查、軟體派送、Windows Update 控制、遠端指令，並可在分點放快取主機節省 WAN 頻寬。
 
 授權：GPL-3.0-only
