@@ -7,9 +7,6 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      code-quality: write
     services:
       postgres:
         image: postgres:17
@@ -31,12 +28,10 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - uses: taiki-e/install-action@cargo-llvm-cov
       - run: cargo llvm-cov --workspace --cobertura --output-path coverage.xml
-      - uses: actions/upload-code-coverage@v1
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+      - uses: codecov/codecov-action@v7
         with:
-          file: coverage.xml
-          language: Rust
-          label: code-coverage/llvm-cov
+          files: coverage.xml
+          token: ${{ secrets.CODECOV_TOKEN }}
 
   deny:
     runs-on: ubuntu-latest
