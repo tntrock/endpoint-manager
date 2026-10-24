@@ -654,3 +654,88 @@ async fn daily_snapshot_includes_rules_without_violations(pool: PgPool) {
     .unwrap();
     assert_eq!(row, Some((0, 0, 0)));
 }
+
+async fn make_linux(s: &TestServer, a: &TestAgent) {
+    sqlx::query("UPDATE devices SET os_family = 'linux' WHERE id = $1")
+        .bind(a.device_id)
+        .execute(&s.pool)
+        .await
+        .unwrap();
+}
+
+#[sqlx::test(migrations = false)]
+async fn linux_device_has_no_violations(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(2).await;
+    let win = s.enroll_ok(&tok, None, None).await;
+    let lin = s.enroll_ok(&tok, None, None).await;
+    for a in [&win, &lin] {
+        put(&s, a, InventoryPayload::Patches(vec![])).await;
+    }
+    make_linux(&s, &lin).await;
+    let id = admin::create_rule(&s.pool, &kb_rule("KB5031455"), "admin")
+        .await
+        .unwrap();
+    worker::recompute_all(&s.pool).await.unwrap();
+    assert_eq!(violations(&s, &win).await, vec![(id, "violating".into())]);
+    assert!(violations(&s, &lin).await.is_empty());
+
+    let today = chrono::Utc::now().date_naive();
+    worker::snapshot_daily(&s.pool, today).await.unwrap();
+    let violating: i32 = sqlx::query_scalar(
+        "SELECT violating FROM compliance_daily WHERE day = $1 AND rule_id = $2",
+    )
+    .bind(today)
+    .bind(id)
+    .fetch_one(&s.pool)
+    .await
+    .unwrap();
+    assert_eq!(violating, 1);
+}
+
+#[sqlx::test(migrations = false)]
+async fn device_switching_to_linux_clears_violations(pool: PgPool) {
+    let (s, a) = setup(pool).await;
+    put(&s, &a, InventoryPayload::Patches(vec![])).await;
+    admin::create_rule(&s.pool, &kb_rule("KB5031455"), "admin")
+        .await
+        .unwrap();
+    worker::recompute_all(&s.pool).await.unwrap();
+    assert_eq!(violations(&s, &a).await.len(), 1);
+
+    make_linux(&s, &a).await;
+    bump(&s).await;
+    worker::recompute_all(&s.pool).await.unwrap();
+    assert!(violations(&s, &a).await.is_empty());
+    // 歷程結尾與裝置停用／除役相同：violating -> none
+    assert_eq!(events(&s, &a).await.last().unwrap().1, "none");
+}
+
+#[sqlx::test(migrations = false)]
+async fn preview_skips_linux(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(2).await;
+    let win = s.enroll_ok(&tok, None, None).await;
+    let lin = s.enroll_ok(&tok, None, None).await;
+    for a in [&win, &lin] {
+        put(&s, a, InventoryPayload::Patches(vec![])).await;
+    }
+    make_linux(&s, &lin).await;
+    let rule = endpoint_server::compliance::rules::Rule {
+        id: 0,
+        name: "p".into(),
+        severity: endpoint_server::compliance::rules::Severity::High,
+        include: vec![],
+        exclude: vec![],
+        check: Ok(endpoint_server::compliance::rules::Params::parse(
+            "required_kb",
+            &serde_json::json!({"kb": "KB5031455"}),
+        )
+        .unwrap()
+        .compile()),
+    };
+    let c = endpoint_server::compliance::preview::preview(&s.pool, rule)
+        .await
+        .unwrap();
+    assert_eq!((c.violating, c.unknown, c.devices), (1, 0, 1));
+}
