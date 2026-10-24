@@ -266,8 +266,18 @@ pub async fn load_payload(
                     .collect(),
             )
         }
-        // 計畫 27 Task 3 會實作
-        Section::Accounts => return Ok(None),
+        Section::Accounts => {
+            let data: serde_json::Value =
+                sqlx::query_scalar("SELECT data FROM device_accounts WHERE device_id = $1")
+                    .bind(device_id)
+                    .fetch_one(&mut *conn)
+                    .await?;
+            // 手動改壞的 jsonb 讀不回來時當成沒有資料，不讓整個讀取失敗
+            match serde_json::from_value(data) {
+                Ok(a) => InventoryPayload::Accounts(a),
+                Err(_) => return Ok(None),
+            }
+        }
         Section::Basic => {
             let (hostname, domain, is_domain_joined, os_caption, os_build, os_ubr): BasicRow =
                 sqlx::query_as(
@@ -387,8 +397,15 @@ async fn write_payload(
             .execute(&mut *conn)
             .await?;
         }
-        // 計畫 27 Task 3 會實作：目前接受上傳但不儲存
-        InventoryPayload::Accounts(_) => {}
+        InventoryPayload::Accounts(a) => {
+            sqlx::query(
+                "INSERT INTO device_accounts (device_id, data) VALUES ($1, $2::jsonb) \n                 ON CONFLICT (device_id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()",
+            )
+            .bind(device_id)
+            .bind(json(a))
+            .execute(&mut *conn)
+            .await?;
+        }
         InventoryPayload::Registry(v) => {
             // 只寫入有變動的值（每台可能有上千個值，大多數上傳都沒變）：
             // 刪掉不在新清單的值，新增或更新有差異的值，相同的值不產生寫入

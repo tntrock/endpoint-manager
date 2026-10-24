@@ -9,6 +9,7 @@
 //! | services | name                       | `start_mode\|binary_path`     | state        |
 //! | security | `firewall.*`、`bitlocker:<磁碟>`、`defender.*`、`password.*`、`admin:<名稱>`；收集失敗時為項目名 | 值；失敗時 `error: <訊息>` | 病毒碼時間只到日 |
 //! | registry | `<路徑>\<名稱>`             | `state\|kind\|data`            | —            |
+//! | accounts | `user\|<名稱>`、`count\|system_users`、`priv\|<主體>\|<user/group>\|<來源>`、`unparsed\|<行>` | user：`uid\|shell\|locked\|password_changed`；數量；其餘為空 | 系統帳號只記數量 |
 
 use std::collections::BTreeMap;
 
@@ -146,8 +147,36 @@ pub fn items_of(p: &InventoryPayload) -> BTreeMap<String, String> {
                 ));
             }
         }
-        // 計畫 27 Task 3 會實作
-        InventoryPayload::Accounts(_) => {}
+        InventoryPayload::Accounts(a) => {
+            for u in &a.users {
+                let locked = u.locked.map(|l| l.to_string()).unwrap_or_default();
+                let changed = u
+                    .password_changed
+                    .map(|d| d.to_string())
+                    .unwrap_or_default();
+                pairs.push((
+                    format!("user|{}", u.name),
+                    format!("{}|{}|{}|{}", u.uid, u.shell, locked, changed),
+                ));
+            }
+            // 系統帳號只記數量（不列出），數量變動也算一筆變更
+            pairs.push(("count|system_users".into(), a.system_user_count.to_string()));
+            for p in &a.privileged {
+                let kind = serde_json::to_value(p.kind).expect("serializable");
+                pairs.push((
+                    format!(
+                        "priv|{}|{}|{}",
+                        p.principal,
+                        kind.as_str().unwrap_or(""),
+                        p.source
+                    ),
+                    String::new(),
+                ));
+            }
+            for l in &a.sudoers_unparsed {
+                pairs.push((format!("unparsed|{l}"), String::new()));
+            }
+        }
     }
     let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (k, v) in pairs {
@@ -333,5 +362,31 @@ mod tests {
         let a = items_of(&InventoryPayload::Services(vec![svc("Running")]));
         let b = items_of(&InventoryPayload::Services(vec![svc("Stopped")]));
         assert!(diff(&a, &b).is_empty());
+    }
+
+    #[test]
+    fn accounts_items_are_keyed() {
+        use protocol::{AccountsInfo, LocalUser, PrincipalKind, PrivilegeEntry};
+        let p = InventoryPayload::Accounts(AccountsInfo {
+            users: vec![LocalUser {
+                name: "alice".into(),
+                uid: 1000,
+                shell: "/bin/bash".into(),
+                locked: Some(false),
+                password_changed: chrono::NaiveDate::from_ymd_opt(2026, 1, 2),
+            }],
+            system_user_count: 30,
+            privileged: vec![PrivilegeEntry {
+                principal: "admin".into(),
+                kind: PrincipalKind::Group,
+                source: "/etc/sudoers".into(),
+            }],
+            sudoers_unparsed: vec!["Defaults !x".into()],
+        });
+        let m = items_of(&p);
+        assert_eq!(m["user|alice"], "1000|/bin/bash|false|2026-01-02");
+        assert_eq!(m["priv|admin|group|/etc/sudoers"], "");
+        assert_eq!(m["unparsed|Defaults !x"], "");
+        assert_eq!(m["count|system_users"], "30");
     }
 }
