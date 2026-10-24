@@ -52,11 +52,37 @@ impl CommandAction {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ScriptLanguage {
+    #[default]
+    PowerShell,
+    Sh,
+}
+
+impl ScriptLanguage {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ScriptLanguage::PowerShell => "powershell",
+            ScriptLanguage::Sh => "sh",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<ScriptLanguage> {
+        [ScriptLanguage::PowerShell, ScriptLanguage::Sh]
+            .into_iter()
+            .find(|l| l.as_str() == s)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScriptSpec {
     pub sha256: String,
     pub content: String,
     pub timeout_minutes: u32,
+    /// 舊版伺服器沒有：預設 PowerShell
+    #[serde(default)]
+    pub language: ScriptLanguage,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -164,6 +190,17 @@ pub fn strip_format_chars(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn script_spec_without_language_is_powershell() {
+        let s: ScriptSpec = serde_json::from_value(
+            serde_json::json!({"sha256": "x", "content": "x", "timeout_minutes": 5}),
+        )
+        .unwrap();
+        assert_eq!(s.language, ScriptLanguage::PowerShell);
+        assert_eq!(ScriptLanguage::parse("sh"), Some(ScriptLanguage::Sh));
+        assert_eq!(serde_json::to_value(ScriptLanguage::Sh).unwrap(), "sh");
+    }
 
     #[test]
     fn format_chars_are_stripped() {

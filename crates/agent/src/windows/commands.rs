@@ -41,7 +41,7 @@ pub fn script_args(path: &Path) -> String {
 
 impl CommandHost for WindowsHost {
     async fn collect_all(&self) {
-        for s in Section::ALL {
+        for s in Section::WINDOWS {
             // 等待送出：佇列滿時不丟掉區段；通道關閉（Agent 正在停止）時略過
             if self.triggers.send(s).await.is_err() {
                 return;

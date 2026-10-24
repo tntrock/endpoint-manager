@@ -395,6 +395,7 @@ async fn checkin(s: &TestServer, a: &common::TestAgent) -> protocol::CheckinResp
     s.client(Some(a))
         .post(s.url("/v1/checkin"))
         .json(&protocol::CheckinRequest {
+            os_family: None,
             schema_version: protocol::SCHEMA_VERSION,
             agent_version: "0.4.0".into(),
             boot_time: chrono::Utc::now(),

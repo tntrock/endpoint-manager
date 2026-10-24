@@ -90,6 +90,7 @@ async fn client_maps_status_codes(pool: PgPool) {
     let c = ServerClient::new(&e.url(), &e.root_pem(), None).unwrap();
 
     let checkin = CheckinRequest {
+        os_family: None,
         schema_version: SCHEMA_VERSION,
         agent_version: "t".into(),
         boot_time: chrono::Utc::now(),
@@ -104,6 +105,7 @@ async fn client_maps_status_codes(pool: PgPool) {
     ));
 
     let enroll = |token: &str, csr: String| EnrollRequest {
+        os_family: None,
         schema_version: SCHEMA_VERSION,
         enroll_token: token.into(),
         csr_pem: csr,
@@ -300,6 +302,7 @@ impl Collector for Fake {
                 }]),
             }),
             Section::Registry => anyhow::bail!("registry is collected via collect_registry"),
+            Section::Accounts => anyhow::bail!("accounts is Linux only"),
         })
     }
 }
@@ -696,6 +699,7 @@ mod deploy {
     async fn spec(c: &ServerClient) -> PackageSpec {
         let r = c
             .checkin(&CheckinRequest {
+                os_family: None,
                 schema_version: SCHEMA_VERSION,
                 agent_version: "t".into(),
                 boot_time: chrono::Utc::now(),
@@ -821,6 +825,7 @@ mod deploy {
 
     async fn assignments(c: &ServerClient) -> Vec<protocol::deploy::Assignment> {
         c.checkin(&CheckinRequest {
+            os_family: None,
             schema_version: SCHEMA_VERSION,
             agent_version: "t".into(),
             boot_time: chrono::Utc::now(),
@@ -1575,6 +1580,7 @@ mod deploy {
         let c = ServerClient::new(&e.url(), &e.root_pem(), None).unwrap();
         let r = c
             .enroll(&EnrollRequest {
+                os_family: None,
                 schema_version: SCHEMA_VERSION,
                 enroll_token: token,
                 csr_pem: csr,

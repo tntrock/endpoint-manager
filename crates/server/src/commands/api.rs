@@ -4,7 +4,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use protocol::command::{
-    Command, CommandAction, CommandResult, MAX_COMMANDS_PER_CHECKIN, ScriptSpec,
+    Command, CommandAction, CommandResult, MAX_COMMANDS_PER_CHECKIN, ScriptLanguage, ScriptSpec,
 };
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -69,6 +69,8 @@ pub async fn pending_for(pool: &PgPool, device: Uuid) -> Result<Vec<Command>, sq
                         sha256,
                         content,
                         timeout_minutes: timeout.and_then(|t| u32::try_from(t).ok()).unwrap_or(30),
+                        // 計畫 27 Task 6 改讀資料庫的值
+                        language: ScriptLanguage::default(),
                     }),
                     _ => None,
                 },

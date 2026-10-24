@@ -190,7 +190,10 @@ fn collector_reports_this_machine() {
     assert!(hb.boot_time < chrono::Utc::now());
 
     // Registry 不經 collect（走 collect_registry）
-    for s in Section::ALL.into_iter().filter(|s| *s != Section::Registry) {
+    for s in Section::WINDOWS
+        .into_iter()
+        .filter(|s| *s != Section::Registry)
+    {
         let mut p = c.collect(s).unwrap_or_else(|e| panic!("{s:?}: {e:#}"));
         sanitize(&mut p);
         assert_eq!(p.validate(), Ok(()), "{s:?}");
@@ -229,6 +232,7 @@ fn collector_reports_this_machine() {
                 );
             }
             InventoryPayload::Registry(_) => unreachable!("registry 不經 collect"),
+            InventoryPayload::Accounts(_) => unreachable!("Windows 不收集帳號"),
         }
     }
 }

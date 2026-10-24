@@ -266,6 +266,8 @@ pub async fn load_payload(
                     .collect(),
             )
         }
+        // 計畫 27 Task 3 會實作
+        Section::Accounts => return Ok(None),
         Section::Basic => {
             let (hostname, domain, is_domain_joined, os_caption, os_build, os_ubr): BasicRow =
                 sqlx::query_as(
@@ -385,6 +387,8 @@ async fn write_payload(
             .execute(&mut *conn)
             .await?;
         }
+        // 計畫 27 Task 3 會實作：目前接受上傳但不儲存
+        InventoryPayload::Accounts(_) => {}
         InventoryPayload::Registry(v) => {
             // 只寫入有變動的值（每台可能有上千個值，大多數上傳都沒變）：
             // 刪掉不在新清單的值，新增或更新有差異的值，相同的值不產生寫入

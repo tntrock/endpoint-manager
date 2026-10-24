@@ -212,6 +212,7 @@ impl TestServer {
         self.client(None)
             .post(self.url("/v1/enroll"))
             .json(&EnrollRequest {
+                os_family: None,
                 schema_version: SCHEMA_VERSION,
                 enroll_token: token.into(),
                 csr_pem: csr.into(),
