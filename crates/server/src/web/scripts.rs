@@ -21,6 +21,7 @@ use super::devices::db_error;
 use super::{fmt_time, not_found, render};
 use crate::AppState;
 use crate::commands::scripts::{self, ScriptInput, approval_is_independent};
+use protocol::command::ScriptLanguage;
 
 pub fn status_label(status: &str) -> &'static str {
     match status {
@@ -109,6 +110,7 @@ pub struct FormFields {
     pub description: String,
     pub content: String,
     pub timeout_minutes: String,
+    pub language: String,
 }
 
 fn parse_form(raw: &[u8]) -> (String, FormFields) {
@@ -122,6 +124,7 @@ fn parse_form(raw: &[u8]) -> (String, FormFields) {
             "description" => f.description = v,
             "content" => f.content = v,
             "timeout_minutes" => f.timeout_minutes = v,
+            "language" => f.language = v,
             _ => {}
         }
     }
@@ -144,6 +147,7 @@ impl FormFields {
             // 瀏覽器送出的換行是 CRLF；原樣保存（雜湊以實際內容計算）
             content: self.content.clone(),
             timeout_minutes,
+            language: ScriptLanguage::parse(self.language.trim()).unwrap_or_default(),
         })
     }
 }
@@ -312,6 +316,7 @@ pub async fn edit_form(
             description: r.1,
             content: r.2,
             timeout_minutes: r.4.to_string(),
+            ..Default::default()
         },
         error: None,
     }))

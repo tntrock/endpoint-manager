@@ -19,6 +19,7 @@ fn input(content: &str) -> ScriptInput {
         description: "刪除 Temp".into(),
         content: content.into(),
         timeout_minutes: 30,
+        language: Default::default(),
     }
 }
 
@@ -63,10 +64,12 @@ async fn script_validation_and_permissions(pool: PgPool) {
         input(&"a".repeat(65537)),
         ScriptInput {
             timeout_minutes: 0,
+            language: Default::default(),
             ..input("dir")
         },
         ScriptInput {
             timeout_minutes: 121,
+            language: Default::default(),
             ..input("dir")
         },
     ] {
@@ -255,12 +258,12 @@ async fn create_runs_with_scope_and_validation(pool: PgPool) {
     let s = TestServer::start(pool).await;
     let f = fleet(&s).await;
     let admin = platform("admin");
-    let (id, n) = runs::create_run(&s.pool, &run("collect", Target::Group(f.tp)), &admin)
+    let (id, n, _) = runs::create_run(&s.pool, &run("collect", Target::Group(f.tp)), &admin)
         .await
         .unwrap();
     assert_eq!(n, 3);
     assert_eq!(targets(&s.pool, id).await, vec!["pending"; 3]);
-    let (id, n) = runs::create_run(
+    let (id, n, _) = runs::create_run(
         &s.pool,
         &run("reboot", Target::Device(f.ks_dev.device_id)),
         &admin,
@@ -366,7 +369,7 @@ async fn script_runs_snapshot_content(pool: PgPool) {
     scripts::approve_script(&s.pool, sid, &sha_of(&s.pool, sid).await, &bob)
         .await
         .unwrap();
-    let (id, _) = runs::create_run(&s.pool, &script_run(sid), &alice)
+    let (id, _, _) = runs::create_run(&s.pool, &script_run(sid), &alice)
         .await
         .unwrap();
     scripts::update_script(&s.pool, sid, &input("Write-Output v2"), &alice)
@@ -402,7 +405,7 @@ async fn cancel_rules(pool: PgPool) {
         platform: false,
         groups: vec![f.tp],
     };
-    let (id, _) = runs::create_run(&s.pool, &run("collect", Target::Group(f.tp)), &gary)
+    let (id, _, _) = runs::create_run(&s.pool, &run("collect", Target::Group(f.tp)), &gary)
         .await
         .unwrap();
     let not_mine = runs::cancel_run(&s.pool, id, &other).await.unwrap_err();
@@ -534,13 +537,13 @@ async fn checkin_delivers_and_resends(pool: PgPool) {
 
     // 取消、過期、停用的裝置
     let d = &f.tp_dev[2];
-    let (canceled, _) =
+    let (canceled, _, _) =
         runs::create_run(&s.pool, &run("apply", Target::Device(d.device_id)), &admin)
             .await
             .unwrap();
     runs::cancel_run(&s.pool, canceled, &admin).await.unwrap();
     assert!(checkin(&s, d).await.commands.is_empty());
-    let (old, _) = runs::create_run(&s.pool, &run("apply", Target::Device(d.device_id)), &admin)
+    let (old, _, _) = runs::create_run(&s.pool, &run("apply", Target::Device(d.device_id)), &admin)
         .await
         .unwrap();
     sqlx::query("UPDATE command_runs SET expires_at = now() - interval '1 minute' WHERE id = $1")
@@ -596,9 +599,10 @@ async fn results_are_recorded_once(pool: PgPool) {
     let bid = checkin(&s, b).await.commands[0].id;
     assert_eq!(report(&s, b, bid, big).await, 400);
     // 取消後才回報：忽略
-    let (run2, _) = runs::create_run(&s.pool, &run("apply", Target::Device(b.device_id)), &admin)
-        .await
-        .unwrap();
+    let (run2, _, _) =
+        runs::create_run(&s.pool, &run("apply", Target::Device(b.device_id)), &admin)
+            .await
+            .unwrap();
     let t2: i64 = sqlx::query_scalar("SELECT id FROM command_targets WHERE run_id = $1")
         .bind(run2)
         .fetch_one(&s.pool)
@@ -655,6 +659,7 @@ async fn every_editor_since_approval_is_excluded(pool: PgPool) {
         id,
         &ScriptInput {
             timeout_minutes: 31,
+            language: Default::default(),
             ..input("evil")
         },
         &bob,
@@ -724,7 +729,7 @@ async fn canceled_while_checking_in_is_not_delivered(pool: PgPool) {
     let s = TestServer::start(pool).await;
     let f = fleet(&s).await;
     let a = &f.tp_dev[0];
-    let (run_id, _) = runs::create_run(
+    let (run_id, _, _) = runs::create_run(
         &s.pool,
         &run("reboot", Target::Device(a.device_id)),
         &platform("admin"),
@@ -809,7 +814,7 @@ async fn permission_errors_are_typed(pool: PgPool) {
     .await
     .unwrap_err();
     assert!(!is_forbidden(&e), "{e:#}");
-    let (rid, _) = runs::create_run(&s.pool, &run("collect", Target::Group(f.tp)), &alice)
+    let (rid, _, _) = runs::create_run(&s.pool, &run("collect", Target::Group(f.tp)), &alice)
         .await
         .unwrap();
     let e = runs::cancel_run(&s.pool, rid, &gary).await.unwrap_err();
@@ -900,7 +905,7 @@ async fn errors_are_typed_and_scope_comes_first(pool: PgPool) {
     .unwrap_err();
     assert_eq!(kind(&e), "invalid", "{e:#}");
     // 全部完成的指令不能取消
-    let (id, _) = runs::create_run(&s.pool, &run("collect", Target::Group(f.tp)), &admin)
+    let (id, _, _) = runs::create_run(&s.pool, &run("collect", Target::Group(f.tp)), &admin)
         .await
         .unwrap();
     sqlx::query(
@@ -969,7 +974,7 @@ async fn data_integrity_audit_and_format_chars(pool: PgPool) {
     assert_eq!(detail["old"], true, "{detail}");
     // Agent 回報的輸出移除格式字元（例如 U+202E 反轉方向）
     let a = &f.tp_dev[0];
-    let (_rid, _) = runs::create_run(
+    let (_rid, _, _) = runs::create_run(
         &s.pool,
         &run("collect", Target::Device(a.device_id)),
         &admin,
@@ -1067,4 +1072,209 @@ async fn inactive_device_message_is_neutral(pool: PgPool) {
             .unwrap_err(),
     );
     assert!(e.contains("不存在、未啟用或不在你的管理範圍"), "{e}");
+}
+
+use protocol::command::ScriptLanguage;
+
+async fn sh_script(s: &TestServer) -> i64 {
+    let admin = platform("alice");
+    scripts::set_require_second_approver(&s.pool, false, &admin)
+        .await
+        .unwrap();
+    scripts::create_script(
+        &s.pool,
+        &ScriptInput {
+            language: ScriptLanguage::Sh,
+            ..input("echo hi")
+        },
+        &admin,
+    )
+    .await
+    .unwrap()
+}
+
+fn script_run(sid: i64, target: Target) -> RunInput {
+    RunInput {
+        script_id: Some(sid),
+        ..run("script", target)
+    }
+}
+
+/// 群組：2 台 windows（其中 1 台停用）、2 台 linux
+async fn mixed_group(s: &TestServer) -> (i64, Vec<uuid::Uuid>) {
+    let tok = s.create_group_token("混合", 4).await;
+    let mut ids = vec![];
+    for _ in 0..4 {
+        ids.push(s.enroll_ok(&tok, None, None).await.device_id);
+    }
+    for d in &ids[2..] {
+        sqlx::query("UPDATE devices SET os_family = 'linux' WHERE id = $1")
+            .bind(d)
+            .execute(&s.pool)
+            .await
+            .unwrap();
+    }
+    endpoint_server::devices::retire(&s.pool, ids[1], "admin")
+        .await
+        .unwrap();
+    (s.group_id("混合").await, ids)
+}
+
+#[sqlx::test(migrations = false)]
+async fn script_language_is_stored(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let alice = platform("alice");
+    let id = sh_script(&s).await;
+    let pool = s.pool.clone();
+    let lang = |id| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, String>("SELECT language FROM scripts WHERE id = $1")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
+    };
+    assert_eq!(lang(id).await, "sh");
+    // update_script 不改語言
+    scripts::update_script(
+        &s.pool,
+        id,
+        &ScriptInput {
+            language: ScriptLanguage::PowerShell,
+            ..input("echo bye")
+        },
+        &alice,
+    )
+    .await
+    .unwrap();
+    assert_eq!(lang(id).await, "sh");
+}
+
+#[sqlx::test(migrations = false)]
+async fn group_run_skips_mismatched_os(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let (g, ids) = mixed_group(&s).await;
+    let sid = sh_script(&s).await;
+    let (run_id, count, skipped) = runs::create_run(
+        &s.pool,
+        &script_run(sid, Target::Group(g)),
+        &platform("alice"),
+    )
+    .await
+    .unwrap();
+    assert_eq!((count, skipped), (2, 1));
+    let row: (i32, String) =
+        sqlx::query_as("SELECT skipped_os, script_language FROM command_runs WHERE id = $1")
+            .bind(run_id)
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+    assert_eq!(row, (1, "sh".to_string()));
+    let devs: Vec<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT device_id FROM command_targets WHERE run_id = $1 ORDER BY device_id",
+    )
+    .bind(run_id)
+    .fetch_all(&s.pool)
+    .await
+    .unwrap();
+    let mut want = ids[2..].to_vec();
+    want.sort();
+    assert_eq!(devs, want);
+}
+
+#[sqlx::test(migrations = false)]
+async fn group_run_with_no_matching_os_is_rejected(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let f = fleet(&s).await;
+    let sid = sh_script(&s).await;
+    let e = err(runs::create_run(
+        &s.pool,
+        &script_run(sid, Target::Group(f.tp)),
+        &platform("alice"),
+    )
+    .await
+    .unwrap_err());
+    assert!(e.contains("群組內沒有作業系統相符的使用中裝置"), "{e}");
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM command_runs")
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 0);
+}
+
+#[sqlx::test(migrations = false)]
+async fn device_run_with_mismatched_os_is_rejected(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let (_, ids) = mixed_group(&s).await;
+    let (win, linux) = (ids[0], ids[2]);
+    let alice = platform("alice");
+    let sh = sh_script(&s).await;
+    let ps = scripts::create_script(
+        &s.pool,
+        &ScriptInput {
+            name: "ps".into(),
+            ..input("dir")
+        },
+        &alice,
+    )
+    .await
+    .unwrap();
+    for (rin, who) in [
+        (script_run(ps, Target::Device(linux)), "Linux"),
+        (run("apply", Target::Device(linux)), "Linux"),
+        (script_run(sh, Target::Device(win)), "Windows"),
+    ] {
+        let e = err(runs::create_run(&s.pool, &rin, &alice).await.unwrap_err());
+        assert!(e.contains(&format!("這台裝置是 {who}，不支援")), "{e}");
+    }
+    // 相符的可以
+    runs::create_run(&s.pool, &script_run(sh, Target::Device(linux)), &alice)
+        .await
+        .unwrap();
+    // 群組管理員：範圍外的裝置仍是範圍錯誤，不洩漏作業系統
+    let gary = Actor {
+        username: "gary".into(),
+        platform: false,
+        groups: vec![],
+    };
+    let e = err(
+        runs::create_run(&s.pool, &run("apply", Target::Device(linux)), &gary)
+            .await
+            .unwrap_err(),
+    );
+    assert!(e.contains("不在你的管理範圍"), "{e}");
+}
+
+#[sqlx::test(migrations = false)]
+async fn collect_goes_to_all_os(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let (g, _) = mixed_group(&s).await;
+    let (_, count, skipped) =
+        runs::create_run(&s.pool, &run("collect", Target::Group(g)), &platform("a"))
+            .await
+            .unwrap();
+    assert_eq!((count, skipped), (3, 0));
+}
+
+#[sqlx::test(migrations = false)]
+async fn pending_for_carries_language(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let (_, ids) = mixed_group(&s).await;
+    let sid = sh_script(&s).await;
+    runs::create_run(
+        &s.pool,
+        &script_run(sid, Target::Device(ids[2])),
+        &platform("alice"),
+    )
+    .await
+    .unwrap();
+    let cmds = endpoint_server::commands::api::pending_for(&s.pool, ids[2])
+        .await
+        .unwrap();
+    assert_eq!(
+        cmds[0].script.as_ref().unwrap().language,
+        ScriptLanguage::Sh
+    );
 }

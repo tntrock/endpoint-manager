@@ -2242,6 +2242,7 @@ mod commands {
                 description: String::new(),
                 content: content.into(),
                 timeout_minutes: 5,
+                language: Default::default(),
             },
             &admin("alice"),
         )
