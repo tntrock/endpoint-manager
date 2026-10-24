@@ -1,7 +1,7 @@
 mod common;
 
 use common::TestServer;
-use protocol::{CheckinRequest, SCHEMA_VERSION};
+use protocol::{CheckinRequest, EnrollResponse, OsFamily, SCHEMA_VERSION};
 use sqlx::PgPool;
 
 fn checkin_body() -> CheckinRequest {
@@ -291,4 +291,22 @@ async fn approved_reinstall_records_inventory_diff(pool: PgPool) {
         vec![("updated".to_string(), "7-Zip|x64|".to_string())],
         "重灌前後的差異要記入歷史"
     );
+}
+
+#[sqlx::test(migrations = false)]
+async fn enroll_records_os_family(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(2).await;
+    for (os, want) in [(Some(OsFamily::Linux), "linux"), (None, "windows")] {
+        let (csr, _) = common::make_csr();
+        let r = s.enroll_with_os(&tok, &csr, None, None, os).await;
+        assert_eq!(r.status(), 200);
+        let id = r.json::<EnrollResponse>().await.unwrap().device_id;
+        let got: String = sqlx::query_scalar("SELECT os_family FROM devices WHERE id = $1")
+            .bind(id)
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+        assert_eq!(got, want);
+    }
 }

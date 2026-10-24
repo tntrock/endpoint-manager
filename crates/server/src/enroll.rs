@@ -6,7 +6,7 @@ use std::time::Instant;
 use axum::Json;
 use axum::extract::{ConnectInfo, State};
 use chrono::Utc;
-use protocol::{EnrollRequest, EnrollResponse, SCHEMA_VERSION, validate_strings};
+use protocol::{EnrollRequest, EnrollResponse, OsFamily, SCHEMA_VERSION, validate_strings};
 use uuid::Uuid;
 
 use crate::AppState;
@@ -126,7 +126,7 @@ pub async fn enroll(
     };
     let device_id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO devices          (id, hostname, smbios_uuid, bios_serial, status, enroll_token_id, group_id, reenroll_of)          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        "INSERT INTO devices          (id, hostname, smbios_uuid, bios_serial, status, enroll_token_id, group_id, reenroll_of, os_family)          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
     )
     .bind(device_id)
     .bind(&req.hostname)
@@ -136,6 +136,7 @@ pub async fn enroll(
     .bind(token_id)
     .bind(group_id)
     .bind(reenroll_of)
+    .bind(req.os_family.unwrap_or(OsFamily::Windows).as_str())
     .execute(&mut *tx)
     .await?;
 

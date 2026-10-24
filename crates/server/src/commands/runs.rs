@@ -134,8 +134,9 @@ pub async fn create_run(pool: &PgPool, i: &RunInput, actor: &Actor) -> anyhow::R
     let expires_at = Utc::now() + Duration::hours(i.expires_hours);
     let run_id: i64 = sqlx::query_scalar(
         "INSERT INTO command_runs (action, delay_minutes, script_id, script_sha256, \
-           script_content, script_timeout_minutes, target_label, created_by, expires_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id",
+           script_content, script_timeout_minutes, target_label, created_by, expires_at, \
+           script_language) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id",
     )
     .bind(action.as_str())
     .bind(delay)
@@ -146,6 +147,8 @@ pub async fn create_run(pool: &PgPool, i: &RunInput, actor: &Actor) -> anyhow::R
     .bind(&label)
     .bind(&actor.username)
     .bind(expires_at)
+    // 腳本一律 PowerShell；Task 6 起由腳本本身決定
+    .bind((action == CommandAction::Script).then_some("powershell"))
     .fetch_one(&mut *tx)
     .await?;
     let count = match i.target {
