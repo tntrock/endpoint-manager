@@ -18,7 +18,7 @@ use crate::error::AppError;
 /// 裝置 v 是否為派送 d 的對象（範圍內、使用中），並限制在管理員的範圍（$1 全部、$2 群組）。
 /// 規則與報到指派（deploy::assign）相同：排除優先；試點階段只含試點群組；暫停時看暫停前的階段。
 /// 已停止的派送不再指派，只算已有結果的裝置（停止時的階段已不可考，也避免歷史派送拖慢清單）。
-const TARGET: &str = "v.status = 'active' \
+const TARGET: &str = "v.status = 'active' AND v.os_family = 'windows' \
      AND ($1::bool OR v.group_id = ANY($2::bigint[])) \
      AND NOT EXISTS (SELECT 1 FROM deployment_groups x WHERE x.deployment_id = d.id \
                      AND x.mode = 'exclude' AND x.group_id = v.group_id) \

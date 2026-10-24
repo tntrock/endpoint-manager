@@ -561,3 +561,50 @@ async fn groups_column_names_policies(pool: PgPool) {
     let (_, html) = s.page(&admin_c, "/groups").await;
     assert!(html.contains("規則、派送與原則"), "{html}");
 }
+
+/// Linux 裝置不是更新原則的對象：台數、組建統計、等候重開機都不含它
+#[sqlx::test(migrations = false)]
+async fn linux_devices_not_counted(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_group_token("台北", 3).await;
+    let _w1 = s.enroll_ok(&tok, None, None).await;
+    let _w2 = s.enroll_ok(&tok, None, None).await;
+    let lx = s.enroll_ok(&tok, None, None).await;
+    sqlx::query("UPDATE devices SET os_family = 'linux' WHERE id = $1")
+        .bind(lx.device_id)
+        .execute(&s.pool)
+        .await
+        .unwrap();
+    set_build(&s, &lx, "99999", 1).await;
+    let since = (chrono::Utc::now() - chrono::Duration::days(3)).to_rfc3339();
+    let mut b = status(None, None, "unmanaged");
+    b["reboot_pending"] = true.into();
+    b["reboot_pending_since"] = since.into();
+    put_status(&s, &lx, b).await;
+    let tp = s.group_id("台北").await;
+    let id = admin::create_policy(
+        &s.pool,
+        &PolicyInput {
+            name: "一般電腦".into(),
+            settings: PolicySettings::default(),
+            groups: vec![tp],
+        },
+        "admin",
+    )
+    .await
+    .unwrap();
+    let admin_c = s.admin_client().await;
+    let (_, html) = s.page(&admin_c, "/updates").await;
+    assert!(
+        html.contains(r#"<td class="num">2</td>"#) && !html.contains(r#"<td class="num">3</td>"#),
+        "{html}"
+    );
+    let (_, html) = s.page(&admin_c, &format!("/updates/{id}")).await;
+    assert!(html.contains("尚未回報：2"), "{html}");
+    assert!(!html.contains(&lx.device_id.to_string()), "{html}");
+    let (_, html) = s.page(&admin_c, "/updates/overview").await;
+    assert!(
+        !html.contains("99999") && !html.contains(&lx.device_id.to_string()),
+        "{html}"
+    );
+}

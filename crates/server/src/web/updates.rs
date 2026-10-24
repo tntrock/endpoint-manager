@@ -17,7 +17,7 @@ use crate::updates::admin::{self, PauseKind, PolicyInput};
 use crate::updates::policy::{ActiveHours, Deadline, PAUSE_DAYS, PolicySettings};
 
 /// 裝置 v 是否為原則 p 的對象（使用中、群組屬於此原則），並限制在管理員的範圍（$1 全部、$2 群組）
-const TARGET: &str = "v.status = 'active' AND ($1::bool OR v.group_id = ANY($2::bigint[])) \
+const TARGET: &str = "v.status = 'active' AND v.os_family = 'windows' AND ($1::bool OR v.group_id = ANY($2::bigint[])) \
      AND EXISTS (SELECT 1 FROM update_policy_groups g \
                  WHERE g.policy_id = p.id AND g.group_id = v.group_id)";
 
@@ -679,7 +679,7 @@ pub async fn overview(
 ) -> Result<Response, AppError> {
     let builds: Vec<(Option<String>, Option<i32>, i64)> = sqlx::query_as(
         "SELECT os_build, os_ubr, count(*) FROM devices \
-         WHERE status = 'active' AND ($1::bool OR group_id = ANY($2::bigint[])) \
+         WHERE status = 'active' AND os_family = 'windows' AND ($1::bool OR group_id = ANY($2::bigint[])) \
          GROUP BY 1, 2 ORDER BY 1 DESC NULLS LAST, 2 DESC NULLS LAST",
     )
     .bind(s.all_devices())
@@ -690,7 +690,7 @@ pub async fn overview(
         "SELECT v.id, v.hostname, u.reboot_pending_since FROM update_policy_status u \
          JOIN devices v ON v.id = u.device_id \
          WHERE u.reboot_pending AND u.reboot_pending_since IS NOT NULL \
-           AND v.status = 'active' AND ($1::bool OR v.group_id = ANY($2::bigint[])) \
+           AND v.status = 'active' AND v.os_family = 'windows' AND ($1::bool OR v.group_id = ANY($2::bigint[])) \
          ORDER BY u.reboot_pending_since, v.id LIMIT 50",
     )
     .bind(s.all_devices())
