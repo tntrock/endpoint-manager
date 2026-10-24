@@ -739,3 +739,33 @@ async fn preview_skips_linux(pool: PgPool) {
         .unwrap();
     assert_eq!((c.violating, c.unknown, c.devices), (1, 0, 1));
 }
+
+#[sqlx::test(migrations = false)]
+async fn checkin_switching_to_linux_clears_violations(pool: PgPool) {
+    let (s, a) = setup(pool).await;
+    put(&s, &a, InventoryPayload::Patches(vec![])).await;
+    admin::create_rule(&s.pool, &kb_rule("KB5031455"), "admin")
+        .await
+        .unwrap();
+    worker::recompute_all(&s.pool).await.unwrap();
+    assert_eq!(violations(&s, &a).await.len(), 1);
+
+    let r = s
+        .client(Some(&a))
+        .post(s.url("/v1/checkin"))
+        .json(&protocol::CheckinRequest {
+            os_family: Some(protocol::OsFamily::Linux),
+            schema_version: SCHEMA_VERSION,
+            agent_version: "0.1.0".into(),
+            boot_time: chrono::Utc::now(),
+            logged_on_user: None,
+            ip_addresses: vec![],
+            section_hashes: Default::default(),
+            section_errors: Default::default(),
+        })
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    assert!(violations(&s, &a).await.is_empty(), "改成 Linux 後立即清除");
+}

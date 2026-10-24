@@ -83,6 +83,9 @@ pub async fn checkin(
             .execute(&st.pool)
             .await?;
         is_linux = os == OsFamily::Linux;
+        // 類型變了，合規結果要立即重算（Linux 會清空違規）
+        let mut conn = st.pool.acquire().await?;
+        crate::compliance::store::refresh_device_fresh(&mut conn, device.device_id).await?;
     }
     let deploy = st.deploy.get_throttled(&st.pool).await?;
     let updates = st.updates.get_throttled(&st.pool).await?;

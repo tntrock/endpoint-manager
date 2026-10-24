@@ -275,7 +275,10 @@ pub async fn load_payload(
             // 手動改壞的 jsonb 讀不回來時當成沒有資料，不讓整個讀取失敗
             match serde_json::from_value(data) {
                 Ok(a) => InventoryPayload::Accounts(a),
-                Err(_) => return Ok(None),
+                Err(e) => {
+                    tracing::warn!(%device_id, error = %e, "帳號區段 jsonb 無法解析，視為無資料");
+                    return Ok(None);
+                }
             }
         }
         Section::Basic => {
@@ -399,7 +402,8 @@ async fn write_payload(
         }
         InventoryPayload::Accounts(a) => {
             sqlx::query(
-                "INSERT INTO device_accounts (device_id, data) VALUES ($1, $2::jsonb) \n                 ON CONFLICT (device_id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()",
+                "INSERT INTO device_accounts (device_id, data) VALUES ($1, $2::jsonb) \
+                 ON CONFLICT (device_id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()",
             )
             .bind(device_id)
             .bind(json(a))

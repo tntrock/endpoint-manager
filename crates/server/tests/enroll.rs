@@ -310,3 +310,36 @@ async fn enroll_records_os_family(pool: PgPool) {
         assert_eq!(got, want);
     }
 }
+
+#[sqlx::test(migrations = false)]
+async fn approved_reenroll_carries_os_family(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(10).await;
+    // 重灌換作業系統：新待核准記錄的 os_family 核准後要落到保留的舊裝置上
+    for (from, to, want) in [
+        (None, Some(OsFamily::Linux), "linux"),
+        (Some(OsFamily::Linux), None, "windows"),
+    ] {
+        let uuid = format!("UUID-{want}");
+        let (csr, _) = common::make_csr();
+        let r = s
+            .enroll_with_os(&tok, &csr, Some(&uuid), Some("SN-A"), from)
+            .await;
+        let old = r.json::<EnrollResponse>().await.unwrap().device_id;
+        let (csr, _) = common::make_csr();
+        let r = s
+            .enroll_with_os(&tok, &csr, Some(&uuid), Some("SN-A"), to)
+            .await;
+        let new = r.json::<EnrollResponse>().await.unwrap().device_id;
+        let merged = endpoint_server::devices::approve(&s.pool, new, "tester")
+            .await
+            .unwrap();
+        assert_eq!(merged, old);
+        let got: String = sqlx::query_scalar("SELECT os_family FROM devices WHERE id = $1")
+            .bind(old)
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+        assert_eq!(got, want);
+    }
+}
