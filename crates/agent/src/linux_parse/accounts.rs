@@ -172,20 +172,32 @@ pub fn sudoers(files: &[SudoersFile]) -> (Vec<PrivilegeEntry>, Vec<String>) {
         for raw in logical_lines(&f.content) {
             let line = raw.trim();
             if line.is_empty()
-                || line.starts_with('#')
+                || (line.starts_with('#')
+                    && !line.as_bytes().get(1).is_some_and(u8::is_ascii_digit))
                 || line.starts_with('@')
                 || line.starts_with("Defaults")
             {
                 continue;
             }
             let first = line.split_whitespace().next().unwrap_or("");
-            let names: Vec<&str> = first.split(',').filter(|n| !n.is_empty()).collect();
+            // 等號左邊最後一個空白分隔的詞是主機，前面整段是主體清單（逗號兩側可有空白）
+            let names: Vec<&str> = line
+                .split_once('=')
+                .and_then(|(left, _)| left.trim_end().rsplit_once(char::is_whitespace))
+                .map(|(subj, _)| {
+                    subj.split(',')
+                        .map(str::trim)
+                        .filter(|n| !n.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default();
             if ALIAS_KEYWORDS.contains(&first)
-                || !line.contains('=')
                 || names.is_empty()
-                || names.iter().any(|n| is_special(n))
+                || names
+                    .iter()
+                    .any(|n| n.contains(char::is_whitespace) || is_special(n))
             {
-                unparsed.push(line.chars().take(UNPARSED_MAX_CHARS).collect());
+                unparsed.push(line.to_string());
                 continue;
             }
             for n in names {
@@ -201,8 +213,16 @@ pub fn sudoers(files: &[SudoersFile]) -> (Vec<PrivilegeEntry>, Vec<String>) {
             }
         }
     }
-    unparsed.truncate(UNPARSED_MAX_LINES);
-    (entries, unparsed)
+    (entries, cap_unparsed(unparsed))
+}
+
+/// 最多 50 行、每行最多 200 字元。
+pub fn cap_unparsed(lines: Vec<String>) -> Vec<String> {
+    lines
+        .into_iter()
+        .take(UNPARSED_MAX_LINES)
+        .map(|l| l.chars().take(UNPARSED_MAX_CHARS).collect())
+        .collect()
 }
 
 #[cfg(test)]
@@ -315,9 +335,39 @@ alice,bob ALL=(ALL) NOPASSWD: ALL\nUser_Alias ADMINS = carol, dave\nADMINS ALL=(
     fn sudoers_special_principals_unparsed() {
         let c = "+netgrp ALL=(ALL) ALL\n#1000 ALL=(ALL) ALL\nx,#5 ALL=(ALL) ALL\n%#7 ALL=(ALL) ALL\n%:dom ALL=(ALL) ALL\nnoequals here\n";
         let (p, un) = sudoers(&file(c));
-        // 第二行以 # 開頭視為註解
+        // `#數字` 是 UID，不是註解
         assert!(p.is_empty());
-        assert_eq!(un.len(), 5);
+        assert_eq!(un.len(), 6);
+        assert!(un.iter().any(|l| l.starts_with("#1000")));
+    }
+
+    #[test]
+    fn sudoers_comma_lists_tolerate_spaces() {
+        for c in [
+            "alice, bob ALL=(ALL) ALL",
+            "alice ,bob ALL=(ALL) ALL",
+            "alice , bob ALL=(ALL) ALL",
+        ] {
+            let (p, un) = sudoers(&file(c));
+            let got: Vec<_> = p.iter().map(|e| e.principal.as_str()).collect();
+            assert_eq!(got, ["alice", "bob"], "{c}");
+            assert!(
+                p.iter()
+                    .all(|e| e.kind == PrincipalKind::User && e.source == "sudoers:sudoers")
+            );
+            assert!(un.is_empty());
+        }
+        // 逗號之外的空白不能默默吞掉名稱
+        let (p, un) = sudoers(&file("alice bob ALL=(ALL) ALL"));
+        assert!(p.is_empty());
+        assert_eq!(un.len(), 1);
+    }
+
+    #[test]
+    fn cap_unparsed_limits_lines_and_chars() {
+        let v = cap_unparsed((0..60).map(|_| "x".repeat(300)).collect());
+        assert_eq!(v.len(), 50);
+        assert!(v.iter().all(|l| l.chars().count() == 200));
     }
 
     #[test]

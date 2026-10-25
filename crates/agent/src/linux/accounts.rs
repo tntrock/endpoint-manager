@@ -121,6 +121,7 @@ pub fn collect() -> AccountsInfo {
     let (entries, unparsed) = parse::sudoers(&files);
     privileged.extend(entries);
     sudoers_unparsed.extend(unparsed);
+    let sudoers_unparsed = parse::cap_unparsed(sudoers_unparsed);
 
     AccountsInfo {
         users,
