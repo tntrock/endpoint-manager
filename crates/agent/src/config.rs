@@ -79,6 +79,13 @@ pub fn apply_install_config(
     config.save(data)
 }
 
+/// `--name value`；空字串視為未提供（MSI 未設屬性時傳 ""）。
+pub fn flag(args: &[std::ffi::OsString], name: &str) -> Option<String> {
+    let i = args.iter().position(|a| a == name)?;
+    let v = args.get(i + 1)?.to_string_lossy().trim().to_string();
+    (!v.is_empty()).then_some(v)
+}
+
 /// MSI 的 ROOT_CA 屬性（單行 base64 DER）→ PEM；不是一張可解析的 X.509 憑證就拒絕。
 pub fn root_pem_from_b64(b64: &str) -> anyhow::Result<String> {
     use rustls::pki_types::{CertificateDer, pem::PemObject};

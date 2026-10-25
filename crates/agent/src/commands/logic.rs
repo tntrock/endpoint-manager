@@ -49,15 +49,21 @@ pub fn step(entry: Option<&Entry>) -> Step {
     }
 }
 
-/// shutdown.exe 的參數（不含程式路徑）：延遲並以 Windows 內建通知告訴登入的使用者
-pub fn shutdown_args(reboot: bool, delay_minutes: u32) -> String {
+/// 通知登入使用者的關機訊息（延遲最多 60 分鐘）
+pub fn shutdown_message(reboot: bool, delay_minutes: u32) -> String {
     let delay = delay_minutes.min(60);
     let what = if reboot { "重新開機" } else { "關機" };
-    let message = if delay > 0 {
+    if delay > 0 {
         format!("IT 部門排定在 {delay} 分鐘後{what}，請儲存您的工作。")
     } else {
         format!("IT 部門即將{what}。")
-    };
+    }
+}
+
+/// shutdown.exe 的參數（不含程式路徑）：延遲並以 Windows 內建通知告訴登入的使用者
+pub fn shutdown_args(reboot: bool, delay_minutes: u32) -> String {
+    let delay = delay_minutes.min(60);
+    let message = shutdown_message(reboot, delay);
     // 延遲大於 0 時 Windows 本來就隱含 /f；立即執行時也要 /f，否則可能被沒存檔的程式擋住
     let force = if delay == 0 { " /f" } else { "" };
     format!(
