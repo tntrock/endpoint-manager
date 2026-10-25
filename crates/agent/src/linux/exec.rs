@@ -25,12 +25,18 @@ pub fn is_not_found(e: &anyhow::Error) -> bool {
     e.downcast_ref::<NotFound>().is_some()
 }
 
+/// 搜尋順序：/usr/bin、/bin、/usr/sbin、/sbin（都是 root 擁有；RHEL 的 `ip` 在 /usr/sbin）。
+const SEARCH_DIRS: [&str; 4] = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"];
+
 fn resolve(program: &str) -> Option<PathBuf> {
+    resolve_in(&SEARCH_DIRS, program)
+}
+
+fn resolve_in(dirs: &[&str], program: &str) -> Option<PathBuf> {
     if program.contains('/') {
         return PathBuf::from(program).exists().then(|| program.into());
     }
-    ["/usr/bin", "/bin"]
-        .iter()
+    dirs.iter()
         .map(|d| PathBuf::from(d).join(program))
         .find(|p| p.exists())
 }
@@ -86,6 +92,17 @@ pub fn run_capture(program: &str, args: &[&str], timeout: Duration) -> anyhow::R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_falls_back_to_sbin_in_order() {
+        let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let (pa, pb) = (a.path().to_str().unwrap(), b.path().to_str().unwrap());
+        std::fs::write(b.path().join("ip"), "").unwrap();
+        assert_eq!(resolve_in(&[pa, pb], "ip"), Some(b.path().join("ip")));
+        std::fs::write(a.path().join("ip"), "").unwrap();
+        assert_eq!(resolve_in(&[pa, pb], "ip"), Some(a.path().join("ip")));
+        assert_eq!(SEARCH_DIRS[2..], ["/usr/sbin", "/sbin"]);
+    }
 
     #[test]
     fn captures_and_reports_errors() {

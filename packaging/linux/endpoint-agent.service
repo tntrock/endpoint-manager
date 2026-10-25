@@ -8,7 +8,8 @@ ConditionPathExists=/var/lib/endpoint-manager/config.json
 [Service]
 ExecStart=/usr/bin/endpoint-agent run
 WorkingDirectory=/var/lib/endpoint-manager
-Restart=always
+# 只在異常結束時重啟；憑證被撤銷（401）會正常結束（結束碼 0），不能每 10 秒重試
+Restart=on-failure
 RestartSec=10
 Nice=10
 # 不能開 NoNewPrivileges：腳本要以 root 執行任意指令

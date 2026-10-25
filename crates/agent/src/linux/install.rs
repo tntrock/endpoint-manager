@@ -31,7 +31,7 @@ fn prepare_data_dir(data: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 先確保資料目錄可信，之後才寫入 root.pem 與 config.json；成功後啟動服務。
+/// 先確保資料目錄可信，之後才寫入 root.pem 與 config.json；成功後重新啟動服務。
 pub fn configure(
     data: &Path,
     server_url: Option<&str>,
@@ -41,10 +41,10 @@ pub fn configure(
     prepare_data_dir(data)?;
     apply_install_config(data, server_url, token, root_ca)?;
     // 沒有 systemd（容器、WSL）或啟動失敗都不讓安裝失敗
-    match run_capture("systemctl", &["start", "endpoint-agent"], CMD_TIMEOUT) {
+    match run_capture("systemctl", &["restart", "endpoint-agent"], CMD_TIMEOUT) {
         Ok(_) => {}
         Err(e) if is_not_found(&e) => eprintln!("警告：找不到 systemctl：{e}"),
-        Err(e) => eprintln!("警告：systemctl start endpoint-agent 失敗：{e:#}"),
+        Err(e) => eprintln!("警告：systemctl restart endpoint-agent 失敗：{e:#}"),
     }
     Ok(())
 }

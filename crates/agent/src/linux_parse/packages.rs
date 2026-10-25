@@ -17,14 +17,14 @@ fn non_empty(s: &str) -> Option<String> {
     (!s.is_empty()).then(|| s.to_string())
 }
 
-/// `${Status}\t${Package}\t${Version}\t${Maintainer}\t${Architecture}`；只收 `install ok installed`
+/// `${Status}\t${Package}\t${Version}\t${Maintainer}\t${Architecture}`；只收第三個詞是 `installed` 的（含 `hold ok installed`）
 pub fn parse_dpkg(out: &str) -> Vec<SoftwareItem> {
     out.lines()
         .filter_map(|l| {
             let mut f = l.split('\t');
             let (status, name, ver, maint, arch) =
                 (f.next()?, f.next()?, f.next()?, f.next()?, f.next()?);
-            if status.trim() != "install ok installed" || name.is_empty() {
+            if status.split_whitespace().nth(2) != Some("installed") || name.is_empty() {
                 return None;
             }
             Some(SoftwareItem {
@@ -89,6 +89,11 @@ mod tests {
         assert_eq!(v[0].arch, Arch::X64);
         assert_eq!(v[1].arch, Arch::Other);
         assert_eq!(v[1].publisher.as_deref(), Some("Maint <m@x>"));
+        let held = parse_dpkg(
+            "hold ok installed\tvim\t9\tM\tamd64\nhold ok half-installed\tx\t1\tM\tamd64\n",
+        );
+        assert_eq!(held.len(), 1);
+        assert_eq!(held[0].name, "vim");
     }
 
     #[test]

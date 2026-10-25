@@ -92,6 +92,16 @@ const VIRTUAL_FS: &[&str] = &[
     "ramfs",
     "nsfs",
     "rpc_pipefs",
+    // 網路檔案系統：掛載失聯時 statvfs 會卡住
+    "nfs",
+    "nfs4",
+    "cifs",
+    "smb3",
+    "smbfs",
+    "9p",
+    "fuse.sshfs",
+    "ceph",
+    "glusterfs",
 ];
 
 /// 還原 `/proc/mounts` 的八進位跳脫（例如 `\040` 是空白）
@@ -213,6 +223,9 @@ tmpfs /run tmpfs rw 0 0
 /dev/sda1 / ext4 rw 0 0
 ";
         assert_eq!(real_mounts(m), ["/", "/boot/efi", "/mnt/my disk"]);
+        // 網路檔案系統掛載失聯會讓 statvfs 卡住
+        let n = "srv:/x /mnt/nfs nfs4 rw 0 0\n//h/s /mnt/c cifs rw 0 0\n/dev/sdb1 /d ext4 rw 0 0\n";
+        assert_eq!(real_mounts(n), ["/d"]);
     }
 
     #[test]

@@ -23,7 +23,6 @@ pub trait Collector: Send + Sync + 'static {
     fn heartbeat(&self) -> anyhow::Result<Heartbeat>;
     fn collect(&self, section: Section) -> anyhow::Result<InventoryPayload>;
 
-    /// 讀取伺服器指定的登錄檔值（registry 區段）。預設回空清單（測試用的假收集器）。
     /// 這個平台回報的區段（預設 Windows）
     fn sections(&self) -> &'static [Section] {
         &Section::WINDOWS
@@ -34,6 +33,7 @@ pub trait Collector: Send + Sync + 'static {
         None
     }
 
+    /// 讀取伺服器指定的登錄檔值（registry 區段）。預設回空清單（測試用的假收集器）。
     fn collect_registry(&self, _queries: &[RegistryQuery]) -> anyhow::Result<InventoryPayload> {
         Ok(InventoryPayload::Registry(vec![]))
     }

@@ -12,7 +12,13 @@ pub fn collect() -> anyhow::Result<(Vec<SoftwareItem>, Option<String>)> {
         "${Status}\t${Package}\t${Version}\t${Maintainer}\t${Architecture}\n",
     ];
     match run_capture("dpkg-query", &dpkg, CMD_TIMEOUT) {
-        Ok(out) => return Ok((parse::parse_dpkg(&out), None)),
+        Ok(out) => {
+            let items = parse::parse_dpkg(&out);
+            // dpkg 存在但沒有套件（例如 RPM 系統上裝了 dpkg 工具）→ 再試 rpm
+            if !items.is_empty() {
+                return Ok((items, None));
+            }
+        }
         Err(e) if !is_not_found(&e) => return Err(e),
         Err(_) => {}
     }

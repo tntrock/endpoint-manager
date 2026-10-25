@@ -43,12 +43,14 @@ pub async fn run(dir: &Path, shutdown: watch::Receiver<bool>) -> anyhow::Result<
 pub fn run_foreground() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
+        .with_ansi(false)
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env().add_directive("info".parse()?),
         )
         .init();
     let dir = agent_dir();
-    tokio::runtime::Runtime::new()?.block_on(async {
+    let rt = tokio::runtime::Runtime::new()?;
+    let res = rt.block_on(async {
         let (tx, rx) = watch::channel(false);
         let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         tokio::spawn(async move {
@@ -59,5 +61,8 @@ pub fn run_foreground() -> anyhow::Result<()> {
             let _ = tx.send(true);
         });
         run(&dir, rx).await
-    })
+    });
+    // 同 Windows：不等還在跑的背景工作（例如 spawn_blocking）
+    rt.shutdown_timeout(std::time::Duration::from_secs(5));
+    res
 }

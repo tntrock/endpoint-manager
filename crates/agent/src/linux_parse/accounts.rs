@@ -83,7 +83,7 @@ pub fn uid_zero(passwd: &str) -> Vec<String> {
         .lines()
         .filter_map(|l| {
             let f: Vec<&str> = l.split(':').collect();
-            (f.len() >= 3 && f[2] == "0").then(|| f[0].to_string())
+            (f.len() >= 3 && f[2].trim().parse::<u32>() == Ok(0)).then(|| f[0].to_string())
         })
         .collect()
 }
@@ -114,12 +114,30 @@ pub enum Include {
     Dir(String),
 }
 
-/// 行尾 `\` 接續下一行。
+/// sudoers 的註解：`#` 開頭，但 `#include`、`#includedir`、`#<數字>` 不是。
+fn is_comment(line: &str) -> bool {
+    let l = line.trim_start();
+    l.starts_with('#')
+        && !l.starts_with("#include")
+        && !l.as_bytes().get(1).is_some_and(u8::is_ascii_digit)
+}
+
+/// `Defaults` 後面要接空白或 `:` `@` `!` `>`（或行尾），否則是使用者名稱。
+fn is_defaults(line: &str) -> bool {
+    line.strip_prefix("Defaults").is_some_and(|r| {
+        r.is_empty() || r.starts_with(char::is_whitespace) || r.starts_with([':', '@', '!', '>'])
+    })
+}
+
+/// 行尾 `\` 接續下一行；註解行不接續（sudo 的註解到行尾就結束）。
 fn logical_lines(content: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();
     for l in content.lines() {
-        match l.strip_suffix('\\') {
+        let cont = l
+            .strip_suffix('\\')
+            .filter(|_| !cur.is_empty() || !is_comment(l));
+        match cont {
             Some(head) => cur.push_str(head),
             None => {
                 cur.push_str(l);
@@ -175,7 +193,7 @@ pub fn sudoers(files: &[SudoersFile]) -> (Vec<PrivilegeEntry>, Vec<String>) {
                 || (line.starts_with('#')
                     && !line.as_bytes().get(1).is_some_and(u8::is_ascii_digit))
                 || line.starts_with('@')
-                || line.starts_with("Defaults")
+                || is_defaults(line)
             {
                 continue;
             }
@@ -289,6 +307,12 @@ bob:!$6$x:0:0:99999:7:::\n";
     }
 
     #[test]
+    fn uid_zero_numeric() {
+        let p = "toor:x:00:0::/:/bin/sh\nplus:x:+0:0::/:/bin/sh\nbad:x:zz:0::/:/bin/sh\nshort:x\n";
+        assert_eq!(uid_zero(p), ["toor", "plus"]);
+    }
+
+    #[test]
     fn group_members() {
         let g = "sudo:x:27:alice,bob\nwheel:x:10:\nadm:x:4:carol\n";
         assert_eq!(
@@ -329,6 +353,28 @@ alice,bob ALL=(ALL) NOPASSWD: ALL\nUser_Alias ADMINS = carol, dave\nADMINS ALL=(
             un,
             ["User_Alias ADMINS = carol, dave", "ADMINS ALL=(ALL) ALL"]
         );
+    }
+
+    #[test]
+    fn sudoers_comment_backslash_does_not_continue() {
+        let (p, _) = sudoers(&file("# note \\\nevil ALL=(ALL) ALL\n"));
+        assert_eq!(p.len(), 1);
+        assert_eq!(p[0].principal, "evil");
+        assert_eq!(p[0].source, "sudoers:sudoers");
+        // #includedir 不是註解，仍可接續
+        assert_eq!(
+            include_targets("#includedir /etc/a \\\nb\n"),
+            [Include::Dir("/etc/a b".into())]
+        );
+    }
+
+    #[test]
+    fn sudoers_defaults_needs_word_boundary() {
+        let c = "Defaultsadmin ALL=(ALL) ALL\nDefaults:bob !requiretty\nDefaults\tenv_reset\n\
+Defaults!/bin/x log\nDefaults@h x\nDefaults>r y\nDefaults\n";
+        let (p, _) = sudoers(&file(c));
+        let got: Vec<_> = p.iter().map(|e| e.principal.as_str()).collect();
+        assert_eq!(got, ["Defaultsadmin"]);
     }
 
     #[test]
