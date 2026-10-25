@@ -1,7 +1,7 @@
 //! 建立與取消遠端指令：權限範圍、腳本快照、群組展開成每台一筆。
 
 use chrono::{Duration, Utc};
-use protocol::command::CommandAction;
+use protocol::command::{CommandAction, ScriptLanguage};
 use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -28,11 +28,15 @@ pub struct RunInput {
     pub expires_hours: i64,
 }
 
-/// 腳本快照：(id, sha256, 內容, 逾時)
-type ScriptSnapshot = (i64, String, String, i32);
+/// 腳本快照：(id, sha256, 內容, 逾時, 語言)
+type ScriptSnapshot = (i64, String, String, i32, ScriptLanguage);
 
-/// 回傳 (run id, 台數)
-pub async fn create_run(pool: &PgPool, i: &RunInput, actor: &Actor) -> anyhow::Result<(i64, i64)> {
+/// 回傳 (run id, 台數, 因作業系統不符而略過的台數)
+pub async fn create_run(
+    pool: &PgPool,
+    i: &RunInput,
+    actor: &Actor,
+) -> anyhow::Result<(i64, i64, i64)> {
     let action = CommandAction::parse(&i.action);
     // 權限最先檢查：群組管理員送腳本一律 403，不因其他欄位得到不同的錯誤
     if action == CommandAction::Script && !actor.platform {
@@ -71,15 +75,23 @@ pub async fn create_run(pool: &PgPool, i: &RunInput, actor: &Actor) -> anyhow::R
         let id = i
             .script_id
             .ok_or_else(|| CmdError::Invalid("請選擇腳本".into()))?;
-        type Row = (String, String, String, i32, Option<String>, Vec<String>);
+        type Row = (
+            String,
+            String,
+            String,
+            i32,
+            Option<String>,
+            Vec<String>,
+            String,
+        );
         let row: Option<Row> = sqlx::query_as(
-            "SELECT status, sha256, content, timeout_minutes, approved_by, editors FROM scripts \
-             WHERE id = $1 FOR SHARE",
+            "SELECT status, sha256, content, timeout_minutes, approved_by, editors, language \
+             FROM scripts WHERE id = $1 FOR SHARE",
         )
         .bind(id)
         .fetch_optional(&mut *tx)
         .await?;
-        let (status, sha, content, timeout, approved_by, editors) =
+        let (status, sha, content, timeout, approved_by, editors, language) =
             row.ok_or_else(|| CmdError::NotFound("腳本不存在".into()))?;
         check!(status == "approved", Conflict, "腳本尚未核准或已停用");
         // 雙人核准下，自己核准的（切換模式前）不能執行
@@ -88,9 +100,19 @@ pub async fn create_run(pool: &PgPool, i: &RunInput, actor: &Actor) -> anyhow::R
             Conflict,
             "腳本需要另一位平台管理員核准（已開啟雙人核准）"
         );
-        Some((id, sha, content, timeout))
+        let language = ScriptLanguage::parse(&language).unwrap_or_default();
+        Some((id, sha, content, timeout, language))
     } else {
         None
+    };
+    // 這個動作只能在哪種作業系統執行（None：不限）
+    let need_os = match (action, script.as_ref()) {
+        (CommandAction::Script, Some(s)) => Some(match s.4 {
+            ScriptLanguage::PowerShell => "windows",
+            ScriptLanguage::Sh => "linux",
+        }),
+        (CommandAction::Apply, _) => Some("windows"),
+        _ => None,
     };
 
     // 對象與範圍：非平台管理員只能選自己群組（未分組的裝置不在範圍內）
@@ -98,16 +120,16 @@ pub async fn create_run(pool: &PgPool, i: &RunInput, actor: &Actor) -> anyhow::R
     let label = match i.target {
         Target::Device(d) => {
             // FOR SHARE：檢查範圍到建立完成之間，裝置不會被移到別的群組
-            let row: Option<(String, Option<i64>)> = sqlx::query_as(
-                "SELECT hostname, group_id FROM devices WHERE id = $1 AND status = 'active' \
-                 FOR SHARE",
+            let row: Option<(String, Option<i64>, String)> = sqlx::query_as(
+                "SELECT hostname, group_id, os_family FROM devices \
+                 WHERE id = $1 AND status = 'active' FOR SHARE",
             )
             .bind(d)
             .fetch_optional(&mut *tx)
             .await?;
             let forbidden = || CmdError::Forbidden("裝置不存在、未啟用或不在你的管理範圍".into());
             // 群組管理員：不存在與範圍外是同一個錯誤
-            let (hostname, group) = match row {
+            let (hostname, group, os) = match row {
                 Some(r) => r,
                 None if actor.platform => {
                     return Err(CmdError::NotFound("裝置不存在或未啟用".into()).into());
@@ -116,6 +138,11 @@ pub async fn create_run(pool: &PgPool, i: &RunInput, actor: &Actor) -> anyhow::R
             };
             if !in_scope(group) {
                 return Err(forbidden().into());
+            }
+            // 作業系統檢查在範圍檢查之後：群組管理員不能藉此探測範圍外的裝置
+            if need_os.is_some_and(|n| n != os) {
+                let name = if os == "linux" { "Linux" } else { "Windows" };
+                return Err(CmdError::Invalid(format!("這台裝置是 {name}，不支援這個動作")).into());
             }
             format!("裝置 {hostname}")
         }
@@ -134,8 +161,9 @@ pub async fn create_run(pool: &PgPool, i: &RunInput, actor: &Actor) -> anyhow::R
     let expires_at = Utc::now() + Duration::hours(i.expires_hours);
     let run_id: i64 = sqlx::query_scalar(
         "INSERT INTO command_runs (action, delay_minutes, script_id, script_sha256, \
-           script_content, script_timeout_minutes, target_label, created_by, expires_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id",
+           script_content, script_timeout_minutes, target_label, created_by, expires_at, \
+           script_language) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id",
     )
     .bind(action.as_str())
     .bind(delay)
@@ -146,8 +174,10 @@ pub async fn create_run(pool: &PgPool, i: &RunInput, actor: &Actor) -> anyhow::R
     .bind(&label)
     .bind(&actor.username)
     .bind(expires_at)
+    .bind(script.as_ref().map(|s| s.4.as_str()))
     .fetch_one(&mut *tx)
     .await?;
+    let mut skipped = 0i64;
     let count = match i.target {
         Target::Device(d) => {
             sqlx::query("INSERT INTO command_targets (run_id, device_id) VALUES ($1, $2)")
@@ -157,24 +187,47 @@ pub async fn create_run(pool: &PgPool, i: &RunInput, actor: &Actor) -> anyhow::R
                 .await?
                 .rows_affected()
         }
-        Target::Group(g) => sqlx::query(
-            "INSERT INTO command_targets (run_id, device_id) \
-             SELECT $1, id FROM devices WHERE status = 'active' AND group_id = $2",
-        )
-        .bind(run_id)
-        .bind(g)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected(),
+        Target::Group(g) => {
+            skipped = sqlx::query_scalar(
+                "SELECT count(*) FROM devices \
+                 WHERE status = 'active' AND group_id = $1 AND os_family <> $2",
+            )
+            .bind(g)
+            .bind(need_os)
+            .fetch_one(&mut *tx)
+            .await?;
+            sqlx::query(
+                "INSERT INTO command_targets (run_id, device_id) \
+                 SELECT $1, id FROM devices \
+                  WHERE status = 'active' AND group_id = $2 \
+                    AND ($3::text IS NULL OR os_family = $3)",
+            )
+            .bind(run_id)
+            .bind(g)
+            .bind(need_os)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected()
+        }
     } as i64;
+    if count == 0 && skipped > 0 {
+        return Err(CmdError::Invalid("群組內沒有作業系統相符的使用中裝置".into()).into());
+    }
     check!(count > 0, Conflict, "群組內沒有使用中的裝置");
+    if skipped > 0 {
+        sqlx::query("UPDATE command_runs SET skipped_os = $2 WHERE id = $1")
+            .bind(run_id)
+            .bind(skipped as i32)
+            .execute(&mut *tx)
+            .await?;
+    }
     audit::record(
         &mut tx,
         &actor.username,
         "command_create",
         Some(&label),
         json!({
-            "id": run_id, "action": action.as_str(), "count": count,
+            "id": run_id, "action": action.as_str(), "count": count, "skipped_os": skipped,
             "script_id": script.as_ref().map(|s| s.0),
             "script_sha256": script.as_ref().map(|s| s.1.clone()),
             "delay_minutes": delay, "expires_at": expires_at,
@@ -182,7 +235,7 @@ pub async fn create_run(pool: &PgPool, i: &RunInput, actor: &Actor) -> anyhow::R
     )
     .await?;
     tx.commit().await?;
-    Ok((run_id, count))
+    Ok((run_id, count, skipped))
 }
 
 pub async fn cancel_run(pool: &PgPool, id: i64, actor: &Actor) -> anyhow::Result<()> {

@@ -27,8 +27,8 @@ pub async fn approve_in(
 ) -> anyhow::Result<Uuid> {
     // 列鎖用 FOR NO KEY UPDATE：與寫入違規／歷程時外鍵取得的 KEY SHARE 相容，
     // 否則舊裝置的 Agent 同時上傳評估時會與這裡互等成死結
-    let (old, hostname): (Option<Uuid>, String) = sqlx::query_as(
-        "SELECT reenroll_of, hostname FROM devices \
+    let (old, hostname, os_family): (Option<Uuid>, String, String) = sqlx::query_as(
+        "SELECT reenroll_of, hostname, os_family FROM devices \
          WHERE id = $1 AND status = 'pending_approval' FOR NO KEY UPDATE",
     )
     .bind(pending)
@@ -79,11 +79,15 @@ pub async fn approve_in(
         .bind(old)
         .execute(&mut *conn)
         .await?;
-    sqlx::query("UPDATE devices SET status = 'active', hostname = $2 WHERE id = $1")
-        .bind(old)
-        .bind(&hostname)
-        .execute(&mut *conn)
-        .await?;
+    // os_family 跟著新記錄走（重灌可能換作業系統），否則舊值會永遠留著
+    sqlx::query(
+        "UPDATE devices SET status = 'active', hostname = $2, os_family = $3 WHERE id = $1",
+    )
+    .bind(old)
+    .bind(&hostname)
+    .bind(&os_family)
+    .execute(&mut *conn)
+    .await?;
     sqlx::query("DELETE FROM devices WHERE id = $1")
         .bind(pending)
         .execute(&mut *conn)

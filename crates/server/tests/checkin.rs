@@ -3,11 +3,12 @@ mod common;
 use std::collections::BTreeMap;
 
 use common::TestServer;
-use protocol::{CheckinRequest, CheckinResponse, SCHEMA_VERSION, Section};
+use protocol::{CheckinRequest, CheckinResponse, OsFamily, SCHEMA_VERSION, Section};
 use sqlx::PgPool;
 
 fn body(hashes: BTreeMap<Section, String>) -> CheckinRequest {
     CheckinRequest {
+        os_family: None,
         schema_version: SCHEMA_VERSION,
         agent_version: "0.1.0".into(),
         boot_time: chrono::Utc::now(),
@@ -233,4 +234,189 @@ async fn checkin_announces_config_support(pool: PgPool) {
     );
     assert!(r.registry_queries.is_empty());
     assert_eq!(r.collection_intervals.security_secs, 3600);
+}
+
+async fn os_of(s: &TestServer, a: &common::TestAgent) -> String {
+    sqlx::query_scalar("SELECT os_family FROM devices WHERE id = $1")
+        .bind(a.device_id)
+        .fetch_one(&s.pool)
+        .await
+        .unwrap()
+}
+
+async fn checkin_as(
+    s: &TestServer,
+    a: &common::TestAgent,
+    os_family: Option<OsFamily>,
+) -> CheckinResponse {
+    s.client(Some(a))
+        .post(s.url("/v1/checkin"))
+        .json(&CheckinRequest {
+            os_family,
+            ..body(BTreeMap::new())
+        })
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap()
+}
+
+#[sqlx::test(migrations = false)]
+async fn checkin_updates_os_family_when_changed(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(1).await;
+    let a = s.enroll_ok(&tok, None, None).await;
+    assert_eq!(os_of(&s, &a).await, "windows");
+    checkin_as(&s, &a, Some(OsFamily::Linux)).await;
+    assert_eq!(os_of(&s, &a).await, "linux");
+    checkin_as(&s, &a, None).await;
+    assert_eq!(os_of(&s, &a).await, "linux", "None 不覆寫");
+}
+
+#[sqlx::test(migrations = false)]
+async fn linux_checkin_gets_empty_assignments(pool: PgPool) {
+    use endpoint_server::compliance::admin as rules;
+    use endpoint_server::deploy::{admin as dep, store};
+    use endpoint_server::updates::{admin as upd, policy::PolicySettings};
+    let s = TestServer::start(pool).await;
+    // 全公司的登錄檔規則、更新原則、派送；兩台裝置同群組
+    let tok = s.create_group_token("台北", 2).await;
+    let lin = s.enroll_ok(&tok, None, None).await;
+    let win = s.enroll_ok(&tok, None, None).await;
+    let g = s.group_id("台北").await;
+    rules::create_rule(
+        &s.pool,
+        &rules::RuleInput {
+            name: "r".into(),
+            description: String::new(),
+            kind: "registry_value".into(),
+            severity: "high".into(),
+            enabled: true,
+            params: serde_json::json!({"path": r"HKLM\SOFTWARE\X", "name": "Y", "op": "equals", "expected": "1"}),
+            include: vec![],
+            exclude: vec![],
+            template_key: None,
+        },
+        "admin",
+    )
+    .await
+    .unwrap();
+    upd::create_policy(
+        &s.pool,
+        &upd::PolicyInput {
+            name: "p".into(),
+            settings: PolicySettings {
+                quality_defer_days: Some(7),
+                ..Default::default()
+            },
+            groups: vec![g],
+        },
+        "admin",
+    )
+    .await
+    .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let data = futures_util::stream::iter([Ok::<_, std::io::Error>(
+        axum::body::Bytes::from_static(b"payload"),
+    )]);
+    let st = store::save(dir.path(), data).await.unwrap();
+    let pkg = dep::create_package(
+        &s.pool,
+        dir.path(),
+        &st,
+        "7z.exe",
+        None,
+        &dep::PackageInput {
+            name: "7-Zip".into(),
+            version: "23.01".into(),
+            kind: "exe".into(),
+            install_args: "/S".into(),
+            uninstall_args: String::new(),
+            success_codes: vec![],
+            detect_name: "7-Zip*".into(),
+            detect_publisher: String::new(),
+            detect_min_version: "23.01".into(),
+        },
+        "admin",
+    )
+    .await
+    .unwrap();
+    dep::create_deployment(
+        &s.pool,
+        &dep::DeploymentInput {
+            name: "d".into(),
+            package_id: pkg,
+            action: "install".into(),
+            include: vec![],
+            exclude: vec![],
+            pilot_group_id: None,
+            max_failure_pct: 10,
+            min_samples: 20,
+        },
+        "admin",
+    )
+    .await
+    .unwrap();
+    sqlx::query("UPDATE devices SET os_family = 'linux' WHERE id = $1")
+        .bind(lin.device_id)
+        .execute(&s.pool)
+        .await
+        .unwrap();
+    s.state.deploy.invalidate();
+    s.state.updates.invalidate();
+
+    let r = checkin_as(&s, &lin, None).await;
+    assert!(r.deployments.is_empty() && r.update_policy.is_none());
+    assert!(r.registry_queries.is_empty() && r.package_source.is_none());
+    assert_eq!(
+        r.deployments_hash.as_deref(),
+        Some(protocol::deploy::assignments_hash(&[]).as_str())
+    );
+    assert_eq!(
+        r.update_policy_hash.as_deref(),
+        Some(protocol::update::update_policy_hash(None).as_str())
+    );
+    assert_eq!(
+        r.registry_queries_hash.as_deref(),
+        Some(protocol::regpath::queries_hash(&[]).as_str())
+    );
+    let r = checkin_as(&s, &win, None).await;
+    assert_eq!(r.deployments.len(), 1);
+    assert!(r.update_policy.is_some());
+    assert_eq!(r.registry_queries.len(), 1);
+}
+
+#[sqlx::test(migrations = false)]
+async fn linux_checkin_still_gets_commands(pool: PgPool) {
+    use endpoint_server::commands::Actor;
+    use endpoint_server::commands::runs::{RunInput, Target, create_run};
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(1).await;
+    let a = s.enroll_ok(&tok, None, None).await;
+    sqlx::query("UPDATE devices SET os_family = 'linux' WHERE id = $1")
+        .bind(a.device_id)
+        .execute(&s.pool)
+        .await
+        .unwrap();
+    let actor = Actor {
+        username: "admin".into(),
+        platform: true,
+        groups: vec![],
+    };
+    create_run(
+        &s.pool,
+        &RunInput {
+            action: "collect".into(),
+            target: Target::Device(a.device_id),
+            delay_minutes: None,
+            script_id: None,
+            expires_hours: 24,
+        },
+        &actor,
+    )
+    .await
+    .unwrap();
+    assert_eq!(checkin_as(&s, &a, None).await.commands.len(), 1);
 }

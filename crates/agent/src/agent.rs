@@ -38,7 +38,7 @@ pub enum Cycle {
 /// 伺服器確認支援前只收集第三期以前的區段：舊版伺服器看到不認識的區段會讓整個報到失敗。
 pub fn sections_to_collect(supported: bool) -> Vec<Section> {
     if supported {
-        Section::ALL.to_vec()
+        Section::WINDOWS.to_vec()
     } else {
         Section::LEGACY.to_vec()
     }
@@ -248,6 +248,7 @@ impl<C: Collector> Agent<C> {
                 hostname: clean(&id.hostname),
                 smbios_uuid: id.smbios_uuid.as_deref().map(clean),
                 bios_serial: id.bios_serial.as_deref().map(clean),
+                os_family: None,
                 mac_addresses: id.mac_addresses.iter().map(|m| clean(m)).collect(),
             })
             .await?;
@@ -374,6 +375,7 @@ impl<C: Collector> Agent<C> {
                 .filter(|(s, _)| allowed.contains(s))
                 .map(|(s, e)| (*s, clean(e)))
                 .collect(),
+            os_family: None,
         };
         let resp = match client.checkin(&req).await {
             Ok(r) => r,
@@ -673,7 +675,7 @@ mod tests {
     #[test]
     fn legacy_sections_only_until_supported() {
         assert_eq!(sections_to_collect(false), Section::LEGACY.to_vec());
-        assert_eq!(sections_to_collect(true), Section::ALL.to_vec());
+        assert_eq!(sections_to_collect(true), Section::WINDOWS.to_vec());
     }
 
     #[test]

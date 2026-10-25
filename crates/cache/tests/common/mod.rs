@@ -155,6 +155,7 @@ pub async fn device(e: &Env) -> Identity {
     let r: EnrollResponse = http
         .post(format!("{}/v1/enroll", e.url))
         .json(&EnrollRequest {
+            os_family: None,
             schema_version: SCHEMA_VERSION,
             enroll_token: token(e, tokens::TokenKind::Device).await,
             csr_pem: csr,

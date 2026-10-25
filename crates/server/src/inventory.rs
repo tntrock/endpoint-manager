@@ -266,6 +266,21 @@ pub async fn load_payload(
                     .collect(),
             )
         }
+        Section::Accounts => {
+            let data: serde_json::Value =
+                sqlx::query_scalar("SELECT data FROM device_accounts WHERE device_id = $1")
+                    .bind(device_id)
+                    .fetch_one(&mut *conn)
+                    .await?;
+            // 手動改壞的 jsonb 讀不回來時當成沒有資料，不讓整個讀取失敗
+            match serde_json::from_value(data) {
+                Ok(a) => InventoryPayload::Accounts(a),
+                Err(e) => {
+                    tracing::warn!(%device_id, error = %e, "帳號區段 jsonb 無法解析，視為無資料");
+                    return Ok(None);
+                }
+            }
+        }
         Section::Basic => {
             let (hostname, domain, is_domain_joined, os_caption, os_build, os_ubr): BasicRow =
                 sqlx::query_as(
@@ -382,6 +397,16 @@ async fn write_payload(
             .bind(json(&s.defender))
             .bind(json(&s.password))
             .bind(json(&s.admins))
+            .execute(&mut *conn)
+            .await?;
+        }
+        InventoryPayload::Accounts(a) => {
+            sqlx::query(
+                "INSERT INTO device_accounts (device_id, data) VALUES ($1, $2::jsonb) \
+                 ON CONFLICT (device_id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()",
+            )
+            .bind(device_id)
+            .bind(json(a))
             .execute(&mut *conn)
             .await?;
         }

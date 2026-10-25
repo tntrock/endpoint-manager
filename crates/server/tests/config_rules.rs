@@ -55,6 +55,7 @@ async fn checkin(s: &TestServer, a: &TestAgent) -> protocol::CheckinResponse {
     s.client(Some(a))
         .post(s.url("/v1/checkin"))
         .json(&protocol::CheckinRequest {
+            os_family: None,
             schema_version: SCHEMA_VERSION,
             agent_version: "0.3.0".into(),
             boot_time: chrono::Utc::now(),
@@ -282,6 +283,7 @@ async fn filtered_upload_is_requested_again(pool: PgPool) {
         .client(Some(&a))
         .post(s.url("/v1/checkin"))
         .json(&protocol::CheckinRequest {
+            os_family: None,
             schema_version: SCHEMA_VERSION,
             agent_version: "0.3.0".into(),
             boot_time: chrono::Utc::now(),

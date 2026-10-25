@@ -1,11 +1,12 @@
 mod common;
 
 use common::TestServer;
-use protocol::{CheckinRequest, SCHEMA_VERSION};
+use protocol::{CheckinRequest, EnrollResponse, OsFamily, SCHEMA_VERSION};
 use sqlx::PgPool;
 
 fn checkin_body() -> CheckinRequest {
     CheckinRequest {
+        os_family: None,
         schema_version: SCHEMA_VERSION,
         agent_version: "0.1.0".into(),
         boot_time: chrono::Utc::now(),
@@ -290,4 +291,55 @@ async fn approved_reinstall_records_inventory_diff(pool: PgPool) {
         vec![("updated".to_string(), "7-Zip|x64|".to_string())],
         "重灌前後的差異要記入歷史"
     );
+}
+
+#[sqlx::test(migrations = false)]
+async fn enroll_records_os_family(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(2).await;
+    for (os, want) in [(Some(OsFamily::Linux), "linux"), (None, "windows")] {
+        let (csr, _) = common::make_csr();
+        let r = s.enroll_with_os(&tok, &csr, None, None, os).await;
+        assert_eq!(r.status(), 200);
+        let id = r.json::<EnrollResponse>().await.unwrap().device_id;
+        let got: String = sqlx::query_scalar("SELECT os_family FROM devices WHERE id = $1")
+            .bind(id)
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+        assert_eq!(got, want);
+    }
+}
+
+#[sqlx::test(migrations = false)]
+async fn approved_reenroll_carries_os_family(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(10).await;
+    // 重灌換作業系統：新待核准記錄的 os_family 核准後要落到保留的舊裝置上
+    for (from, to, want) in [
+        (None, Some(OsFamily::Linux), "linux"),
+        (Some(OsFamily::Linux), None, "windows"),
+    ] {
+        let uuid = format!("UUID-{want}");
+        let (csr, _) = common::make_csr();
+        let r = s
+            .enroll_with_os(&tok, &csr, Some(&uuid), Some("SN-A"), from)
+            .await;
+        let old = r.json::<EnrollResponse>().await.unwrap().device_id;
+        let (csr, _) = common::make_csr();
+        let r = s
+            .enroll_with_os(&tok, &csr, Some(&uuid), Some("SN-A"), to)
+            .await;
+        let new = r.json::<EnrollResponse>().await.unwrap().device_id;
+        let merged = endpoint_server::devices::approve(&s.pool, new, "tester")
+            .await
+            .unwrap();
+        assert_eq!(merged, old);
+        let got: String = sqlx::query_scalar("SELECT os_family FROM devices WHERE id = $1")
+            .bind(old)
+            .fetch_one(&s.pool)
+            .await
+            .unwrap();
+        assert_eq!(got, want);
+    }
 }

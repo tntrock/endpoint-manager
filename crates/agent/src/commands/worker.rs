@@ -9,7 +9,9 @@ use chrono::Utc;
 use protocol::command::{Command, CommandAction, CommandResult, CommandStatus};
 use tokio::sync::watch;
 
-use super::logic::{INTERRUPTED, Step, order, shutdown_args, step, timeout_output, verify_script};
+use super::logic::{
+    INTERRUPTED, NATIVE_LANGUAGE, Step, order, shutdown_args, step, timeout_output, verify_script,
+};
 use super::state::{CommandsState, Entry};
 use crate::client::{ClientError, ServerClient};
 use crate::deploy::worker::{RunOutput, RunResult};
@@ -202,6 +204,12 @@ impl<H: CommandHost> CommandWorker<H> {
     }
 
     async fn script(&mut self, c: &Command) -> CommandResult {
+        if let Some(spec) = c.script.as_ref().filter(|s| s.language != NATIVE_LANGUAGE) {
+            return failed(format!(
+                "這台電腦的作業系統不支援 {} 腳本，未執行",
+                spec.language.as_str()
+            ));
+        }
         let Some(spec) = c.script.as_ref().filter(|s| verify_script(s)) else {
             return failed("腳本雜湊不符，未執行");
         };
@@ -262,5 +270,53 @@ pub async fn run_command_worker<H: CommandHost>(
             _ = tokio::time::sleep(RECHECK) => {}
             _ = shutdown.changed() => return,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use protocol::command::{ScriptLanguage, ScriptSpec};
+
+    struct NoHost;
+
+    impl CommandHost for NoHost {
+        async fn collect_all(&self) {}
+        fn apply_now(&self) {}
+        async fn shutdown(&self, _args: &str) -> std::io::Result<()> {
+            Ok(())
+        }
+        async fn run_script(&self, _: &Path, _: Duration) -> std::io::Result<RunOutput> {
+            panic!("語言不符的腳本不該被執行");
+        }
+    }
+
+    #[tokio::test]
+    async fn foreign_language_script_fails_without_writing_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut w = CommandWorker::new(dir.path(), Arc::new(NoHost));
+        let foreign = if NATIVE_LANGUAGE == ScriptLanguage::Sh {
+            ScriptLanguage::PowerShell
+        } else {
+            ScriptLanguage::Sh
+        };
+        let c = Command {
+            id: 1,
+            action: CommandAction::Script,
+            delay_minutes: None,
+            script: Some(ScriptSpec {
+                sha256: "x".into(),
+                content: "x".into(),
+                timeout_minutes: 1,
+                language: foreign,
+            }),
+        };
+        let r = w.script(&c).await;
+        assert_eq!(r.status, CommandStatus::Failed);
+        assert_eq!(
+            r.output,
+            format!("這台電腦的作業系統不支援 {} 腳本，未執行", foreign.as_str())
+        );
+        assert!(!dir.path().join("scripts").exists());
     }
 }

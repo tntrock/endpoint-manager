@@ -90,6 +90,7 @@ async fn client_maps_status_codes(pool: PgPool) {
     let c = ServerClient::new(&e.url(), &e.root_pem(), None).unwrap();
 
     let checkin = CheckinRequest {
+        os_family: None,
         schema_version: SCHEMA_VERSION,
         agent_version: "t".into(),
         boot_time: chrono::Utc::now(),
@@ -104,6 +105,7 @@ async fn client_maps_status_codes(pool: PgPool) {
     ));
 
     let enroll = |token: &str, csr: String| EnrollRequest {
+        os_family: None,
         schema_version: SCHEMA_VERSION,
         enroll_token: token.into(),
         csr_pem: csr,
@@ -300,6 +302,7 @@ impl Collector for Fake {
                 }]),
             }),
             Section::Registry => anyhow::bail!("registry is collected via collect_registry"),
+            Section::Accounts => anyhow::bail!("accounts is Linux only"),
         })
     }
 }
@@ -696,6 +699,7 @@ mod deploy {
     async fn spec(c: &ServerClient) -> PackageSpec {
         let r = c
             .checkin(&CheckinRequest {
+                os_family: None,
                 schema_version: SCHEMA_VERSION,
                 agent_version: "t".into(),
                 boot_time: chrono::Utc::now(),
@@ -821,6 +825,7 @@ mod deploy {
 
     async fn assignments(c: &ServerClient) -> Vec<protocol::deploy::Assignment> {
         c.checkin(&CheckinRequest {
+            os_family: None,
             schema_version: SCHEMA_VERSION,
             agent_version: "t".into(),
             boot_time: chrono::Utc::now(),
@@ -1575,6 +1580,7 @@ mod deploy {
         let c = ServerClient::new(&e.url(), &e.root_pem(), None).unwrap();
         let r = c
             .enroll(&EnrollRequest {
+                os_family: None,
                 schema_version: SCHEMA_VERSION,
                 enroll_token: token,
                 csr_pem: csr,
@@ -2136,6 +2142,16 @@ mod commands {
     }
 
     async fn command(e: &Env, device: uuid::Uuid, action: &str, script_id: Option<i64>) {
+        // 腳本是這台 Agent 的原生語言（approved_script）：裝置的作業系統要相符才會派送
+        if action == "script" {
+            let os = if cfg!(windows) { "windows" } else { "linux" };
+            sqlx::query("UPDATE devices SET os_family = $2 WHERE id = $1")
+                .bind(device)
+                .bind(os)
+                .execute(&e.pool)
+                .await
+                .unwrap();
+        }
         runs::create_run(
             &e.pool,
             &RunInput {
@@ -2236,6 +2252,7 @@ mod commands {
                 description: String::new(),
                 content: content.into(),
                 timeout_minutes: 5,
+                language: endpoint_agent::commands::logic::NATIVE_LANGUAGE,
             },
             &admin("alice"),
         )

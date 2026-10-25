@@ -29,10 +29,11 @@ pub enum Section {
     Services,
     Security,
     Registry,
+    Accounts,
 }
 
 impl Section {
-    pub const ALL: [Section; 7] = [
+    pub const ALL: [Section; 8] = [
         Section::Basic,
         Section::Hardware,
         Section::Software,
@@ -40,6 +41,27 @@ impl Section {
         Section::Services,
         Section::Security,
         Section::Registry,
+        Section::Accounts,
+    ];
+
+    /// Windows Agent 回報的區段
+    pub const WINDOWS: [Section; 7] = [
+        Section::Basic,
+        Section::Hardware,
+        Section::Software,
+        Section::Patches,
+        Section::Services,
+        Section::Security,
+        Section::Registry,
+    ];
+
+    /// Linux Agent 回報的區段
+    pub const LINUX: [Section; 5] = [
+        Section::Basic,
+        Section::Hardware,
+        Section::Software,
+        Section::Services,
+        Section::Accounts,
     ];
 
     /// 第三期以前就有的區段：新版 Agent 在確認伺服器支援前只回報這些
@@ -61,11 +83,34 @@ impl Section {
             Section::Services => "services",
             Section::Security => "security",
             Section::Registry => "registry",
+            Section::Accounts => "accounts",
         }
     }
 
     pub fn parse(s: &str) -> Option<Section> {
         Section::ALL.into_iter().find(|x| x.as_str() == s)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OsFamily {
+    Windows,
+    Linux,
+}
+
+impl OsFamily {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OsFamily::Windows => "windows",
+            OsFamily::Linux => "linux",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<OsFamily> {
+        [OsFamily::Windows, OsFamily::Linux]
+            .into_iter()
+            .find(|f| f.as_str() == s)
     }
 }
 
@@ -78,6 +123,9 @@ pub struct EnrollRequest {
     pub smbios_uuid: Option<String>,
     pub bios_serial: Option<String>,
     pub mac_addresses: Vec<String>,
+    /// 舊版 Agent 沒有；缺少視為 windows，None 時不序列化
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub os_family: Option<OsFamily>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -96,6 +144,9 @@ pub struct CheckinRequest {
     pub ip_addresses: Vec<String>,
     pub section_hashes: BTreeMap<Section, String>,
     pub section_errors: BTreeMap<Section, String>,
+    /// 舊版 Agent 沒有；缺少視為 windows，None 時不序列化
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub os_family: Option<OsFamily>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -182,6 +233,8 @@ pub enum Arch {
     X86,
     /// 安裝在使用者層級（HKU）
     User,
+    /// 其他架構（Linux 的 arm64 等）
+    Other,
 }
 
 impl Arch {
@@ -190,11 +243,12 @@ impl Arch {
             Arch::X64 => "x64",
             Arch::X86 => "x86",
             Arch::User => "user",
+            Arch::Other => "other",
         }
     }
 
     pub fn parse(s: &str) -> Option<Arch> {
-        [Arch::X64, Arch::X86, Arch::User]
+        [Arch::X64, Arch::X86, Arch::User, Arch::Other]
             .into_iter()
             .find(|a| a.as_str() == s)
     }
@@ -319,6 +373,41 @@ pub struct RegistryValue {
     pub data: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct LocalUser {
+    pub name: String,
+    pub uid: u32,
+    pub shell: String,
+    /// None = 讀不到（沒有 shadow 權限）
+    pub locked: Option<bool>,
+    pub password_changed: Option<chrono::NaiveDate>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PrincipalKind {
+    User,
+    Group,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct PrivilegeEntry {
+    pub principal: String,
+    pub kind: PrincipalKind,
+    /// 來源檔，例如 /etc/sudoers.d/foo
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct AccountsInfo {
+    pub users: Vec<LocalUser>,
+    /// 不列出的系統帳號數量
+    pub system_user_count: u32,
+    pub privileged: Vec<PrivilegeEntry>,
+    /// 解析不了的 sudoers 行
+    pub sudoers_unparsed: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "section", content = "data", rename_all = "lowercase")]
 pub enum InventoryPayload {
@@ -329,6 +418,7 @@ pub enum InventoryPayload {
     Services(Vec<ServiceItem>),
     Security(SecurityInfo),
     Registry(Vec<RegistryValue>),
+    Accounts(AccountsInfo),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -369,6 +459,7 @@ impl InventoryPayload {
             InventoryPayload::Services(_) => Section::Services,
             InventoryPayload::Security(_) => Section::Security,
             InventoryPayload::Registry(_) => Section::Registry,
+            InventoryPayload::Accounts(_) => Section::Accounts,
         }
     }
 
@@ -389,6 +480,11 @@ impl InventoryPayload {
                 }
             }
             InventoryPayload::Registry(v) => v.sort(),
+            InventoryPayload::Accounts(a) => {
+                a.users.sort();
+                a.privileged.sort();
+                a.sudoers_unparsed.sort();
+            }
         }
     }
 
@@ -413,6 +509,9 @@ impl InventoryPayload {
                     return Err(ValidationError::TooManyItems { count: v.len() });
                 }
                 v.len()
+            }
+            InventoryPayload::Accounts(a) => {
+                a.users.len() + a.privileged.len() + a.sudoers_unparsed.len()
             }
         };
         if count > MAX_ITEMS {
@@ -478,6 +577,95 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn checkin(os_family: Option<OsFamily>) -> CheckinRequest {
+        CheckinRequest {
+            schema_version: SCHEMA_VERSION,
+            agent_version: "1".into(),
+            boot_time: DateTime::<Utc>::UNIX_EPOCH,
+            logged_on_user: None,
+            ip_addresses: vec![],
+            section_hashes: BTreeMap::new(),
+            section_errors: BTreeMap::new(),
+            os_family,
+        }
+    }
+
+    #[test]
+    fn os_family_absent_serializes_like_legacy() {
+        let r = checkin(None);
+        assert!(serde_json::to_value(&r).unwrap().get("os_family").is_none());
+        let linux = checkin(Some(OsFamily::Linux));
+        assert_eq!(serde_json::to_value(&linux).unwrap()["os_family"], "linux");
+        assert_eq!(OsFamily::parse("windows"), Some(OsFamily::Windows));
+    }
+
+    #[test]
+    fn section_lists() {
+        assert_eq!(Section::parse("accounts"), Some(Section::Accounts));
+        assert!(!Section::WINDOWS.contains(&Section::Accounts));
+        assert!(!Section::LINUX.contains(&Section::Registry));
+        assert_eq!(Section::ALL.len(), 8);
+    }
+
+    fn accounts(rev: bool) -> InventoryPayload {
+        let mut users = vec![
+            LocalUser {
+                name: "a".into(),
+                uid: 1000,
+                shell: "/bin/sh".into(),
+                locked: None,
+                password_changed: None,
+            },
+            LocalUser {
+                name: "b".into(),
+                uid: 1001,
+                shell: "/bin/sh".into(),
+                locked: Some(true),
+                password_changed: chrono::NaiveDate::from_ymd_opt(2026, 1, 2),
+            },
+        ];
+        let mut privileged = vec![
+            PrivilegeEntry {
+                principal: "a".into(),
+                kind: PrincipalKind::User,
+                source: "/etc/sudoers".into(),
+            },
+            PrivilegeEntry {
+                principal: "wheel".into(),
+                kind: PrincipalKind::Group,
+                source: "/etc/sudoers".into(),
+            },
+        ];
+        let mut un = vec!["x".to_string(), "y".to_string()];
+        if rev {
+            users.reverse();
+            privileged.reverse();
+            un.reverse();
+        }
+        InventoryPayload::Accounts(AccountsInfo {
+            users,
+            system_user_count: 3,
+            privileged,
+            sudoers_unparsed: un,
+        })
+    }
+
+    #[test]
+    fn accounts_hash_ignores_order() {
+        assert_eq!(
+            accounts(false).canonical_hash(),
+            accounts(true).canonical_hash()
+        );
+        assert_eq!(accounts(false).section(), Section::Accounts);
+        accounts(false).validate().unwrap();
+    }
+
+    #[test]
+    fn arch_other_round_trips() {
+        assert_eq!(Arch::parse("other"), Some(Arch::Other));
+        assert_eq!(Arch::Other.as_str(), "other");
+    }
 
     fn sw(name: &str, ver: &str) -> SoftwareItem {
         SoftwareItem {

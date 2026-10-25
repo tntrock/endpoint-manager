@@ -102,6 +102,20 @@ pub fn sanitize(p: &mut InventoryPayload) {
                     .collect();
             }
         }
+        InventoryPayload::Accounts(a) => {
+            a.users.truncate(MAX_ITEMS);
+            a.privileged.truncate(MAX_ITEMS);
+            a.sudoers_unparsed.truncate(MAX_ITEMS);
+            for u in &mut a.users {
+                fix(&mut u.name);
+                fix(&mut u.shell);
+            }
+            for p in &mut a.privileged {
+                fix(&mut p.principal);
+                fix(&mut p.source);
+            }
+            a.sudoers_unparsed.iter_mut().for_each(fix);
+        }
     }
 }
 

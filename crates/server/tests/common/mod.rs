@@ -3,7 +3,7 @@
 use std::net::SocketAddr;
 
 use endpoint_server::{AppState, agent_router, ca, db, partitions, tls, tokens};
-use protocol::{EnrollRequest, EnrollResponse, SCHEMA_VERSION};
+use protocol::{EnrollRequest, EnrollResponse, OsFamily, SCHEMA_VERSION};
 use rcgen::{CertificateParams, KeyPair};
 use sqlx::PgPool;
 use tokio::net::TcpListener;
@@ -209,9 +209,21 @@ impl TestServer {
         smbios: Option<&str>,
         serial: Option<&str>,
     ) -> reqwest::Response {
+        self.enroll_with_os(token, csr, smbios, serial, None).await
+    }
+
+    pub async fn enroll_with_os(
+        &self,
+        token: &str,
+        csr: &str,
+        smbios: Option<&str>,
+        serial: Option<&str>,
+        os_family: Option<OsFamily>,
+    ) -> reqwest::Response {
         self.client(None)
             .post(self.url("/v1/enroll"))
             .json(&EnrollRequest {
+                os_family,
                 schema_version: SCHEMA_VERSION,
                 enroll_token: token.into(),
                 csr_pem: csr.into(),

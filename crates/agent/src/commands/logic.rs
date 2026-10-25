@@ -1,11 +1,17 @@
 //! 遠端指令的判斷（純函式）：這一筆該做什麼、關機參數、腳本雜湊驗證。
 
 use protocol::command::{
-    Command, CommandAction, CommandResult, MAX_OUTPUT_BYTES, ScriptSpec, tail_utf8,
+    Command, CommandAction, CommandResult, MAX_OUTPUT_BYTES, ScriptLanguage, ScriptSpec, tail_utf8,
 };
 use sha2::{Digest, Sha256};
 
 pub use super::state::Entry;
+
+/// 這個平台能執行的腳本語言
+#[cfg(windows)]
+pub const NATIVE_LANGUAGE: ScriptLanguage = ScriptLanguage::PowerShell;
+#[cfg(not(windows))]
+pub const NATIVE_LANGUAGE: ScriptLanguage = ScriptLanguage::Sh;
 
 pub const INTERRUPTED: &str = "執行中斷（Agent 停止或電腦重新開機）";
 
@@ -160,6 +166,7 @@ mod tests {
         let spec = ScriptSpec {
             sha256: sha.clone(),
             content: content.clone(),
+            language: Default::default(),
             timeout_minutes: 30,
         };
         assert!(verify_script(&spec));

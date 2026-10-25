@@ -493,3 +493,44 @@ async fn package_form_has_detection_help(pool: PgPool) {
         );
     }
 }
+
+/// Linux 裝置不是派送對象：目標數與裝置清單都不含它
+#[sqlx::test(migrations = false)]
+async fn linux_devices_not_counted(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let pkg = server_package(&s).await;
+    let tok = s.create_group_token("台北", 3).await;
+    let _w1 = s.enroll_ok(&tok, None, None).await;
+    let _w2 = s.enroll_ok(&tok, None, None).await;
+    let lx = s.enroll_ok(&tok, None, None).await;
+    sqlx::query("UPDATE devices SET os_family = 'linux' WHERE id = $1")
+        .bind(lx.device_id)
+        .execute(&s.pool)
+        .await
+        .unwrap();
+    let d = dadmin::create_deployment(
+        &s.pool,
+        &dadmin::DeploymentInput {
+            name: "Linux 排除".into(),
+            package_id: pkg,
+            action: "install".into(),
+            include: vec![],
+            exclude: vec![],
+            pilot_group_id: None,
+            max_failure_pct: 10,
+            min_samples: 20,
+        },
+        "admin",
+    )
+    .await
+    .unwrap();
+    let admin = s.admin_client().await;
+    let (_, html) = s.page(&admin, "/deployments").await;
+    assert!(
+        html.contains(r#"<td class="num">2</td>"#) && !html.contains(r#"<td class="num">3</td>"#),
+        "{html}"
+    );
+    let (_, html) = s.page(&admin, &format!("/deployments/{d}")).await;
+    assert!(html.contains("等待中：2"), "{html}");
+    assert!(!html.contains(&lx.device_id.to_string()), "{html}");
+}

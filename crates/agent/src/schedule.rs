@@ -29,13 +29,15 @@ fn interval(s: Section, iv: &CollectionIntervals) -> Duration {
         Section::Services => iv.services_secs,
         Section::Security => iv.security_secs,
         Section::Registry => iv.registry_secs,
+        // Windows 不收集帳號區段；Linux Agent 之後才用
+        Section::Accounts => iv.security_secs,
     };
     Duration::from_secs(secs.into())
 }
 
 impl Schedule {
     pub fn due(&self, now: Instant, iv: &CollectionIntervals) -> Vec<Section> {
-        Section::ALL
+        Section::WINDOWS
             .into_iter()
             .filter(|s| {
                 self.triggered.contains(s)
@@ -103,7 +105,7 @@ mod tests {
         let s = Schedule::default();
         assert_eq!(
             s.due(Instant::now(), &DEFAULT_INTERVALS),
-            Section::ALL.to_vec()
+            Section::WINDOWS.to_vec()
         );
     }
 
@@ -111,7 +113,7 @@ mod tests {
     fn respects_intervals_and_triggers() {
         let mut s = Schedule::default();
         let t0 = Instant::now();
-        for sec in Section::ALL {
+        for sec in Section::WINDOWS {
             s.mark_collected(sec, t0);
         }
         assert_eq!(s.due(t0, &DEFAULT_INTERVALS), vec![Section::Basic]);

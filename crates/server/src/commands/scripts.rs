@@ -1,6 +1,6 @@
 //! 腳本管理（平台管理員）：新增、修改、核准、停用／啟用、刪除；雙人核准設定。
 
-use protocol::command::MAX_SCRIPT_BYTES;
+use protocol::command::{MAX_SCRIPT_BYTES, ScriptLanguage};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use sqlx::{PgConnection, PgPool};
@@ -18,6 +18,8 @@ pub struct ScriptInput {
     pub description: String,
     pub content: String,
     pub timeout_minutes: i32,
+    /// 只在新增時使用；建立後不能改（核准是針對特定語言的內容）
+    pub language: ScriptLanguage,
 }
 
 struct Valid {
@@ -145,10 +147,11 @@ pub async fn create_script(pool: &PgPool, i: &ScriptInput, actor: &Actor) -> any
     let mut tx = pool.begin().await?;
     let id: i64 = sqlx::query_scalar(
         "INSERT INTO scripts (name, description, content, sha256, timeout_minutes, status, \
-           created_by, updated_by, approved_by, approved_at, editors) \
+           created_by, updated_by, approved_by, approved_at, editors, \
+           language) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $7, \
            CASE WHEN $6 = 'approved' THEN $7 END, CASE WHEN $6 = 'approved' THEN now() END, \
-           ARRAY[$7]) \
+           ARRAY[$7], $8) \
          RETURNING id",
     )
     .bind(&v.name)
@@ -158,6 +161,7 @@ pub async fn create_script(pool: &PgPool, i: &ScriptInput, actor: &Actor) -> any
     .bind(i.timeout_minutes)
     .bind(status)
     .bind(&actor.username)
+    .bind(i.language.as_str())
     .fetch_one(&mut *tx)
     .await
     .map_err(name_taken)?;

@@ -4,7 +4,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use protocol::command::{
-    Command, CommandAction, CommandResult, MAX_COMMANDS_PER_CHECKIN, ScriptSpec,
+    Command, CommandAction, CommandResult, MAX_COMMANDS_PER_CHECKIN, ScriptLanguage, ScriptSpec,
 };
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -21,6 +21,7 @@ type PendingRow = (
     Option<String>,
     Option<i32>,
     String,
+    Option<String>,
 );
 
 /// 這台還沒完成、沒過期、沒取消的指令（由舊到新最多 10 筆）；收到結果前每次都重送。
@@ -31,7 +32,7 @@ pub async fn pending_for(pool: &PgPool, device: Uuid) -> Result<Vec<Command>, sq
     let mut tx = pool.begin().await?;
     let rows: Vec<PendingRow> = sqlx::query_as(
         "SELECT t.id, r.action, r.delay_minutes, r.script_sha256, r.script_content, \
-                r.script_timeout_minutes, t.status \
+                r.script_timeout_minutes, t.status, r.script_language \
          FROM command_targets t JOIN command_runs r ON r.id = t.run_id \
          WHERE t.device_id = $1 AND t.status IN ('pending', 'sent') \
            AND r.canceled_at IS NULL AND r.expires_at > now() \
@@ -58,7 +59,7 @@ pub async fn pending_for(pool: &PgPool, device: Uuid) -> Result<Vec<Command>, sq
     tx.commit().await?;
     Ok(rows
         .into_iter()
-        .map(|(id, action, delay, sha, content, timeout, _)| {
+        .map(|(id, action, delay, sha, content, timeout, _, lang)| {
             let action = CommandAction::parse(&action);
             Command {
                 id,
@@ -69,6 +70,11 @@ pub async fn pending_for(pool: &PgPool, device: Uuid) -> Result<Vec<Command>, sq
                         sha256,
                         content,
                         timeout_minutes: timeout.and_then(|t| u32::try_from(t).ok()).unwrap_or(30),
+                        // 讀不懂的值當成 PowerShell（舊指令都是）
+                        language: lang
+                            .as_deref()
+                            .and_then(ScriptLanguage::parse)
+                            .unwrap_or_default(),
                     }),
                     _ => None,
                 },

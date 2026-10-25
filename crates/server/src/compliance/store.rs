@@ -52,7 +52,7 @@ pub async fn load_ruleset(conn: &mut PgConnection) -> Result<RuleSet, sqlx::Erro
 }
 
 type FactRow = (
-    String,
+    bool,
     Option<i64>,
     Option<String>,
     Option<i32>,
@@ -153,12 +153,14 @@ pub async fn load_facts(
     id: Uuid,
 ) -> Result<Option<DeviceFacts>, sqlx::Error> {
     let row: Option<FactRow> = sqlx::query_as(
-        "SELECT status, group_id, os_build, os_ubr, agent_version FROM devices WHERE id = $1",
+        // 合規只管 Windows：Linux 裝置視同非使用中，評估不產生任何結果
+        "SELECT (status = 'active' AND os_family = 'windows'), group_id, os_build, os_ubr, \
+         agent_version FROM devices WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(&mut *conn)
     .await?;
-    let Some((status, group_id, os_build, os_ubr, agent_version)) = row else {
+    let Some((active, group_id, os_build, os_ubr, agent_version)) = row else {
         return Ok(None);
     };
     let sections: Vec<String> =
@@ -205,7 +207,7 @@ pub async fn load_facts(
     let mut cfg = load_config(conn, &[id]).await?;
     let now = chrono::Utc::now();
     Ok(Some(DeviceFacts {
-        active: status == "active",
+        active,
         group_id,
         os_build: has("basic").then(|| os_build.unwrap_or_default()),
         os_ubr: os_ubr.and_then(|u| u32::try_from(u).ok()),
@@ -421,7 +423,7 @@ pub async fn refresh_device_fresh(conn: &mut PgConnection, id: Uuid) -> Result<(
 
 type BulkDeviceRow = (
     Uuid,
-    String,
+    bool,
     Option<i64>,
     Option<String>,
     Option<i32>,
@@ -435,8 +437,8 @@ pub async fn load_facts_bulk(
     ids: &[Uuid],
 ) -> Result<Vec<(Uuid, DeviceFacts)>, sqlx::Error> {
     let devices: Vec<BulkDeviceRow> = sqlx::query_as(
-        "SELECT id, status, group_id, os_build, os_ubr, agent_version FROM devices \
-         WHERE id = ANY($1) ORDER BY id",
+        "SELECT id, (status = 'active' AND os_family = 'windows'), group_id, os_build, os_ubr, \
+         agent_version FROM devices WHERE id = ANY($1) ORDER BY id",
     )
     .bind(ids)
     .fetch_all(&mut *conn)
@@ -477,9 +479,9 @@ pub async fn load_facts_bulk(
     let has = |d: Uuid, s: &str| has.contains(&(d, s.to_string()));
     Ok(devices
         .into_iter()
-        .map(|(id, status, group_id, os_build, os_ubr, agent_version)| {
+        .map(|(id, active, group_id, os_build, os_ubr, agent_version)| {
             let facts = DeviceFacts {
-                active: status == "active",
+                active,
                 group_id,
                 os_build: has(id, "basic").then(|| os_build.unwrap_or_default()),
                 os_ubr: os_ubr.and_then(|u| u32::try_from(u).ok()),

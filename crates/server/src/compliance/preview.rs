@@ -23,7 +23,8 @@ pub async fn preview(pool: &PgPool, rule: Rule) -> Result<PreviewCount, sqlx::Er
     let mut conn = pool.acquire().await?;
     loop {
         let ids: Vec<Uuid> = sqlx::query_scalar(
-            "SELECT id FROM devices WHERE status = 'active' AND ($1::uuid IS NULL OR id > $1) \
+            "SELECT id FROM devices WHERE status = 'active' AND os_family = 'windows' \
+             AND ($1::uuid IS NULL OR id > $1) \
              ORDER BY id LIMIT $2",
         )
         .bind(cursor)

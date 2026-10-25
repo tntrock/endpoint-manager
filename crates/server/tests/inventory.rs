@@ -380,3 +380,73 @@ async fn security_and_registry_roundtrip_with_history(pool: PgPool) {
             .unwrap();
     assert_eq!(back.canonical_hash(), reg.canonical_hash());
 }
+
+fn accts(locked: Option<bool>) -> InventoryPayload {
+    use protocol::{AccountsInfo, LocalUser, PrincipalKind, PrivilegeEntry};
+    InventoryPayload::Accounts(AccountsInfo {
+        users: vec![
+            LocalUser {
+                name: "alice".into(),
+                uid: 1000,
+                shell: "/bin/bash".into(),
+                locked,
+                password_changed: chrono::NaiveDate::from_ymd_opt(2026, 1, 2),
+            },
+            LocalUser {
+                name: "bob".into(),
+                uid: 1001,
+                shell: "/bin/sh".into(),
+                locked: None,
+                password_changed: None,
+            },
+        ],
+        system_user_count: 30,
+        privileged: vec![PrivilegeEntry {
+            principal: "admin".into(),
+            kind: PrincipalKind::Group,
+            source: "/etc/sudoers".into(),
+        }],
+        sudoers_unparsed: vec!["Defaults !weird".into()],
+    })
+}
+
+#[sqlx::test(migrations = false)]
+async fn accounts_section_round_trips(pool: PgPool) {
+    let (s, a) = setup(pool).await;
+    assert_eq!(
+        put(&s, &a, "accounts", &upload(accts(Some(false)))).await,
+        204
+    );
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM device_accounts WHERE device_id = $1")
+        .bind(a.device_id)
+        .fetch_one(&s.pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 1);
+    // 同內容再傳一次：不產生變更
+    assert_eq!(
+        put(&s, &a, "accounts", &upload(accts(Some(false)))).await,
+        204
+    );
+    assert_eq!(change_count(&s, &a).await, 0);
+    // 改一個 user 的 locked：一筆 updated
+    assert_eq!(
+        put(&s, &a, "accounts", &upload(accts(Some(true)))).await,
+        204
+    );
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT change, item_key FROM inventory_changes WHERE device_id = $1 AND section = 'accounts'",
+    )
+    .bind(a.device_id)
+    .fetch_all(&s.pool)
+    .await
+    .unwrap();
+    assert_eq!(rows, vec![("updated".into(), "user|alice".into())]);
+    let mut c = s.pool.acquire().await.unwrap();
+    let back =
+        endpoint_server::inventory::load_payload(&mut c, a.device_id, protocol::Section::Accounts)
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(back.canonical_hash(), accts(Some(true)).canonical_hash());
+}

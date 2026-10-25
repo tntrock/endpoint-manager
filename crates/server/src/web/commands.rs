@@ -336,7 +336,7 @@ pub async fn create(
         expires_hours: f.expires_hours,
     };
     match runs::create_run(&st.pool, &input, &actor(&s)).await {
-        Ok((id, _)) => Ok(Redirect::to(&format!("/commands/{id}")).into_response()),
+        Ok((id, ..)) => Ok(Redirect::to(&format!("/commands/{id}")).into_response()),
         Err(e) => match form_error(&e) {
             Some((status, m)) => {
                 let page = list_page(&st, &s, 0, Some(m)).await.map_err(db_error)?;
