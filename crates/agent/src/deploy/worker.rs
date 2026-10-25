@@ -199,17 +199,14 @@ pub async fn run_process(
             if let Some(j) = &job {
                 j.terminate();
             }
-            // 先 SIGTERM 整個群組，10 秒還沒結束就 SIGKILL
+            // 先 SIGTERM 整個群組，等領頭程序結束（最多 10 秒）後一律 SIGKILL 群組：忽略 TERM 的孫程序也要結束
             #[cfg(unix)]
             if let Some(g) = pgid {
                 // SAFETY: 只送信號給自己建立的程序群組
                 unsafe { libc::kill(-g, libc::SIGTERM) };
-                if tokio::time::timeout(Duration::from_secs(10), child.wait())
-                    .await
-                    .is_err()
-                {
-                    unsafe { libc::kill(-g, libc::SIGKILL) };
-                }
+                let _ = tokio::time::timeout(Duration::from_secs(10), child.wait()).await;
+                // 群組已空時回 ESRCH，無害
+                unsafe { libc::kill(-g, libc::SIGKILL) };
             }
             let _ = child.kill().await;
             RunResult::TimedOut
@@ -906,13 +903,23 @@ mod unix_tests {
     /// 逾時時整個程序群組都結束：背景的 sleep 是孫程序
     #[tokio::test]
     async fn timeout_kills_process_group() {
+        group_is_gone_after_timeout("sleep 300 &").await;
+    }
+
+    /// 孫程序忽略 SIGTERM、領頭程序卻因 SIGTERM 結束：仍要被 SIGKILL
+    #[tokio::test]
+    async fn timeout_kills_group_member_ignoring_term() {
+        group_is_gone_after_timeout("(trap '' TERM; exec sleep 300) &").await;
+    }
+
+    async fn group_is_gone_after_timeout(spawn_line: &str) {
         let dir = tempfile::tempdir().unwrap();
         let pid_file = dir.path().join("pid");
         // unix 的參數以空白切開、不支援引號：腳本寫成檔案再交給 sh
         let script = dir.path().join("s.sh");
         std::fs::write(
             &script,
-            format!("sleep 300 &\necho $! > {}\nwait\n", pid_file.display()),
+            format!("{spawn_line}\necho $! > {}\nwait\n", pid_file.display()),
         )
         .unwrap();
         let c = Cmd {
