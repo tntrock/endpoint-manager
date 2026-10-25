@@ -65,7 +65,9 @@ jobs:
           tool: cargo-deb,cargo-generate-rpm
       - run: sh packaging/linux/build.sh
       - name: 靜態連結檢查
-        run: file target/x86_64-unknown-linux-musl/release/endpoint-agent | grep 'statically linked'
+        run: |
+          file target/x86_64-unknown-linux-musl/release/endpoint-agent
+          file target/x86_64-unknown-linux-musl/release/endpoint-agent | grep -E 'statically linked|static-pie linked'
       - name: deb 安裝
         run: |
           sudo dpkg -i target/linux-release/endpoint-agent_*_amd64.deb
@@ -74,13 +76,17 @@ jobs:
           # 尚未 configure，不應啟動
           ! systemctl is-active --quiet endpoint-agent
       - name: deb 升級
-        run: sudo dpkg -i target/linux-release/endpoint-agent_*_amd64.deb
+        run: |
+          sudo mkdir -p /var/lib/endpoint-manager
+          echo '{}' | sudo tee /var/lib/endpoint-manager/config.json >/dev/null
+          sudo dpkg -i target/linux-release/endpoint-agent_*_amd64.deb
+          sudo test -e /var/lib/endpoint-manager/config.json
       - name: deb 移除
         run: |
           sudo mkdir -p /var/lib/endpoint-manager
           sudo touch /var/lib/endpoint-manager/config.json
           sudo dpkg -r endpoint-agent
-          test ! -e /var/lib/endpoint-manager
+          sudo test ! -e /var/lib/endpoint-manager
           test ! -e /usr/bin/endpoint-agent
       - name: rpm 安裝與移除（rockylinux:9）
         run: >
