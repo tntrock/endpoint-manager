@@ -7,6 +7,9 @@ pub mod collector;
 pub mod commands;
 pub mod config;
 pub mod deploy;
+#[cfg(target_os = "linux")]
+pub mod linux;
+pub mod linux_parse;
 pub mod regvalue;
 pub mod sanitize;
 pub mod schedule;
