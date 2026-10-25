@@ -40,6 +40,8 @@ fn main() -> anyhow::Result<()> {
 fn main() -> anyhow::Result<()> {
     use endpoint_agent::config::flag;
     use endpoint_agent::linux::{agent_dir, install, run_foreground};
+    // SAFETY: umask 沒有前置條件；所有子命令建立的檔案（含金鑰、設定）都只有擁有者能讀。
+    unsafe { libc::umask(0o077) };
     rustls::crypto::ring::default_provider()
         .install_default()
         .map_err(|_| anyhow::anyhow!("crypto provider already installed"))?;

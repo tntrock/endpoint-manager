@@ -147,12 +147,13 @@ mod tests {
     async fn shebang_script_uses_interpreter() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("2.sh");
-        std::fs::write(&p, "#!/bin/sh\necho $0\n").unwrap();
+        std::fs::write(&p, "#!/bin/echo\nignored\n").unwrap();
         let out = host()
             .run_script(&p, Duration::from_secs(20))
             .await
             .unwrap();
         assert_eq!(out.result, RunResult::Exited(0));
+        // /bin/echo 當直譯器：輸出是它收到的腳本路徑；若改走 sh，內容會被當 sh 執行而不是印出路徑
         assert_eq!(out.output.trim(), p.display().to_string());
     }
 }

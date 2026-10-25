@@ -41,8 +41,6 @@ pub async fn run(dir: &Path, shutdown: watch::Receiver<bool>) -> anyhow::Result<
 
 /// systemd 以前景執行；日誌寫 stderr（journal 會收），SIGTERM 或 Ctrl+C 結束。
 pub fn run_foreground() -> anyhow::Result<()> {
-    // SAFETY: umask 沒有前置條件；金鑰與狀態檔一律只有擁有者能讀。
-    unsafe { libc::umask(0o077) };
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_env_filter(
