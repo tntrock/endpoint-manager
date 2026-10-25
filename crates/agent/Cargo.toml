@@ -43,6 +43,9 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_JobObjects",
 ] }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 endpoint-server = { path = "../server" }
 axum.workspace = true

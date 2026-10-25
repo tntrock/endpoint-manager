@@ -7,11 +7,21 @@ use sha2::{Digest, Sha256};
 
 pub use super::state::Entry;
 
-/// 這個平台能執行的腳本語言
-#[cfg(windows)]
-pub const NATIVE_LANGUAGE: ScriptLanguage = ScriptLanguage::PowerShell;
-#[cfg(not(windows))]
-pub const NATIVE_LANGUAGE: ScriptLanguage = ScriptLanguage::Sh;
+/// 腳本檔名：副檔名依語言
+pub fn script_file_name(lang: ScriptLanguage, id: i64) -> String {
+    match lang {
+        ScriptLanguage::PowerShell => format!("{id}.ps1"),
+        ScriptLanguage::Sh => format!("{id}.sh"),
+    }
+}
+
+/// 腳本檔內容：PowerShell 用 UTF-8 含 BOM，Windows PowerShell 5.1 才不會把中文讀成亂碼
+pub fn script_body(lang: ScriptLanguage, content: &str) -> String {
+    match lang {
+        ScriptLanguage::PowerShell => format!("\u{feff}{content}"),
+        ScriptLanguage::Sh => content.to_string(),
+    }
+}
 
 pub const INTERRUPTED: &str = "執行中斷（Agent 停止或電腦重新開機）";
 
@@ -156,6 +166,14 @@ mod tests {
         ];
         let ids: Vec<i64> = order(&cmds).iter().map(|c| c.id).collect();
         assert_eq!(ids, vec![2, 4, 1, 3]);
+    }
+
+    #[test]
+    fn script_file_names_and_bodies() {
+        assert_eq!(script_file_name(ScriptLanguage::Sh, 7), "7.sh");
+        assert_eq!(script_file_name(ScriptLanguage::PowerShell, 7), "7.ps1");
+        assert_eq!(script_body(ScriptLanguage::PowerShell, "x"), "\u{feff}x");
+        assert_eq!(script_body(ScriptLanguage::Sh, "x"), "x");
     }
 
     #[test]

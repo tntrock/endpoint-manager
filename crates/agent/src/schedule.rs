@@ -29,16 +29,22 @@ fn interval(s: Section, iv: &CollectionIntervals) -> Duration {
         Section::Services => iv.services_secs,
         Section::Security => iv.security_secs,
         Section::Registry => iv.registry_secs,
-        // Windows 不收集帳號區段；Linux Agent 之後才用
+        // 只有 Linux Agent 收集帳號區段
         Section::Accounts => iv.security_secs,
     };
     Duration::from_secs(secs.into())
 }
 
 impl Schedule {
-    pub fn due(&self, now: Instant, iv: &CollectionIntervals) -> Vec<Section> {
-        Section::WINDOWS
-            .into_iter()
+    pub fn due(
+        &self,
+        now: Instant,
+        iv: &CollectionIntervals,
+        sections: &[Section],
+    ) -> Vec<Section> {
+        sections
+            .iter()
+            .copied()
             .filter(|s| {
                 self.triggered.contains(s)
                     || self
@@ -104,7 +110,7 @@ mod tests {
     fn everything_due_at_start() {
         let s = Schedule::default();
         assert_eq!(
-            s.due(Instant::now(), &DEFAULT_INTERVALS),
+            s.due(Instant::now(), &DEFAULT_INTERVALS, &Section::WINDOWS),
             Section::WINDOWS.to_vec()
         );
     }
@@ -116,19 +122,25 @@ mod tests {
         for sec in Section::WINDOWS {
             s.mark_collected(sec, t0);
         }
-        assert_eq!(s.due(t0, &DEFAULT_INTERVALS), vec![Section::Basic]);
+        assert_eq!(
+            s.due(t0, &DEFAULT_INTERVALS, &Section::WINDOWS),
+            vec![Section::Basic]
+        );
 
         s.trigger(Section::Software);
         assert_eq!(
-            s.due(t0, &DEFAULT_INTERVALS),
+            s.due(t0, &DEFAULT_INTERVALS, &Section::WINDOWS),
             vec![Section::Basic, Section::Software]
         );
         s.mark_collected(Section::Software, t0);
-        assert_eq!(s.due(t0, &DEFAULT_INTERVALS), vec![Section::Basic]);
+        assert_eq!(
+            s.due(t0, &DEFAULT_INTERVALS, &Section::WINDOWS),
+            vec![Section::Basic]
+        );
 
         let later = t0 + Duration::from_secs(3600);
         assert_eq!(
-            s.due(later, &DEFAULT_INTERVALS),
+            s.due(later, &DEFAULT_INTERVALS, &Section::WINDOWS),
             vec![
                 Section::Basic,
                 Section::Software,
@@ -140,7 +152,7 @@ mod tests {
         );
         let much_later = t0 + Duration::from_secs(86_400);
         assert!(
-            s.due(much_later, &DEFAULT_INTERVALS)
+            s.due(much_later, &DEFAULT_INTERVALS, &Section::WINDOWS)
                 .contains(&Section::Hardware)
         );
     }

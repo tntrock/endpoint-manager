@@ -36,12 +36,12 @@ pub enum Cycle {
 }
 
 /// 伺服器確認支援前只收集第三期以前的區段：舊版伺服器看到不認識的區段會讓整個報到失敗。
-pub fn sections_to_collect(supported: bool) -> Vec<Section> {
-    if supported {
-        Section::WINDOWS.to_vec()
-    } else {
-        Section::LEGACY.to_vec()
-    }
+pub fn sections_to_collect(platform: &[Section], supported: bool) -> Vec<Section> {
+    platform
+        .iter()
+        .copied()
+        .filter(|s| supported || Section::LEGACY.contains(s))
+        .collect()
 }
 
 /// 已在回報新區段時報到被 400／422 拒絕：多半是舊版伺服器不認得新區段，應退回只送舊區段。
@@ -248,7 +248,7 @@ impl<C: Collector> Agent<C> {
                 hostname: clean(&id.hostname),
                 smbios_uuid: id.smbios_uuid.as_deref().map(clean),
                 bios_serial: id.bios_serial.as_deref().map(clean),
-                os_family: None,
+                os_family: self.collector.os_family(),
                 mac_addresses: id.mac_addresses.iter().map(|m| clean(m)).collect(),
             })
             .await?;
@@ -264,10 +264,10 @@ impl<C: Collector> Agent<C> {
 
     async fn collect_due(&mut self) {
         let now = Instant::now();
-        let allowed = sections_to_collect(self.server_supports_config);
+        let allowed = sections_to_collect(self.collector.sections(), self.server_supports_config);
         let due: Vec<Section> = self
             .schedule
-            .due(now, &self.intervals)
+            .due(now, &self.intervals, self.collector.sections())
             .into_iter()
             .filter(|s| allowed.contains(s))
             .collect();
@@ -355,7 +355,7 @@ impl<C: Collector> Agent<C> {
         };
 
         // 伺服器不支援時，快取裡的新區段（例如伺服器降版前收集的）不回報
-        let allowed = sections_to_collect(self.server_supports_config);
+        let allowed = sections_to_collect(self.collector.sections(), self.server_supports_config);
         let hashes: BTreeMap<Section, String> = self
             .cache
             .iter()
@@ -375,7 +375,7 @@ impl<C: Collector> Agent<C> {
                 .filter(|(s, _)| allowed.contains(s))
                 .map(|(s, e)| (*s, clean(e)))
                 .collect(),
-            os_family: None,
+            os_family: self.collector.os_family(),
         };
         let resp = match client.checkin(&req).await {
             Ok(r) => r,
@@ -673,9 +673,13 @@ mod tests {
     }
 
     #[test]
-    fn legacy_sections_only_until_supported() {
-        assert_eq!(sections_to_collect(false), Section::LEGACY.to_vec());
-        assert_eq!(sections_to_collect(true), Section::WINDOWS.to_vec());
+    fn sections_follow_platform() {
+        assert_eq!(sections_to_collect(&Section::LINUX, true), Section::LINUX);
+        assert!(!sections_to_collect(&Section::LINUX, false).contains(&Section::Accounts));
+        assert_eq!(
+            sections_to_collect(&Section::WINDOWS, false),
+            Section::LEGACY
+        );
     }
 
     #[test]
