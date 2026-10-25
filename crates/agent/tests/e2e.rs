@@ -2142,6 +2142,16 @@ mod commands {
     }
 
     async fn command(e: &Env, device: uuid::Uuid, action: &str, script_id: Option<i64>) {
+        // 腳本是這台 Agent 的原生語言（approved_script）：裝置的作業系統要相符才會派送
+        if action == "script" {
+            let os = if cfg!(windows) { "windows" } else { "linux" };
+            sqlx::query("UPDATE devices SET os_family = $2 WHERE id = $1")
+                .bind(device)
+                .bind(os)
+                .execute(&e.pool)
+                .await
+                .unwrap();
+        }
         runs::create_run(
             &e.pool,
             &RunInput {
@@ -2242,7 +2252,7 @@ mod commands {
                 description: String::new(),
                 content: content.into(),
                 timeout_minutes: 5,
-                language: Default::default(),
+                language: endpoint_agent::commands::logic::NATIVE_LANGUAGE,
             },
             &admin("alice"),
         )
