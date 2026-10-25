@@ -6,11 +6,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use protocol::command::{Command, CommandAction, CommandResult, CommandStatus};
+use protocol::command::{Command, CommandAction, CommandResult, CommandStatus, ScriptLanguage};
 use tokio::sync::watch;
 
 use super::logic::{
-    INTERRUPTED, NATIVE_LANGUAGE, Step, order, shutdown_args, step, timeout_output, verify_script,
+    INTERRUPTED, Step, order, script_body, script_file_name, step, timeout_output, verify_script,
 };
 use super::state::{CommandsState, Entry};
 use crate::client::{ClientError, ServerClient};
@@ -30,11 +30,23 @@ pub struct CommandWork {
 
 /// 指令實際作用的對象（Windows 實作在 `windows::commands`；測試用假的）
 pub trait CommandHost: Send + Sync + 'static {
+    /// 這台電腦能執行的腳本語言（預設 PowerShell）
+    fn language(&self) -> ScriptLanguage {
+        ScriptLanguage::PowerShell
+    }
+    /// 關機參數（預設 shutdown.exe 的）
+    fn shutdown_args(&self, reboot: bool, delay_minutes: u32) -> String {
+        super::logic::shutdown_args(reboot, delay_minutes)
+    }
+    /// 回報文字中的關機程式名稱
+    fn shutdown_label(&self) -> &'static str {
+        "shutdown.exe"
+    }
     /// 要求報到迴圈下一輪重新收集所有區段
     fn collect_all(&self) -> impl Future<Output = ()> + Send;
     /// 喚醒派送與更新原則的背景工作
     fn apply_now(&self);
-    /// 執行 shutdown.exe（參數由 `logic::shutdown_args` 產生）
+    /// 執行關機程式（參數由 `shutdown_args` 產生）
     fn shutdown(&self, args: &str) -> impl Future<Output = std::io::Result<()>> + Send;
     /// 執行腳本檔，回傳結果與輸出
     fn run_script(
@@ -181,16 +193,16 @@ impl<H: CommandHost> CommandWorker<H> {
                 ok("已要求立即套用派送與更新原則")
             }
             CommandAction::Reboot | CommandAction::Shutdown => {
-                let args = shutdown_args(
+                let args = self.host.shutdown_args(
                     c.action == CommandAction::Reboot,
                     c.delay_minutes.unwrap_or(10),
                 );
                 // 先回報再關機：關機後伺服器已經有結果；回報失敗仍關機，開機後補送
-                let r = ok(format!("shutdown.exe {args}"));
+                let r = ok(format!("{} {args}", self.host.shutdown_label()));
                 self.set_result(c.id, r.clone());
                 self.report(client, c.id, &r).await;
                 if let Err(e) = self.host.shutdown(&args).await {
-                    let r = failed(format!("執行 shutdown.exe 失敗：{e}"));
+                    let r = failed(format!("執行 {} 失敗：{e}", self.host.shutdown_label()));
                     self.set_result(c.id, r.clone());
                     self.report(client, c.id, &r).await;
                 }
@@ -204,7 +216,11 @@ impl<H: CommandHost> CommandWorker<H> {
     }
 
     async fn script(&mut self, c: &Command) -> CommandResult {
-        if let Some(spec) = c.script.as_ref().filter(|s| s.language != NATIVE_LANGUAGE) {
+        if let Some(spec) = c
+            .script
+            .as_ref()
+            .filter(|s| s.language != self.host.language())
+        {
             return failed(format!(
                 "這台電腦的作業系統不支援 {} 腳本，未執行",
                 spec.language.as_str()
@@ -214,10 +230,10 @@ impl<H: CommandHost> CommandWorker<H> {
             return failed("腳本雜湊不符，未執行");
         };
         let dir = self.dir.join("scripts");
-        let path = dir.join(format!("{}.ps1", c.id));
-        // UTF-8 含 BOM：Windows PowerShell 5.1 才不會把中文讀成亂碼
+        let lang = self.host.language();
+        let path = dir.join(script_file_name(lang, c.id));
         let write = std::fs::create_dir_all(&dir)
-            .and_then(|_| std::fs::write(&path, format!("\u{feff}{}", spec.content)));
+            .and_then(|_| std::fs::write(&path, script_body(lang, &spec.content)));
         if let Err(e) = write {
             return failed(format!("寫入腳本檔失敗：{e}"));
         }
@@ -246,7 +262,7 @@ impl<H: CommandHost> CommandWorker<H> {
                 result: RunResult::TimedOut,
                 output,
             }) => failed(timeout_output(minutes, &output)),
-            Err(e) => failed(format!("無法執行 PowerShell：{e}")),
+            Err(e) => failed(format!("無法執行 {} 腳本：{e}", lang.as_str())),
         }
     }
 }
@@ -277,46 +293,79 @@ pub async fn run_command_worker<H: CommandHost>(
 mod tests {
     use super::*;
     use protocol::command::{ScriptLanguage, ScriptSpec};
+    use std::sync::Mutex;
 
-    struct NoHost;
+    /// language() 可指定的假 host；run_script 記下檔名與內容
+    struct LangHost {
+        lang: ScriptLanguage,
+        ran: Mutex<Vec<(String, String)>>,
+    }
 
-    impl CommandHost for NoHost {
+    impl CommandHost for LangHost {
+        fn language(&self) -> ScriptLanguage {
+            self.lang
+        }
         async fn collect_all(&self) {}
         fn apply_now(&self) {}
         async fn shutdown(&self, _args: &str) -> std::io::Result<()> {
             Ok(())
         }
-        async fn run_script(&self, _: &Path, _: Duration) -> std::io::Result<RunOutput> {
-            panic!("語言不符的腳本不該被執行");
+        async fn run_script(&self, p: &Path, _: Duration) -> std::io::Result<RunOutput> {
+            let name = p.file_name().unwrap().to_string_lossy().into_owned();
+            self.ran
+                .lock()
+                .unwrap()
+                .push((name, std::fs::read_to_string(p)?));
+            Ok(RunOutput {
+                result: RunResult::Exited(0),
+                output: String::new(),
+            })
+        }
+    }
+
+    fn script_cmd(lang: ScriptLanguage) -> Command {
+        use sha2::Digest;
+        Command {
+            id: 7,
+            action: CommandAction::Script,
+            delay_minutes: None,
+            script: Some(ScriptSpec {
+                sha256: hex::encode(sha2::Sha256::digest(b"echo hi")),
+                content: "echo hi".into(),
+                timeout_minutes: 1,
+                language: lang,
+            }),
         }
     }
 
     #[tokio::test]
     async fn foreign_language_script_fails_without_writing_a_file() {
         let dir = tempfile::tempdir().unwrap();
-        let mut w = CommandWorker::new(dir.path(), Arc::new(NoHost));
-        let foreign = if NATIVE_LANGUAGE == ScriptLanguage::Sh {
-            ScriptLanguage::PowerShell
-        } else {
-            ScriptLanguage::Sh
-        };
-        let c = Command {
-            id: 1,
-            action: CommandAction::Script,
-            delay_minutes: None,
-            script: Some(ScriptSpec {
-                sha256: "x".into(),
-                content: "x".into(),
-                timeout_minutes: 1,
-                language: foreign,
-            }),
-        };
-        let r = w.script(&c).await;
+        let host = Arc::new(LangHost {
+            lang: ScriptLanguage::Sh,
+            ran: Mutex::new(vec![]),
+        });
+        let mut w = CommandWorker::new(dir.path(), host.clone());
+        let r = w.script(&script_cmd(ScriptLanguage::PowerShell)).await;
         assert_eq!(r.status, CommandStatus::Failed);
-        assert_eq!(
-            r.output,
-            format!("這台電腦的作業系統不支援 {} 腳本，未執行", foreign.as_str())
-        );
+        assert_eq!(r.output, "這台電腦的作業系統不支援 powershell 腳本，未執行");
+        assert!(host.ran.lock().unwrap().is_empty());
         assert!(!dir.path().join("scripts").exists());
+    }
+
+    #[tokio::test]
+    async fn sh_script_is_written_without_bom() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = Arc::new(LangHost {
+            lang: ScriptLanguage::Sh,
+            ran: Mutex::new(vec![]),
+        });
+        let mut w = CommandWorker::new(dir.path(), host.clone());
+        let r = w.script(&script_cmd(ScriptLanguage::Sh)).await;
+        assert_eq!(r.status, CommandStatus::Succeeded, "{r:?}");
+        assert_eq!(
+            *host.ran.lock().unwrap(),
+            vec![("7.sh".to_string(), "echo hi".to_string())]
+        );
     }
 }

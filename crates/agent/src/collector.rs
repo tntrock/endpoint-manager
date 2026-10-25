@@ -1,7 +1,7 @@
 //! 收集來源的抽象：Windows 上是 WMI + 登錄檔，測試用假資料。所有方法都是阻塞呼叫。
 
 use chrono::{DateTime, Utc};
-use protocol::{InventoryPayload, RegistryQuery, Section};
+use protocol::{InventoryPayload, OsFamily, RegistryQuery, Section};
 
 #[derive(Debug, Clone)]
 pub struct Identity {
@@ -22,6 +22,16 @@ pub trait Collector: Send + Sync + 'static {
     fn identity(&self) -> anyhow::Result<Identity>;
     fn heartbeat(&self) -> anyhow::Result<Heartbeat>;
     fn collect(&self, section: Section) -> anyhow::Result<InventoryPayload>;
+
+    /// 這個平台回報的區段（預設 Windows）
+    fn sections(&self) -> &'static [Section] {
+        &Section::WINDOWS
+    }
+
+    /// 報到時帶的作業系統；None 表示 Windows（舊伺服器相容，不序列化）
+    fn os_family(&self) -> Option<OsFamily> {
+        None
+    }
 
     /// 讀取伺服器指定的登錄檔值（registry 區段）。預設回空清單（測試用的假收集器）。
     fn collect_registry(&self, _queries: &[RegistryQuery]) -> anyhow::Result<InventoryPayload> {

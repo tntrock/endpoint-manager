@@ -36,8 +36,33 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+fn main() -> anyhow::Result<()> {
+    use endpoint_agent::config::flag;
+    use endpoint_agent::linux::{agent_dir, install, run_foreground};
+    // SAFETY: umask 沒有前置條件；所有子命令建立的檔案（含金鑰、設定）都只有擁有者能讀。
+    unsafe { libc::umask(0o077) };
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .map_err(|_| anyhow::anyhow!("crypto provider already installed"))?;
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(2).collect();
+    match std::env::args().nth(1).as_deref() {
+        Some("run") => run_foreground(),
+        Some("configure") => install::configure(
+            &agent_dir(),
+            flag(&args, "--server-url").as_deref(),
+            flag(&args, "--token").as_deref(),
+            flag(&args, "--root-ca").as_deref(),
+        ),
+        Some("unconfigure") => install::unconfigure(&agent_dir()),
+        _ => anyhow::bail!(
+            "usage: endpoint-agent run | configure [--server-url URL] [--token TOKEN] [--root-ca BASE64] | unconfigure"
+        ),
+    }
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 fn main() {
-    eprintln!("endpoint-agent only runs on Windows");
+    eprintln!("endpoint-agent only runs on Windows and Linux");
     std::process::exit(1);
 }

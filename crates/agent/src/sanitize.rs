@@ -103,9 +103,11 @@ pub fn sanitize(p: &mut InventoryPayload) {
             }
         }
         InventoryPayload::Accounts(a) => {
+            // 三個清單合計不超過 MAX_ITEMS（伺服器合計檢查），依序保留
             a.users.truncate(MAX_ITEMS);
-            a.privileged.truncate(MAX_ITEMS);
-            a.sudoers_unparsed.truncate(MAX_ITEMS);
+            a.privileged.truncate(MAX_ITEMS - a.users.len());
+            a.sudoers_unparsed
+                .truncate(MAX_ITEMS - a.users.len() - a.privileged.len());
             for u in &mut a.users {
                 fix(&mut u.name);
                 fix(&mut u.shell);
@@ -132,6 +134,41 @@ mod tests {
             install_date: None,
             arch: Arch::X64,
         }
+    }
+
+    #[test]
+    fn accounts_total_is_capped() {
+        use protocol::{AccountsInfo, LocalUser, PrincipalKind, PrivilegeEntry};
+        let n = MAX_ITEMS;
+        let mut p = InventoryPayload::Accounts(AccountsInfo {
+            users: (0..n)
+                .map(|i| LocalUser {
+                    name: format!("u{i}"),
+                    uid: 1000,
+                    shell: "/bin/sh".into(),
+                    locked: None,
+                    password_changed: None,
+                })
+                .collect(),
+            system_user_count: 0,
+            privileged: (0..n)
+                .map(|i| PrivilegeEntry {
+                    principal: format!("p{i}"),
+                    kind: PrincipalKind::User,
+                    source: "/etc/sudoers".into(),
+                })
+                .collect(),
+            sudoers_unparsed: (0..n).map(|i| format!("l{i}")).collect(),
+        });
+        sanitize(&mut p);
+        let InventoryPayload::Accounts(a) = &p else {
+            unreachable!()
+        };
+        assert_eq!(
+            a.users.len() + a.privileged.len() + a.sudoers_unparsed.len(),
+            MAX_ITEMS
+        );
+        assert_eq!(p.validate(), Ok(()));
     }
 
     #[test]

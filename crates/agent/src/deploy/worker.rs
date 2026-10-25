@@ -174,8 +174,13 @@ pub async fn run_process(
             Stdio::null()
         }
     };
+    // 自成程序群組：逾時時才能連孫程序一起結束
+    #[cfg(unix)]
+    c.process_group(0);
     c.stdin(Stdio::null()).stdout(pipe()).stderr(pipe());
     let mut child = c.spawn()?;
+    #[cfg(unix)]
+    let pgid = child.id().map(|p| p as i32);
     #[cfg(windows)]
     let job = Job::attach(&child);
     let bufs: [Tail; 2] = Default::default();
@@ -193,6 +198,15 @@ pub async fn run_process(
             #[cfg(windows)]
             if let Some(j) = &job {
                 j.terminate();
+            }
+            // 先 SIGTERM 整個群組，等領頭程序結束（最多 10 秒）後一律 SIGKILL 群組：忽略 TERM 的孫程序也要結束
+            #[cfg(unix)]
+            if let Some(g) = pgid {
+                // SAFETY: 只送信號給自己建立的程序群組
+                unsafe { libc::kill(-g, libc::SIGTERM) };
+                let _ = tokio::time::timeout(Duration::from_secs(10), child.wait()).await;
+                // 群組已空時回 ESRCH，無害
+                unsafe { libc::kill(-g, libc::SIGKILL) };
             }
             let _ = child.kill().await;
             RunResult::TimedOut
@@ -879,5 +893,52 @@ mod tests {
         assert_eq!(r, RunResult::TimedOut);
         tokio::time::sleep(Duration::from_secs(5)).await;
         assert!(!marker.exists(), "孫程序也被結束");
+    }
+}
+
+#[cfg(all(test, unix))]
+mod unix_tests {
+    use super::*;
+
+    /// 逾時時整個程序群組都結束：背景的 sleep 是孫程序
+    #[tokio::test]
+    async fn timeout_kills_process_group() {
+        group_is_gone_after_timeout("sleep 300 &").await;
+    }
+
+    /// 孫程序忽略 SIGTERM、領頭程序卻因 SIGTERM 結束：仍要被 SIGKILL
+    #[tokio::test]
+    async fn timeout_kills_group_member_ignoring_term() {
+        group_is_gone_after_timeout("(trap '' TERM; exec sleep 300) &").await;
+    }
+
+    async fn group_is_gone_after_timeout(spawn_line: &str) {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("pid");
+        // unix 的參數以空白切開、不支援引號：腳本寫成檔案再交給 sh
+        let script = dir.path().join("s.sh");
+        std::fs::write(
+            &script,
+            format!("{spawn_line}\necho $! > {}\nwait\n", pid_file.display()),
+        )
+        .unwrap();
+        let c = Cmd {
+            program: PathBuf::from("/bin/sh"),
+            args: script.display().to_string(),
+        };
+        let r = run_process(&c, Duration::from_secs(1), false)
+            .await
+            .unwrap();
+        assert_eq!(r.result, RunResult::TimedOut);
+        let pid: i32 = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(12);
+        while unsafe { libc::kill(pid, 0) } == 0 {
+            assert!(std::time::Instant::now() < deadline, "孫程序還在");
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
     }
 }

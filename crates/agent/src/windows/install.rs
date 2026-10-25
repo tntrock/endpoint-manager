@@ -1,6 +1,5 @@
 //! MSI 的 custom action 呼叫（SYSTEM 身分）：`configure` 於安裝／升級、`unconfigure` 於解除安裝。
 
-use std::ffi::OsString;
 use std::path::Path;
 use std::time::Duration;
 
@@ -14,6 +13,7 @@ use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 use super::secdir::prepare_data_dir;
 use super::service::SERVICE_NAME;
 use crate::config::apply_install_config;
+pub use crate::config::flag;
 
 /// 先確保資料目錄可信（不可信就重建），之後才寫入 root.pem 與 config.json。
 pub fn configure(
@@ -56,11 +56,4 @@ pub fn unconfigure(data: &Path) -> anyhow::Result<()> {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
         _ => Ok(()),
     }
-}
-
-/// `--name value`；空字串視為未提供（MSI 未設屬性時傳 ""）。
-pub fn flag(args: &[OsString], name: &str) -> Option<String> {
-    let i = args.iter().position(|a| a == name)?;
-    let v = args.get(i + 1)?.to_string_lossy().trim().to_string();
-    (!v.is_empty()).then_some(v)
 }
