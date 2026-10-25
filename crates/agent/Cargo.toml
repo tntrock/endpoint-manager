@@ -62,3 +62,38 @@ tokio = { workspace = true, features = ["test-util"] }
 [target.'cfg(windows)'.dev-dependencies]
 winreg = "0.56"
 windows-sys = { version = "0.61", features = ["Win32_System_EventLog", "Win32_System_Registry"] }
+
+[package.metadata.deb]
+name = "endpoint-agent"
+maintainer = "tntrock <a940125@gmail.com>"
+copyright = "tntrock"
+section = "admin"
+priority = "optional"
+extended-description = "Endpoint Manager Linux agent: reports inventory and runs commands from the management server."
+assets = [
+    ["target/release/endpoint-agent", "usr/bin/", "755"],
+    ["../../packaging/linux/endpoint-agent.service", "lib/systemd/system/", "644"],
+]
+maintainer-scripts = "../../packaging/linux/"
+
+[package.metadata.generate-rpm]
+name = "endpoint-agent"
+summary = "Endpoint Manager Linux agent"
+assets = [
+    { source = "target/release/endpoint-agent", dest = "/usr/bin/endpoint-agent", mode = "755" },
+    { source = "packaging/linux/endpoint-agent.service", dest = "/usr/lib/systemd/system/endpoint-agent.service", mode = "644" },
+]
+post_install_script = """
+systemctl daemon-reload || true
+systemctl enable endpoint-agent || true
+if [ "$1" -ge 2 ]; then
+    systemctl try-restart endpoint-agent || true
+fi
+"""
+pre_uninstall_script = """
+if [ "$1" -eq 0 ]; then
+    systemctl stop endpoint-agent || true
+    /usr/bin/endpoint-agent unconfigure || true
+    systemctl disable endpoint-agent || true
+fi
+"""

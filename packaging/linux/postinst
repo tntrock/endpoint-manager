@@ -1,0 +1,9 @@
+#!/bin/sh
+# deb postinst：安裝與升級後啟用服務；升級時重啟（尚未 configure 則條件不符，不會啟動）
+set -e
+systemctl daemon-reload || true
+systemctl enable endpoint-agent || true
+if [ "$1" = configure ] && [ -n "$2" ]; then
+    systemctl try-restart endpoint-agent || true
+fi
+exit 0

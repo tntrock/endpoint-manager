@@ -1,0 +1,9 @@
+#!/bin/sh
+# deb prerm：只有真正移除（非升級）才停止服務並清除註冊資料
+set -e
+if [ "$1" = remove ]; then
+    systemctl stop endpoint-agent || true
+    /usr/bin/endpoint-agent unconfigure || true
+    systemctl disable endpoint-agent || true
+fi
+exit 0

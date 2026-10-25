@@ -1,0 +1,8 @@
+Endpoint Manager Linux Agent
+安裝：sudo dpkg -i endpoint-agent_*_amd64.deb（或 sudo rpm -i endpoint-agent-*.rpm）
+註冊：sudo endpoint-agent configure --server-url <網址> --token <權杖> --root-ca <BASE64>
+      （三個值從後台「金鑰」頁複製；configure 會自動啟動服務）
+移除：sudo dpkg -r endpoint-agent（或 sudo rpm -e endpoint-agent），註冊資料會一併刪除
+tar.gz：把 endpoint-agent 放到 /usr/bin，endpoint-agent.service 放到 /etc/systemd/system/，
+        再執行 systemctl daemon-reload && systemctl enable endpoint-agent
+非 systemd 系統：以 root 執行 endpoint-agent configure 之後，手動執行 endpoint-agent run

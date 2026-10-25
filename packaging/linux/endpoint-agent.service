@@ -1,0 +1,17 @@
+[Unit]
+Description=Endpoint Manager Agent
+After=network-online.target
+Wants=network-online.target
+# 還沒執行 configure 就不啟動
+ConditionPathExists=/var/lib/endpoint-manager/config.json
+
+[Service]
+ExecStart=/usr/bin/endpoint-agent run
+WorkingDirectory=/var/lib/endpoint-manager
+Restart=always
+RestartSec=10
+Nice=10
+# 不能開 NoNewPrivileges：腳本要以 root 執行任意指令
+
+[Install]
+WantedBy=multi-user.target

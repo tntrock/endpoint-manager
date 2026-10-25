@@ -51,6 +51,46 @@ jobs:
       - run: cargo test -p endpoint-agent --lib --test windows
       - run: cargo test -p endpoint-cache --lib
 
+  agent-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb,cargo-generate-rpm
+      - run: sh packaging/linux/build.sh
+      - name: 靜態連結檢查
+        run: file target/x86_64-unknown-linux-musl/release/endpoint-agent | grep 'statically linked'
+      - name: deb 安裝
+        run: |
+          sudo dpkg -i target/linux-release/endpoint-agent_*_amd64.deb
+          test -x /usr/bin/endpoint-agent
+          test "$(systemctl is-enabled endpoint-agent)" = enabled
+          # 尚未 configure，不應啟動
+          ! systemctl is-active --quiet endpoint-agent
+      - name: deb 升級
+        run: sudo dpkg -i target/linux-release/endpoint-agent_*_amd64.deb
+      - name: deb 移除
+        run: |
+          sudo mkdir -p /var/lib/endpoint-manager
+          sudo touch /var/lib/endpoint-manager/config.json
+          sudo dpkg -r endpoint-agent
+          test ! -e /var/lib/endpoint-manager
+          test ! -e /usr/bin/endpoint-agent
+      - name: rpm 安裝與移除（rockylinux:9）
+        run: >
+          docker run --rm -v "$PWD/target/linux-release:/pkg" rockylinux:9 bash -c
+          "rpm -i /pkg/*.rpm && test -x /usr/bin/endpoint-agent && rpm -e endpoint-agent && test ! -e /usr/bin/endpoint-agent"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: agent-linux
+          path: target/linux-release/
+
   msi:
     runs-on: windows-latest
     steps:
