@@ -16,7 +16,8 @@
     </select></label>
     <label class="field">群組 <select name="group_id">{% for g in groups %}<option value="{{ g.value }}">{{ g.label }}</option>{% endfor %}</select></label></div>
     <label class="field">延遲（重新開機／關機用）<input name="delay_minutes" value="10" inputmode="numeric" size="3"> 分鐘（0–60，到時通知登入的使用者）</label>
-    {% if nav.platform %}<label class="field">腳本 <select name="script_id"><option value="">（執行腳本時選擇）</option>{% for sc in scripts %}<option value="{{ sc.value }}">{{ sc.label }}</option>{% endfor %}</select></label>{% endif %}
+    {% if nav.platform %}<label class="field">腳本 <select name="script_id"><option value="">（執行腳本時選擇）</option>{% for sc in scripts %}<option value="{{ sc.value }}">{{ sc.label }}</option>{% endfor %}</select></label>
+    <p class="muted">PowerShell 腳本只派給 Windows、sh 腳本只派給 Linux；「立即套用」只派給 Windows。群組內作業系統不符的裝置會略過，略過的台數顯示在指令詳細頁。</p>{% endif %}
     <div class="row"><label class="field">過期 <select name="expires_hours">{% for e in expires %}<option value="{{ e.0 }}" {% if e.0 == 168 %}selected{% endif %}>{{ e.1 }}</option>{% endfor %}</select></label>
        <span class="muted">裝置在下次報到時收到；過期前沒報到的不會執行。</span></div>
     <button class="btn primary">送出</button>

@@ -1,13 +1,14 @@
 //! 腳本管理（只限平台管理員）：清單與雙人核准設定、新增／編輯、詳情、核准／停用／啟用／刪除。
 
 use askama::Template;
-use axum::extract::{Path, RawForm, State};
+use axum::extract::{Path, Query, RawForm, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Redirect, Response};
 use chrono::{DateTime, Utc};
+use serde::Deserialize;
 
 use super::auth::{AdminSession, Nav, Session, check_csrf, platform};
-use super::commands::{actor, command_error};
+use super::commands::{actor, command_error, language_label};
 use crate::commands::{CmdError, cmd_error_kind};
 
 /// 輸入或狀態問題：重新顯示表單；權限與其他錯誤交給 command_error
@@ -35,6 +36,7 @@ pub fn status_label(status: &str) -> &'static str {
 pub struct ListRow {
     pub id: i64,
     pub name: String,
+    pub language: &'static str,
     pub status: &'static str,
     pub sha_short: String,
     pub updated_by: String,
@@ -47,17 +49,30 @@ struct ListPage {
     nav: Nav,
     rows: Vec<ListRow>,
     require_second: bool,
+    /// 語言篩選：（顯示文字、網址、目前選取）
+    filters: Vec<(&'static str, &'static str, bool)>,
+}
+
+#[derive(Deserialize)]
+pub struct ListQuery {
+    #[serde(default)]
+    lang: String,
 }
 
 pub async fn list(
     State(st): State<AppState>,
     AdminSession(s): AdminSession,
+    Query(q): Query<ListQuery>,
 ) -> Result<Response, Response> {
     platform(&s)?;
-    let rows: Vec<(i64, String, String, String, String, Option<String>)> = sqlx::query_as(
-        "SELECT id, name, status, sha256, updated_by, approved_by FROM scripts \
+    let lang = ScriptLanguage::parse(&q.lang).map(ScriptLanguage::as_str);
+    type Row = (i64, String, String, String, String, String, Option<String>);
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT id, name, language, status, sha256, updated_by, approved_by FROM scripts \
+         WHERE $1::text IS NULL OR language = $1 \
          ORDER BY lower(name), id",
     )
+    .bind(lang)
     .fetch_all(&st.pool)
     .await
     .map_err(db_error)?;
@@ -68,16 +83,28 @@ pub async fn list(
         nav: Nav::new(&s, "scripts"),
         rows: rows
             .into_iter()
-            .map(|(id, name, status, sha, updated_by, approved_by)| ListRow {
-                id,
-                name,
-                status: status_label(&status),
-                sha_short: sha.chars().take(12).collect(),
-                updated_by,
-                approved_by: approved_by.unwrap_or_default(),
-            })
+            .map(
+                |(id, name, language, status, sha, updated_by, approved_by)| ListRow {
+                    id,
+                    name,
+                    language: language_label(&language),
+                    status: status_label(&status),
+                    sha_short: sha.chars().take(12).collect(),
+                    updated_by,
+                    approved_by: approved_by.unwrap_or_default(),
+                },
+            )
             .collect(),
         require_second,
+        filters: vec![
+            ("全部", "/scripts", lang.is_none()),
+            (
+                "PowerShell",
+                "/scripts?lang=powershell",
+                lang == Some("powershell"),
+            ),
+            ("sh", "/scripts?lang=sh", lang == Some("sh")),
+        ],
     }))
 }
 
@@ -141,13 +168,18 @@ impl FormFields {
                 .parse()
                 .map_err(|_| "逾時必須是 1–120 分鐘".to_string())?
         };
+        let language = ScriptLanguage::parse(self.language.trim()).unwrap_or_default();
         Ok(ScriptInput {
             name: self.name.clone(),
             description: self.description.clone(),
-            // 瀏覽器送出的換行是 CRLF；原樣保存（雜湊以實際內容計算）
-            content: self.content.clone(),
+            // 瀏覽器送出的換行是 CRLF。PowerShell 原樣保存；sh 的 \r 會變成指令的一部分，
+            // 改成 LF（雜湊以保存的內容計算）
+            content: match language {
+                ScriptLanguage::PowerShell => self.content.clone(),
+                ScriptLanguage::Sh => self.content.replace("\r\n", "\n"),
+            },
             timeout_minutes,
-            language: ScriptLanguage::parse(self.language.trim()).unwrap_or_default(),
+            language,
         })
     }
 }
@@ -178,6 +210,7 @@ pub async fn new_form(AdminSession(s): AdminSession) -> Result<Response, Respons
         id: None,
         f: FormFields {
             timeout_minutes: "30".into(),
+            language: ScriptLanguage::default().as_str().into(),
             ..Default::default()
         },
         error: None,
@@ -217,6 +250,7 @@ type DetailRow = (
     Option<String>,
     Option<DateTime<Utc>>,
     Vec<String>,
+    String,
 );
 
 #[derive(Template)]
@@ -228,6 +262,7 @@ struct DetailPage {
     description: String,
     content: String,
     sha256: String,
+    language: &'static str,
     timeout_minutes: i32,
     status: String,
     status_label: &'static str,
@@ -244,7 +279,7 @@ struct DetailPage {
 async fn load(st: &AppState, id: i64) -> Result<Option<DetailRow>, sqlx::Error> {
     sqlx::query_as(
         "SELECT name, description, content, sha256, timeout_minutes, status, created_by, \
-                created_at, updated_by, updated_at, approved_by, approved_at, editors \
+                created_at, updated_by, updated_at, approved_by, approved_at, editors, language \
          FROM scripts WHERE id = $1",
     )
     .bind(id)
@@ -265,6 +300,7 @@ pub async fn detail(
         (r.0, r.1, r.2, r.3, r.4, r.5);
     let (created_by, created_at, updated_by, updated_at, approved_by, approved_at, editors) =
         (r.6, r.7, r.8, r.9, r.10, r.11, r.12);
+    let language = language_label(&r.13);
     let used: i64 = sqlx::query_scalar("SELECT count(*) FROM command_runs WHERE script_id = $1")
         .bind(id)
         .fetch_one(&st.pool)
@@ -285,6 +321,7 @@ pub async fn detail(
         description,
         content,
         sha256,
+        language,
         timeout_minutes,
         status_label: status_label(&status),
         status,
@@ -316,7 +353,7 @@ pub async fn edit_form(
             description: r.1,
             content: r.2,
             timeout_minutes: r.4.to_string(),
-            ..Default::default()
+            language: r.13,
         },
         error: None,
     }))
@@ -328,9 +365,16 @@ pub async fn update(
     Path(id): Path<i64>,
     RawForm(raw): RawForm,
 ) -> Result<Response, Response> {
-    let (csrf, f) = parse_form(&raw);
+    let (csrf, mut f) = parse_form(&raw);
     check_csrf(&s, &csrf)?;
     platform(&s)?;
+    // 語言建立後不能改：以資料庫為準（決定換行怎麼處理），不信任表單
+    let language: Option<String> = sqlx::query_scalar("SELECT language FROM scripts WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&st.pool)
+        .await
+        .map_err(db_error)?;
+    f.language = language.ok_or_else(not_found)?;
     let input = match f.to_input() {
         Ok(i) => i,
         Err(e) => return Ok(invalid(&s, Some(id), f, e)),

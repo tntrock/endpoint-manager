@@ -750,3 +750,149 @@ async fn deleted_script_redisplays_form(pool: PgPool) {
         "{body}"
     );
 }
+
+async fn create_script_via_web(
+    s: &TestServer,
+    c: &reqwest::Client,
+    name: &str,
+    language: &str,
+    content: &str,
+) -> i64 {
+    let csrf = csrf_from(&s.page(c, "/scripts/new").await.1);
+    let (st, loc, body) = post(
+        s,
+        c,
+        "/scripts",
+        &[
+            ("csrf", &csrf),
+            ("name", name),
+            ("language", language),
+            ("content", content),
+            ("timeout_minutes", "30"),
+        ],
+    )
+    .await;
+    assert_eq!(st, 303, "{body}");
+    loc.rsplit('/').next().unwrap().parse().unwrap()
+}
+
+async fn script_row(s: &TestServer, id: i64) -> (String, String) {
+    sqlx::query_as("SELECT language, content FROM scripts WHERE id = $1")
+        .bind(id)
+        .fetch_one(&s.pool)
+        .await
+        .unwrap()
+}
+
+#[sqlx::test(migrations = false)]
+async fn sh_scripts_from_the_web(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let alice = s.login_as("alice", Role::Platform, &[]).await;
+    let (_, html) = s.page(&alice, "/scripts/new").await;
+    assert!(html.contains(r#"<option value="sh""#), "{html}");
+
+    // sh 的 CRLF 存成 LF；PowerShell 原樣
+    let sh = create_script_via_web(&s, &alice, "看磁碟", "sh", "df -h\r\nuptime\r\n").await;
+    let ps = create_script_via_web(&s, &alice, "看服務", "powershell", "Get-Service\r\n").await;
+    assert_eq!(
+        script_row(&s, sh).await,
+        ("sh".into(), "df -h\nuptime\n".into())
+    );
+    assert_eq!(
+        script_row(&s, ps).await,
+        ("powershell".into(), "Get-Service\r\n".into())
+    );
+
+    let (_, html) = s.page(&alice, &format!("/scripts/{sh}")).await;
+    assert!(html.contains("<th>語言</th><td>sh</td>"), "{html}");
+    let (_, html) = s.page(&alice, "/scripts?lang=sh").await;
+    assert!(
+        html.contains("看磁碟") && !html.contains("看服務"),
+        "{html}"
+    );
+    let (_, html) = s.page(&alice, "/scripts").await;
+    assert!(html.contains("看磁碟") && html.contains("看服務"));
+
+    // 編輯：語言以資料庫為準，表單送來的語言不算；換行仍照 sh 處理
+    let (_, html) = s.page(&alice, &format!("/scripts/{sh}/edit")).await;
+    assert!(html.contains("sh（Linux，以 root 執行）") && !html.contains(r#"name="language""#));
+    let (st, _, _) = post(
+        &s,
+        &alice,
+        &format!("/scripts/{sh}/edit"),
+        &[
+            ("csrf", &csrf_from(&html)),
+            ("name", "看磁碟"),
+            ("language", "powershell"),
+            ("content", "df -h\r\n"),
+            ("timeout_minutes", "30"),
+        ],
+    )
+    .await;
+    assert_eq!(st, 303);
+    assert_eq!(script_row(&s, sh).await, ("sh".into(), "df -h\n".into()));
+
+    sqlx::query("UPDATE scripts SET status = 'approved', approved_by = 'bob'")
+        .execute(&s.pool)
+        .await
+        .unwrap();
+
+    // 一台 Windows、一台 Linux 在同一個群組
+    let tok = s.create_group_token("混合", 2).await;
+    let win = s.enroll_ok(&tok, None, None).await.device_id;
+    let linux = s.enroll_ok(&tok, None, None).await.device_id;
+    sqlx::query("UPDATE devices SET os_family = 'linux' WHERE id = $1")
+        .bind(linux)
+        .execute(&s.pool)
+        .await
+        .unwrap();
+
+    // 裝置頁的指令分頁只列這台能執行的腳本
+    let (_, tab) = s
+        .page(&alice, &format!("/devices/{linux}/tab/commands"))
+        .await;
+    assert!(
+        tab.contains("看磁碟（sh）") && !tab.contains("看服務"),
+        "{tab}"
+    );
+    assert!(
+        !tab.contains("立即套用") && tab.contains("以 root 執行腳本"),
+        "{tab}"
+    );
+    let (_, tab) = s
+        .page(&alice, &format!("/devices/{win}/tab/commands"))
+        .await;
+    assert!(
+        tab.contains("看服務（PowerShell）") && !tab.contains("看磁碟"),
+        "{tab}"
+    );
+    assert!(
+        tab.contains("立即套用") && tab.contains("以 SYSTEM 執行腳本"),
+        "{tab}"
+    );
+
+    // 對群組下 sh 腳本：略過 Windows，詳細頁顯示略過數
+    let (_, html) = s.page(&alice, "/commands").await;
+    assert!(html.contains("看磁碟（sh）") && html.contains("看服務（PowerShell）"));
+    let gid = s.group_id("混合").await.to_string();
+    let (st, loc, body) = post(
+        &s,
+        &alice,
+        "/commands",
+        &[
+            ("csrf", &csrf_from(&html)),
+            ("action", "script"),
+            ("group_id", &gid),
+            ("script_id", &sh.to_string()),
+            ("expires_hours", "24"),
+        ],
+    )
+    .await;
+    assert_eq!(st, 303, "{body}");
+    let (_, html) = s.page(&alice, &loc).await;
+    assert!(
+        html.contains("<th>略過</th><td>1 台作業系統不符的裝置</td>"),
+        "{html}"
+    );
+    assert!(html.contains("看磁碟（sh，<code>"), "{html}");
+}

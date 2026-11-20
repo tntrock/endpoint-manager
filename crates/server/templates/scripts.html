@@ -2,7 +2,7 @@
 {% import "_macros.html" as m %}
 {% block content %}
 <div class="page-head">
-  <div><h1>腳本{% call m::help_btn("scripts", "腳本與核准") %}{% endcall %}</h1><div class="sub">以 SYSTEM 執行的 PowerShell 腳本，需核准後才能使用</div></div>
+  <div><h1>腳本{% call m::help_btn("scripts", "腳本與核准") %}{% endcall %}</h1><div class="sub">Windows 以 SYSTEM 執行 PowerShell、Linux 以 root 執行 sh，需核准後才能使用</div></div>
   <div class="actions"><a class="btn" href="/commands">遠端指令</a><a class="btn primary" href="/scripts/new">＋ 建立腳本</a></div>
 </div>
 <form class="card actions" method="post" action="/scripts/settings">
@@ -11,17 +11,19 @@
   <button class="btn sm">儲存</button>
   <span class="help">開啟時，上次核准後修改過內容的人都不能核准；建議保持開啟。</span>
 </form>
+<nav class="chips" aria-label="語言">{% for f in filters %}{% if f.2 %}<strong>{{ f.0 }}</strong>{% else %}<a href="{{ f.1 }}">{{ f.0 }}</a>{% endif %}{% endfor %}</nav>
 {% if rows.is_empty() %}{% call m::empty("還沒有腳本", "") %}{% endcall %}{% else %}
 <table>
-  <tr><th>名稱</th><th>狀態</th><th>SHA-256</th><th>最後修改</th><th>核准者</th></tr>
+  <tr><th>名稱</th><th>語言</th><th>狀態</th><th>SHA-256</th><th>最後修改</th><th>核准者</th></tr>
   {% for r in rows %}
-  <tr><td><a href="/scripts/{{ r.id }}">{{ r.name }}</a></td><td>{{ r.status }}</td><td><code>{{ r.sha_short }}</code></td><td>{{ r.updated_by }}</td><td>{{ r.approved_by }}</td></tr>
+  <tr><td><a href="/scripts/{{ r.id }}">{{ r.name }}</a></td><td>{{ r.language }}</td><td>{{ r.status }}</td><td><code>{{ r.sha_short }}</code></td><td>{{ r.updated_by }}</td><td>{{ r.approved_by }}</td></tr>
   {% endfor %}
 </table>
 {% endif %}
 {% call m::help_box("scripts", "腳本與核准") %}
 <ul>
-<li>腳本以 <b>SYSTEM</b> 用 Windows PowerShell 5.1 執行，收回結束碼與最後 64 KiB 的輸出；逾時會結束整個程序。</li>
+<li>PowerShell 腳本在 Windows 以 <b>SYSTEM</b> 用 Windows PowerShell 5.1 執行；sh 腳本在 Linux 以 <b>root</b> 用 <code>/bin/sh</code> 執行（第一行是 <code>#!</code> 時改用該直譯器）。收回結束碼與最後 64 KiB 的輸出；逾時會結束整個程序。</li>
+<li>語言在建立時決定，之後不能更改。對群組下指令時只派給作業系統相符的電腦。sh 腳本的換行會存成 LF。</li>
 <li><b>雙人核准</b>（建議開啟）：上次核准後修改過內容或逾時的人都不能核准；核准的是畫面上顯示的那個版本（SHA-256）。</li>
 <li>改了內容或逾時就要重新核准。被指令使用過的腳本只能停用，不能刪除。</li>
 <li>Agent 狀態檔遺失時腳本可能重跑，請設計成可以重複執行。</li>

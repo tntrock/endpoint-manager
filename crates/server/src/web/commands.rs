@@ -193,21 +193,44 @@ async fn scoped_groups(st: &AppState, s: &Session) -> Result<Vec<SelectOption>, 
         .collect())
 }
 
-/// 已核准的腳本（只有平台管理員能執行）
-async fn approved_scripts(st: &AppState, s: &Session) -> Result<Vec<SelectOption>, sqlx::Error> {
+/// 腳本語言的顯示名稱
+pub fn language_label(language: &str) -> &'static str {
+    match language {
+        "sh" => "sh",
+        _ => "PowerShell",
+    }
+}
+
+/// 作業系統能執行的腳本語言
+fn language_for_os(os_family: &str) -> &'static str {
+    match os_family {
+        "linux" => "sh",
+        _ => "powershell",
+    }
+}
+
+/// 已核准的腳本（只有平台管理員能執行）。`os_family` 有值時只列這個作業系統能執行的
+async fn approved_scripts(
+    st: &AppState,
+    s: &Session,
+    os_family: Option<&str>,
+) -> Result<Vec<SelectOption>, sqlx::Error> {
     if !s.all_devices() {
         return Ok(vec![]);
     }
-    let rows: Vec<(i64, String)> = sqlx::query_as(
-        "SELECT id, name FROM scripts WHERE status = 'approved' ORDER BY lower(name)",
+    let rows: Vec<(i64, String, String)> = sqlx::query_as(
+        "SELECT id, name, language FROM scripts \
+         WHERE status = 'approved' AND ($1::text IS NULL OR language = $1) \
+         ORDER BY lower(name)",
     )
+    .bind(os_family.map(language_for_os))
     .fetch_all(&st.pool)
     .await?;
     Ok(rows
         .into_iter()
-        .map(|(id, name)| SelectOption {
+        .map(|(id, name, language)| SelectOption {
             value: id.to_string(),
-            label: name,
+            label: format!("{name}（{}）", language_label(&language)),
             selected: false,
         })
         .collect())
@@ -243,7 +266,7 @@ async fn list_page(
             .map(|r| to_run(st, r))
             .collect(),
         groups: scoped_groups(st, s).await?,
-        scripts: approved_scripts(st, s).await?,
+        scripts: approved_scripts(st, s, None).await?,
         expires: EXPIRES.to_vec(),
         error,
         prev: (page > 0).then(|| format!("/commands?page={}", page - 1)),
@@ -368,7 +391,10 @@ struct DetailPage {
     nav: Nav,
     run: RunRow,
     delay: Option<i32>,
-    script: Option<(String, String)>,
+    /// 名稱、SHA-256、語言
+    script: Option<(String, String, &'static str)>,
+    /// 群組內作業系統不符、沒有建立對象的裝置數
+    skipped_os: i32,
     canceled: bool,
     can_cancel: bool,
     filters: Vec<FilterLink>,
@@ -402,13 +428,16 @@ pub async fn detail(
     let Some(row) = row else {
         return Ok(not_found());
     };
-    let (delay, script_name, script_sha, canceled): (
+    let (delay, script_name, script_sha, script_language, canceled, skipped_os): (
         Option<i32>,
         Option<String>,
         Option<String>,
+        Option<String>,
         bool,
+        i32,
     ) = sqlx::query_as(
-        "SELECT r.delay_minutes, sc.name, r.script_sha256, r.canceled_at IS NOT NULL \
+        "SELECT r.delay_minutes, sc.name, r.script_sha256, r.script_language, \
+                r.canceled_at IS NOT NULL, r.skipped_os \
          FROM command_runs r LEFT JOIN scripts sc ON sc.id = r.script_id WHERE r.id = $1",
     )
     .bind(id)
@@ -467,7 +496,14 @@ pub async fn detail(
     Ok(render(&DetailPage {
         nav: Nav::new(&s, "commands"),
         delay,
-        script: script_sha.map(|sha| (script_name.unwrap_or_else(|| "（已刪除）".into()), sha)),
+        script: script_sha.map(|sha| {
+            (
+                script_name.unwrap_or_else(|| "（已刪除）".into()),
+                sha,
+                language_label(script_language.as_deref().unwrap_or_default()),
+            )
+        }),
+        skipped_os,
         canceled,
         can_cancel,
         filters,
@@ -546,6 +582,8 @@ struct Tab {
     device: String,
     manage: bool,
     scripts: Vec<SelectOption>,
+    /// Linux：沒有「立即套用」，腳本以 root 執行
+    linux: bool,
     rows: Vec<TabRow>,
 }
 
@@ -567,6 +605,10 @@ pub async fn device_tab(st: &AppState, s: &Session, device: Uuid) -> Result<Resp
     {
         return Ok(not_found());
     }
+    let os_family: String = sqlx::query_scalar("SELECT os_family FROM devices WHERE id = $1")
+        .bind(device)
+        .fetch_one(&st.pool)
+        .await?;
     let rows: Vec<TabDbRow> = sqlx::query_as(
         "SELECT r.id, r.action, r.created_by, r.created_at, t.status, t.exit_code, t.output \
          FROM command_targets t JOIN command_runs r ON r.id = t.run_id \
@@ -579,7 +621,8 @@ pub async fn device_tab(st: &AppState, s: &Session, device: Uuid) -> Result<Resp
         nav: Nav::new(s, "commands"),
         device: device.to_string(),
         manage: s.can_manage(),
-        scripts: approved_scripts(st, s).await?,
+        scripts: approved_scripts(st, s, Some(&os_family)).await?,
+        linux: os_family == "linux",
         rows: rows
             .into_iter()
             .map(|(run, action, by, at, status, code, output)| TabRow {
