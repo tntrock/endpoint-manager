@@ -50,12 +50,17 @@ impl TestServer {
 
         let msi_path = dir.path().join("template.msi");
         std::fs::write(&msi_path, endpoint_server::installer::sample_template()).unwrap();
+        let deb_path = dir.path().join("endpoint-agent_0.9.0_amd64.deb");
+        std::fs::write(&deb_path, b"deb package").unwrap();
+        let rpm_path = dir.path().join("endpoint-agent-0.9.0-1.x86_64.rpm");
+        std::fs::write(&rpm_path, b"rpm package").unwrap();
         let state = AppState::new(pool.clone(), ca::Ca::load(dir.path()).unwrap())
             .with_installer(
                 Some(msi_path),
                 "https://localhost:8443".into(),
                 vec!["localhost".into()],
             )
+            .with_linux_packages(Some(deb_path), Some(rpm_path))
             .with_packages(dir.path().join("packages"), 2);
         let cfg = tls::server_config(dir.path()).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

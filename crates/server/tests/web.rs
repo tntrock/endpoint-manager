@@ -19,6 +19,8 @@ async fn pages_require_login(pool: PgPool) {
         "/compliance/rules",
         "/compliance/violations",
         "/tokens",
+        "/tokens/agent.deb",
+        "/tokens/agent.rpm",
         "/groups",
         "/accounts",
         "/audit",
@@ -1278,4 +1280,98 @@ async fn help_popovers_on_complex_pages(pool: PgPool) {
         }
         assert!(html.contains(r#"aria-label="說明："#), "{path}");
     }
+}
+
+async fn create_token_page(
+    s: &TestServer,
+    c: &reqwest::Client,
+    name: &str,
+    server_url: &str,
+) -> String {
+    let (_, html) = s.page(c, "/tokens").await;
+    let r = c
+        .post(s.web_url("/tokens"))
+        .form(&[
+            ("csrf", csrf_from(&html).as_str()),
+            ("name", name),
+            ("max_uses", "3"),
+            ("group", ""),
+            ("valid_days", "7"),
+            ("server_url", server_url),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    r.text().await.unwrap()
+}
+
+#[sqlx::test(migrations = false)]
+async fn linux_install_section_has_ready_to_run_commands(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let c = s.admin_client().await;
+    let (_, html) = s.page(&c, "/tokens").await;
+    assert!(
+        !html.contains("Linux 安裝</legend>"),
+        "只在剛建立金鑰時顯示"
+    );
+
+    let html = create_token_page(&s, &c, "linux pilot", "https://localhost:8443").await;
+    let token = new_token_from(&html);
+    let root = endpoint_server::installer::root_b64(&s.root_pem);
+    let html = html.replace("&#39;", "'").replace("&#x27;", "'");
+    assert!(html.contains("Linux 安裝</legend>"));
+    assert!(html.contains(&format!(
+        "<pre id=\"linux-configure\"> sudo endpoint-agent configure --server-url 'https://localhost:8443' --token '{token}' --root-ca '{root}'</pre>"
+    )));
+    assert!(html.contains("sudo apt install ./endpoint-agent_0.9.0_amd64.deb"));
+    assert!(html.contains("sudo dnf install ./endpoint-agent-0.9.0-1.x86_64.rpm"));
+    assert!(
+        html.contains(r#"href="/tokens/agent.deb""#)
+            && html.contains(r#"href="/tokens/agent.rpm""#)
+    );
+    // 指令裡的金鑰真的能註冊
+    s.enroll_ok(&token, None, None).await;
+}
+
+#[sqlx::test(migrations = false)]
+async fn linux_section_with_bad_url_still_creates_token(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let c = s.admin_client().await;
+    let html = create_token_page(&s, &c, "bad url", "https://other.example:8443").await;
+    new_token_from(&html);
+    assert!(html.contains("無法產生註冊指令"));
+    assert!(!html.contains("endpoint-agent configure"));
+}
+
+#[sqlx::test(migrations = false)]
+async fn linux_packages_download_as_is(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let c = s.admin_client().await;
+    let r = c.get(s.web_url("/tokens/agent.deb")).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(
+        r.headers()["content-disposition"],
+        "attachment; filename=\"endpoint-agent_0.9.0_amd64.deb\""
+    );
+    assert_eq!(&r.bytes().await.unwrap()[..], b"deb package");
+    let r = c.get(s.web_url("/tokens/agent.rpm")).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(&r.bytes().await.unwrap()[..], b"rpm package");
+
+    let viewer = s.login_as("vera", Role::Viewer, &["台北總部"]).await;
+    let r = viewer
+        .get(s.web_url("/tokens/agent.deb"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 403);
+
+    // 檔案被移走：回 503，建立金鑰時不顯示下載按鈕
+    std::fs::remove_file(s.state.agent_rpm.as_ref().unwrap()).unwrap();
+    let r = c.get(s.web_url("/tokens/agent.rpm")).send().await.unwrap();
+    assert_eq!(r.status(), 503);
+    let html = create_token_page(&s, &c, "no rpm", "https://localhost:8443").await;
+    assert!(html.contains(r#"href="/tokens/agent.deb""#));
+    assert!(!html.contains(r#"href="/tokens/agent.rpm""#));
 }

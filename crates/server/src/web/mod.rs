@@ -200,6 +200,8 @@ pub fn web_router(state: AppState) -> Router {
         .route("/sites/{id}/delete", post(sites::delete))
         .route("/tokens", get(tokens::list).post(tokens::create))
         .route("/tokens/{id}/revoke", post(tokens::revoke))
+        .route("/tokens/agent.deb", get(tokens::linux_deb))
+        .route("/tokens/agent.rpm", get(tokens::linux_rpm))
         .route("/groups", get(groups::list).post(groups::create))
         .route("/groups/{id}/delete", post(groups::delete))
         .route("/accounts", get(accounts::list).post(accounts::create))

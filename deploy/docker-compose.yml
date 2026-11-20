@@ -29,6 +29,8 @@ services:
       EM_WEB_LISTEN: 0.0.0.0:8444
       EM_DISPLAY_UTC_OFFSET: ${EM_DISPLAY_UTC_OFFSET:-8}
       EM_AGENT_MSI: /agent/endpoint-agent.msi
+      EM_AGENT_DEB: /agent/endpoint-agent.deb
+      EM_AGENT_RPM: /agent/endpoint-agent.rpm
       EM_AGENT_PUBLIC_URL: ${EM_AGENT_PUBLIC_URL:-}
       EM_WEBHOOK_SECRET: ${EM_WEBHOOK_SECRET:-}
       EM_PACKAGE_DIR: /packages

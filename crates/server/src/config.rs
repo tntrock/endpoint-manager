@@ -17,6 +17,9 @@ pub struct Config {
     pub enroll_per_ip_per_minute: u32,
     /// 通用範本 MSI 的路徑；未設定時網頁不提供「下載安裝檔」
     pub agent_msi: Option<PathBuf>,
+    /// Linux agent 的 deb／rpm 安裝包；未設定時網頁不提供對應的下載
+    pub agent_deb: Option<PathBuf>,
+    pub agent_rpm: Option<PathBuf>,
     /// 下載安裝檔時預設的伺服器網址（例：https://em.example.com:8443）
     pub agent_public_url: String,
     /// 合規通知的 Webhook 簽章密鑰（只從環境變數讀）
@@ -64,6 +67,12 @@ impl Config {
                 n
             },
             agent_msi: get("EM_AGENT_MSI")
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from),
+            agent_deb: get("EM_AGENT_DEB")
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from),
+            agent_rpm: get("EM_AGENT_RPM")
                 .filter(|s| !s.is_empty())
                 .map(PathBuf::from),
             agent_public_url: get("EM_AGENT_PUBLIC_URL").unwrap_or_default(),
@@ -120,6 +129,22 @@ mod tests {
         })
         .unwrap();
         assert_eq!(c.webhook_secret, None, "空字串視為未設定");
+    }
+
+    #[test]
+    fn linux_packages_env() {
+        let c = Config::from_lookup(|k| match k {
+            "DATABASE_URL" => Some("postgres://x".into()),
+            "EM_AGENT_DEB" => Some("/agent/endpoint-agent.deb".into()),
+            "EM_AGENT_RPM" => Some("".into()),
+            _ => None,
+        })
+        .unwrap();
+        assert_eq!(
+            c.agent_deb,
+            Some(PathBuf::from("/agent/endpoint-agent.deb"))
+        );
+        assert_eq!(c.agent_rpm, None, "空字串視為未設定");
     }
 
     #[test]
