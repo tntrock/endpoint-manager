@@ -1,0 +1,23 @@
+{% if !loaded %}<p class="muted">尚無帳號資料（Agent 還沒上傳這個區段）。</p>{% else %}
+<h2>管理權限</h2>
+{% if privileged.is_empty() %}<p class="muted">沒有 root 以外的管理權限。</p>{% else %}
+<table>
+  <tr><th>主體</th><th>類型</th><th>來源</th></tr>
+  {% for p in privileged %}<tr><td>{% if p.warn %}<span class="tag bad">UID 0</span> {% endif %}{{ p.principal }}</td><td>{{ p.kind }}</td><td>{{ p.source }}</td></tr>{% endfor %}
+</table>
+{% endif %}
+<h2>可登入的帳號</h2>
+{% if users.is_empty() %}<p class="muted">沒有可登入的帳號。</p>{% else %}
+<table>
+  <tr><th>名稱</th><th class="num">UID</th><th>Shell</th><th>鎖定</th><th>密碼最後修改</th></tr>
+  {% for u in users %}<tr><td>{{ u.name }}</td><td class="num">{{ u.uid }}</td><td>{{ u.shell }}</td><td>{{ u.locked }}</td><td>{{ u.password_changed }}</td></tr>{% endfor %}
+</table>
+{% endif %}
+{% if !unparsed.is_empty() %}
+<h2>無法解析的 sudoers 設定</h2>
+<p class="muted">這些行沒有列入上面的權限名單，請人工確認。</p>
+<pre class="code">{% for l in unparsed %}{{ l }}
+{% endfor %}</pre>
+{% endif %}
+<p class="muted">另有 {{ system_user_count }} 個系統帳號未列出。</p>
+{% endif %}
