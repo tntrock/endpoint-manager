@@ -217,7 +217,9 @@ async fn accounts_tab(pool: PgPool) {
 async fn accounts_tab_respects_scope(pool: PgPool) {
     let s = TestServer::start(pool).await;
     let (_, linux) = mixed(&s).await;
-    let other = s.login_as("carol", Role::Viewer, &[]).await;
+    // 唯讀檢視者至少要有一個群組：給它另一個群組
+    s.create_group_token("其他", 1).await;
+    let other = s.login_as("carol", Role::Viewer, &["其他"]).await;
     let (st, _) = s
         .page(&other, &format!("/devices/{linux}/tab/accounts"))
         .await;
@@ -244,7 +246,7 @@ async fn software_search_defaults_to_windows(pool: PgPool) {
     // 兩台都有的軟體：預設只算 Windows
     let (_, html) = s.page(&c, "/software?q=zlib").await;
     assert!(
-        html.contains(r#"href="/devices?software=zlib&amp;version=1.3&amp;os=windows">1</a>"#),
+        html.contains(r#"href="/devices?software=zlib&#38;version=1.3&#38;os=windows">1</a>"#),
         "{html}"
     );
 
@@ -252,7 +254,7 @@ async fn software_search_defaults_to_windows(pool: PgPool) {
     assert!(!html.contains("Google Chrome") && html.contains("openssh-server"));
     let (_, html) = s.page(&c, "/software?q=zlib&os=all").await;
     assert!(
-        html.contains(r#"href="/devices?software=zlib&amp;version=1.3&amp;os=">2</a>"#),
+        html.contains(r#"href="/devices?software=zlib&#38;version=1.3&#38;os=">2</a>"#),
         "{html}"
     );
 
