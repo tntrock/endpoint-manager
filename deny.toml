@@ -2,8 +2,8 @@
 version = 2
 yanked = "deny"
 ignore = [
-    # basic-toml unmaintained; only used at compile time by askama_derive (latest askama 0.16.1). Drop once askama switches to toml.
-    { id = "RUSTSEC-2026-0374", reason = "compile-time only via askama_derive, no upgrade available" },
+    # chrono unmaintained (chronotope/chrono#1768); used by every crate and by sqlx's chrono types. Drop once migrated to jiff or time.
+    { id = "RUSTSEC-2026-0543", reason = "no maintained drop-in; migration is a separate change" },
 ]
 
 [licenses]
