@@ -1341,7 +1341,7 @@ async fn linux_section_with_bad_url_still_creates_token(pool: PgPool) {
     let html = create_token_page(&s, &c, "bad url", "https://other.example:8443").await;
     new_token_from(&html);
     assert!(html.contains("無法產生註冊指令"));
-    assert!(!html.contains("endpoint-agent configure"));
+    assert!(!html.contains("id=\"linux-configure\""), "{html}");
 }
 
 #[sqlx::test(migrations = false)]
