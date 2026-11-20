@@ -111,7 +111,7 @@ async fn group_belongs_to_one_policy(pool: PgPool) {
         &s.pool,
         a,
         PauseKind::Quality,
-        Some(NaiveDate::from_ymd_opt(2026, 9, 30).unwrap()),
+        Some(chrono::Utc::now().date_naive()),
         "admin",
     )
     .await
@@ -138,7 +138,8 @@ async fn pause_and_resume(pool: PgPool) {
     let id = admin::create_policy(&s.pool, &input("一般", vec![tp]), "admin")
         .await
         .unwrap();
-    let day = NaiveDate::from_ymd_opt(2026, 9, 30).unwrap();
+    // 暫停日只接受最近 35 天內，寫死日期會隨時間過期
+    let day = chrono::Utc::now().date_naive();
     admin::set_pause(&s.pool, id, PauseKind::Feature, Some(day), "admin")
         .await
         .unwrap();
