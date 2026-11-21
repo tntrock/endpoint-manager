@@ -141,6 +141,45 @@ mod tests {
         );
     }
 
+    #[derive(Serialize, Deserialize, PartialEq, Debug)]
+    struct V {
+        #[serde(with = "rfc3339_vec", default)]
+        all: Vec<OffsetDateTime>,
+    }
+
+    #[test]
+    fn vec_and_helpers() {
+        let v = V {
+            all: vec![
+                OffsetDateTime::UNIX_EPOCH,
+                datetime!(2026-11-21 10:00 +08:00),
+            ],
+        };
+        let s = serde_json::to_string(&v).unwrap();
+        assert_eq!(
+            s,
+            r#"{"all":["1970-01-01T00:00:00Z","2026-11-21T02:00:00Z"]}"#
+        );
+        assert_eq!(serde_json::from_str::<V>(&s).unwrap(), v);
+        assert!(serde_json::from_str::<V>("{}").unwrap().all.is_empty());
+        assert!(serde_json::from_str::<V>(r#"{"all":["nope"]}"#).is_err());
+
+        assert_eq!(ymd(2026, 2, 28), Some(date!(2026 - 02 - 28)));
+        assert_eq!(ymd(2026, 2, 29), None);
+        assert_eq!(ymd(2026, 13, 1), None);
+        assert_eq!(format_date(date!(2026 - 01 - 02)), "2026-01-02");
+        assert_eq!(parse_date("2026-01-02").unwrap(), date!(2026 - 01 - 02));
+        assert!(parse_date("2026/01/02").is_err());
+        // 年份超出 RFC 3339 範圍時寫出失敗，而不是寫出錯誤的字串
+        assert!(
+            format_rfc3339(OffsetDateTime::new_utc(
+                date!(-0001 - 01 - 01),
+                time::Time::MIDNIGHT
+            ))
+            .is_err()
+        );
+    }
+
     /// 寫出的格式與 chrono 相同（UTC 以 Z 結尾）
     #[test]
     fn writes_chrono_compatible() {
