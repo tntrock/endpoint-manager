@@ -24,12 +24,14 @@ pub struct AccountRow {
     pub created_at: String,
     pub locked: bool,
     pub disabled: bool,
+    pub mfa: bool,
 }
 
 #[derive(Template)]
 #[template(path = "accounts.html")]
 struct AccountsPage {
     nav: Nav,
+    mfa_required: bool,
     roles: Vec<SelectOption>,
     groups: Vec<SelectOption>,
     rows: Vec<AccountRow>,
@@ -40,6 +42,7 @@ struct AccountsPage {
 struct AccountPage {
     nav: Nav,
     a: AccountRow,
+    is_self: bool,
     roles: Vec<SelectOption>,
     groups: Vec<SelectOption>,
 }
@@ -53,17 +56,19 @@ type Row = (
     Option<DateTime<Utc>>,
     DateTime<Utc>,
     Vec<i64>,
+    bool,
 );
 
 const SELECT: &str = "SELECT a.id, a.username, a.role, \
        (SELECT string_agg(g.name, '、' ORDER BY g.name) FROM admin_groups ag \
           JOIN device_groups g ON g.id = ag.group_id WHERE ag.admin_id = a.id), \
        a.locked_until, a.disabled_at, a.created_at, \
-       ARRAY(SELECT group_id FROM admin_groups WHERE admin_id = a.id) \
+       ARRAY(SELECT group_id FROM admin_groups WHERE admin_id = a.id), \
+       a.mfa_secret IS NOT NULL \
      FROM admins a";
 
 fn to_row(st: &AppState, r: Row) -> (AccountRow, Vec<i64>) {
-    let (id, username, role, groups, locked_until, disabled_at, created_at, group_ids) = r;
+    let (id, username, role, groups, locked_until, disabled_at, created_at, group_ids, mfa) = r;
     let locked = locked_until.is_some_and(|t| t > Utc::now());
     let (state, state_class) = if disabled_at.is_some() {
         ("已停用", "bad")
@@ -83,6 +88,7 @@ fn to_row(st: &AppState, r: Row) -> (AccountRow, Vec<i64>) {
             created_at: fmt_time(st, Some(created_at)),
             locked,
             disabled: disabled_at.is_some(),
+            mfa,
         },
         group_ids,
     )
@@ -130,6 +136,7 @@ pub async fn list(
             .map_err(db_error)?;
     Ok(render(&AccountsPage {
         nav: Nav::new(&s, "accounts"),
+        mfa_required: crate::mfa::required(&st.pool).await.map_err(db_error)?,
         roles: roles("group_admin"),
         groups: all_groups(&st, &[]).await.map_err(db_error)?,
         rows: rows.into_iter().map(|r| to_row(&st, r).0).collect(),
@@ -154,6 +161,7 @@ pub async fn detail(
     let (a, group_ids) = to_row(&st, row);
     Ok(render(&AccountPage {
         nav: Nav::new(&s, "accounts"),
+        is_self: id == s.admin_id,
         roles: roles(&role),
         groups: all_groups(&st, &group_ids).await.map_err(db_error)?,
         a,
@@ -294,4 +302,46 @@ pub async fn reset_password(
         .await
         .map_err(conflict)?;
     Ok(Redirect::to(&format!("/accounts/{id}")).into_response())
+}
+
+/// 重設別人的兩步驟驗證（自己的請到 /mfa）
+pub async fn reset_mfa(
+    State(st): State<AppState>,
+    AdminSession(s): AdminSession,
+    Path(id): Path<i64>,
+    Form(f): Form<CsrfForm>,
+) -> Result<Response, Response> {
+    check_csrf(&s, &f.csrf)?;
+    platform(&s)?;
+    if id == s.admin_id {
+        return Err((
+            StatusCode::CONFLICT,
+            "不能重設自己的兩步驟驗證，請到「兩步驟驗證」頁面",
+        )
+            .into_response());
+    }
+    crate::mfa::reset(&st.pool, id, &s.username)
+        .await
+        .map_err(conflict)?;
+    Ok(Redirect::to(&format!("/accounts/{id}")).into_response())
+}
+
+#[derive(Deserialize)]
+pub struct MfaRequiredForm {
+    csrf: String,
+    #[serde(default)]
+    on: String,
+}
+
+pub async fn set_mfa_required(
+    State(st): State<AppState>,
+    AdminSession(s): AdminSession,
+    Form(f): Form<MfaRequiredForm>,
+) -> Result<Response, Response> {
+    check_csrf(&s, &f.csrf)?;
+    platform(&s)?;
+    crate::mfa::set_required(&st.pool, !f.on.is_empty(), &s.username)
+        .await
+        .map_err(db_error)?;
+    Ok(Redirect::to("/accounts").into_response())
 }

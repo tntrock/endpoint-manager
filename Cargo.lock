@@ -689,18 +689,21 @@ dependencies = [
  "flate2",
  "form_urlencoded",
  "futures-util",
+ "getrandom 0.4.3",
  "hex",
  "hmac",
  "hyper",
  "hyper-util",
  "msi",
  "protocol",
+ "qrcode",
  "rcgen",
  "reqwest",
  "rustls",
  "rustls-native-certs",
  "serde",
  "serde_json",
+ "sha1",
  "sha2 0.11.1",
  "sqlx",
  "tempfile",
@@ -1688,6 +1691,12 @@ dependencies = [
  "idna",
  "psl-types",
 ]
+
+[[package]]
+name = "qrcode"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ace1a365f55004297f2cf24acfd96d02966246ca423385273b58a7dc873ee14d"
 
 [[package]]
 name = "quote"

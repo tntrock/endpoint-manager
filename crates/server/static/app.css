@@ -267,3 +267,7 @@ progress { width: 12em; vertical-align: middle; accent-color: var(--accent); }
   @view-transition { navigation: none; }
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* 兩步驟驗證的 QR code：深色主題下也要白底，App 才掃得到 */
+.qr { display: inline-block; padding: 10px; margin: 8px 0 12px; background: #fff; border-radius: 8px; line-height: 0; }
+.qr svg { width: 200px; height: 200px; }

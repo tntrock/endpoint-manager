@@ -25,4 +25,16 @@
   <input name="password" type="password" required minlength="12" autocomplete="new-password" aria-label="新密碼"> <button class="btn">重設（同時解除鎖定、登出對方）</button>
 </form>
 </fieldset>
+<fieldset><legend>兩步驟驗證</legend>
+{% if a.mfa %}
+<p><span class="tag ok">已啟用</span></p>
+{% if is_self %}<p class="muted">要停用或重新產生復原碼，請到<a href="/mfa">兩步驟驗證</a>頁面。</p>
+{% else %}
+<form method="post" action="/accounts/{{ a.id }}/mfa-reset" data-confirm="重設後對方只要密碼就能登入（系統要求時會在登入後重新設定），並會被登出。確定重設？">
+  <input type="hidden" name="csrf" value="{{ nav.csrf }}">
+  <button class="btn danger">重設兩步驟驗證</button> <span class="help">對方遺失手機又沒有復原碼時使用。</span>
+</form>
+{% endif %}
+{% else %}<p><span class="tag">未啟用</span></p>{% endif %}
+</fieldset>
 {% endblock %}

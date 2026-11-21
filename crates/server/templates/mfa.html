@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head"><div><h1>兩步驟驗證</h1><div class="sub">登入時除了密碼，還要輸入驗證器 App 產生的 6 位數字</div></div></div>
+{% if setup_only %}<div class="notice">系統要求所有帳號使用兩步驟驗證。完成設定後才能使用管理網頁。</div>{% endif %}
+{% if let Some(msg) = message %}<div class="notice ok" role="status">{{ msg }}</div>{% endif %}
+{% if let Some(e) = error %}<div class="notice error" role="alert">{{ e }}</div>{% endif %}
+
+{% if !codes.is_empty() %}
+<div class="card">
+  <h2>復原碼</h2>
+  <p>手機遺失時，可以用下面任一組代替驗證碼登入，每組只能用一次。<b>這些復原碼只會顯示這一次</b>，請列印或存到密碼管理工具。</p>
+  <pre class="code" id="recovery-codes">{% for c in codes %}{{ c }}
+{% endfor %}</pre>
+  {% if setup_only_done %}<p><a class="btn primary" href="/">我已保存，前往管理網頁</a></p>{% endif %}
+</div>
+{% endif %}
+
+{% if let Some(at) = enabled_at %}
+<table>
+  <tr><th>狀態</th><td><span class="tag ok">已啟用</span>（{{ at }}）</td></tr>
+  <tr><th>剩餘復原碼</th><td>{{ recovery_left }} 組</td></tr>
+</table>
+<div class="row">
+<form class="card" method="post" action="/mfa/recovery">
+  <h2>重新產生復原碼</h2>
+  <p class="muted">舊的復原碼會全部作廢。</p>
+  <input type="hidden" name="csrf" value="{{ nav.csrf }}">
+  <label class="field">目前的驗證碼 <input name="code" autocomplete="one-time-code" inputmode="numeric" maxlength="12" required></label>
+  <button class="btn">重新產生</button>
+</form>
+{% if !required %}
+<form class="card" method="post" action="/mfa/disable" data-confirm="停用後只要密碼就能登入。確定停用？">
+  <h2>停用兩步驟驗證</h2>
+  <input type="hidden" name="csrf" value="{{ nav.csrf }}">
+  <label class="field">目前的驗證碼 <input name="code" autocomplete="one-time-code" inputmode="numeric" maxlength="12" required></label>
+  <button class="btn danger">停用</button>
+</form>
+{% endif %}
+</div>
+{% else %}
+<div class="card">
+  <h2>設定</h2>
+  <ol>
+    <li>在手機安裝驗證器 App（例如 Microsoft Authenticator、Google Authenticator）。</li>
+    <li>用 App 掃描下面的 QR code。無法掃描時，改成手動輸入金鑰：<br><code class="sha" id="mfa-secret">{{ secret }}</code></li>
+    <li>輸入 App 顯示的 6 位數字。</li>
+  </ol>
+  <div class="qr" aria-label="設定用 QR code">{{ qr|safe }}</div>
+  <form method="post" action="/mfa/enable">
+    <input type="hidden" name="csrf" value="{{ nav.csrf }}">
+    <label class="field">驗證碼 <input name="code" autocomplete="one-time-code" inputmode="numeric" maxlength="6" required autofocus></label>
+    <button class="btn primary">啟用</button>
+  </form>
+</div>
+{% endif %}
+{% endblock %}

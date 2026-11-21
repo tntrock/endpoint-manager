@@ -8,6 +8,7 @@ const USAGE: &str = "usage:
   endpoint-server ca-init <dir> <server-dns-name>...
   endpoint-server token-create <name> <max_uses> [group_name] [valid_days]
   endpoint-server admin-create <username>   (password from stdin)
+  endpoint-server admin-reset-mfa <username>   (clears two-step verification)
   endpoint-server agent-msi <template.msi> <out.msi> <server_url> <token>";
 
 #[tokio::main]
@@ -46,6 +47,17 @@ async fn main() -> anyhow::Result<()> {
             )
             .await?;
             println!("platform admin id {id} created");
+            Ok(())
+        }
+        Some("admin-reset-mfa") if args.len() >= 2 => {
+            let cfg = Config::from_env()?;
+            let pool = sqlx::PgPool::connect(&cfg.database_url).await?;
+            endpoint_server::db::migrate(&pool).await?;
+            endpoint_server::mfa::reset_by_username(&pool, &args[1]).await?;
+            println!(
+                "two-step verification cleared for {}; all of its sessions were signed out",
+                args[1]
+            );
             Ok(())
         }
         Some("ca-init") if args.len() >= 3 => {

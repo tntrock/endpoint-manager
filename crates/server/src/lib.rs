@@ -20,12 +20,14 @@ pub mod heartbeat;
 pub mod identity;
 pub mod installer;
 pub mod inventory;
+pub mod mfa;
 pub mod notify;
 pub mod partitions;
 pub mod ratelimit;
 pub mod renew;
 pub mod tls;
 pub mod tokens;
+pub mod totp;
 pub mod updates;
 pub mod web;
 

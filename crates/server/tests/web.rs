@@ -25,6 +25,7 @@ async fn pages_require_login(pool: PgPool) {
         "/accounts",
         "/audit",
         "/password",
+        "/mfa",
     ] {
         let r = c.get(s.web_url(path)).send().await.unwrap();
         assert_eq!(r.status(), 303, "{path}");

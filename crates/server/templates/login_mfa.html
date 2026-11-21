@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block content %}
+<main class="login-box" id="main">
+  <div class="brand"><span class="logo"></span><b>Endpoint Manager</b></div>
+  {% if let Some(e) = error %}<div class="notice error" role="alert">{{ e }}</div>{% endif %}
+  <form method="post" action="/login/mfa">
+    <label class="field">驗證碼 <input name="code" autocomplete="one-time-code" inputmode="numeric" maxlength="12" required autofocus></label>
+    <button class="btn primary">驗證</button>
+  </form>
+  <p class="foot">輸入驗證器 App 顯示的 6 位數字。手機不在身邊時，可以輸入一組復原碼（<code>xxxx-xxxx</code>），每組只能用一次。</p>
+  <p class="foot"><a href="/login">重新登入</a></p>
+</main>
+{% endblock %}

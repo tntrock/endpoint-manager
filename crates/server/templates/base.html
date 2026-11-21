@@ -58,6 +58,7 @@
     <summary><span class="avatar" aria-hidden="true">{{ nav.user.chars().next().unwrap_or('?') }}</span><span class="user-name">{{ nav.user }} <span class="muted">{{ nav.role }}</span></span></summary>
     <div class="menu">
       <a href="/password"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-user"></use></svg>變更密碼</a>
+      <a href="/mfa"><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-key"></use></svg>兩步驟驗證</a>
       <form method="post" action="/logout"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button><svg class="icon" aria-hidden="true"><use href="/static/icons.svg#i-logout"></use></svg>登出</button></form>
     </div>
   </details>
