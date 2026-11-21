@@ -133,38 +133,45 @@ pub fn days_from_seconds(max_passwd_age: u32) -> u32 {
     }
 }
 
+/// 呼叫 NetUserModalsGet 取得 `level` 的結構，複製一份後釋放 API 配置的緩衝區。
+/// 回傳的是複本，不會留下指向已釋放記憶體的參考。
+///
+/// SAFETY: 呼叫端保證 `T` 是 `level` 對應的 USER_MODALS_INFO_* 結構。
+unsafe fn user_modals<T: Copy>(level: u32) -> anyhow::Result<T> {
+    use windows_sys::Win32::NetworkManagement::NetManagement::{
+        NetApiBufferFree, NetUserModalsGet,
+    };
+    let mut out = std::mem::MaybeUninit::<*mut u8>::uninit();
+    // SAFETY: 成功時 API 把 NetApi 配置、內容為 level 結構的緩衝區位址寫入 out；
+    // 失敗時不配置，也不保證寫入 out
+    let rc = unsafe { NetUserModalsGet(std::ptr::null(), level, out.as_mut_ptr()) };
+    // 失敗時 out 沒有有效值，不讀也不釋放
+    anyhow::ensure!(rc == 0, "NetUserModalsGet({level}) failed: {rc}");
+    // SAFETY: rc == 0 時 API 已寫入 out
+    let buf = unsafe { out.assume_init() };
+    anyhow::ensure!(
+        !buf.is_null(),
+        "NetUserModalsGet({level}) returned no buffer"
+    );
+    // SAFETY: buf 非 null，指向 T（呼叫端保證）；NetApi 緩衝區的對齊足夠，仍用 unaligned 讀以免依賴
+    let value = unsafe { std::ptr::read_unaligned(buf as *const T) };
+    // SAFETY: buf 由 NetApi 配置，之後不再使用
+    unsafe { NetApiBufferFree(buf as *const _) };
+    Ok(value)
+}
+
 fn password_policy() -> anyhow::Result<PasswordPolicy> {
     use windows_sys::Win32::NetworkManagement::NetManagement::{
-        NetApiBufferFree, NetUserModalsGet, USER_MODALS_INFO_0, USER_MODALS_INFO_3,
+        USER_MODALS_INFO_0, USER_MODALS_INFO_3,
     };
-    // SAFETY: NetUserModalsGet 以 NetApiBuffer 配置緩衝區並寫入 buf；成功時讀取對應結構，
-    // 讀完立刻以 NetApiBufferFree 釋放。失敗時 buf 未配置，不需釋放。
-    unsafe {
-        let mut buf: *mut u8 = std::ptr::null_mut();
-        let rc = NetUserModalsGet(std::ptr::null(), 0, &mut buf);
-        anyhow::ensure!(
-            rc == 0 && !buf.is_null(),
-            "NetUserModalsGet(0) failed: {rc}"
-        );
-        let info0 = &*(buf as *const USER_MODALS_INFO_0);
-        let (min_length, max_age) = (info0.usrmod0_min_passwd_len, info0.usrmod0_max_passwd_age);
-        NetApiBufferFree(buf as *const _);
-
-        let mut buf: *mut u8 = std::ptr::null_mut();
-        let rc = NetUserModalsGet(std::ptr::null(), 3, &mut buf);
-        anyhow::ensure!(
-            rc == 0 && !buf.is_null(),
-            "NetUserModalsGet(3) failed: {rc}"
-        );
-        let lockout_threshold = (*(buf as *const USER_MODALS_INFO_3)).usrmod3_lockout_threshold;
-        NetApiBufferFree(buf as *const _);
-
-        Ok(PasswordPolicy {
-            min_length,
-            max_age_days: days_from_seconds(max_age),
-            lockout_threshold,
-        })
-    }
+    // SAFETY: level 0 與 3 分別對應 USER_MODALS_INFO_0、USER_MODALS_INFO_3
+    let info0: USER_MODALS_INFO_0 = unsafe { user_modals(0) }?;
+    let info3: USER_MODALS_INFO_3 = unsafe { user_modals(3) }?;
+    Ok(PasswordPolicy {
+        min_length: info0.usrmod0_min_passwd_len,
+        max_age_days: days_from_seconds(info0.usrmod0_max_passwd_age),
+        lockout_threshold: info3.usrmod3_lockout_threshold,
+    })
 }
 
 /// 以 null 結尾的 UTF-16 指標轉成 String。
