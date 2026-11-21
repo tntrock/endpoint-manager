@@ -23,6 +23,7 @@ pub mod inventory;
 pub mod metrics;
 pub mod mfa;
 pub mod notify;
+pub mod oidc;
 pub mod partitions;
 pub mod ratelimit;
 pub mod renew;
@@ -83,6 +84,8 @@ pub struct AppState {
     pub branch: Arc<branch::assign::BranchCache>,
     /// 監控指標（`/metrics`）
     pub metrics: Arc<metrics::Metrics>,
+    /// 管理網頁單一登入；None 表示關閉
+    pub oidc: Option<Arc<oidc::Provider>>,
 }
 
 impl AppState {
@@ -113,6 +116,7 @@ impl AppState {
             updates: Arc::new(updates::assign::UpdatePolicyCache::default()),
             branch: Arc::new(branch::assign::BranchCache::default()),
             metrics: Arc::new(metrics::Metrics::default()),
+            oidc: None,
         }
     }
 
@@ -141,6 +145,11 @@ impl AppState {
     ) -> Self {
         self.agent_deb = deb;
         self.agent_rpm = rpm;
+        self
+    }
+
+    pub fn with_oidc(mut self, provider: Option<oidc::Provider>) -> Self {
+        self.oidc = provider.map(Arc::new);
         self
     }
 
@@ -230,6 +239,7 @@ pub async fn serve(cfg: config::Config) -> anyhow::Result<()> {
             webhook_secret: cfg.webhook_secret.clone(),
         })
         .with_metrics_token(cfg.metrics_token.as_deref())
+        .with_oidc(cfg.oidc.clone().map(oidc::Provider::new).transpose()?)
         .with_packages(cfg.package_dir.clone(), cfg.download_concurrency);
     // 安裝檔可以晚點才放上去（網頁每次顯示時會再檢查），這裡只先提醒
     for (var, path) in [

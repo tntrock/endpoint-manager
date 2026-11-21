@@ -242,6 +242,8 @@ progress { width: 12em; vertical-align: middle; accent-color: var(--accent); }
 .login-box .logo::after { width: 15px; height: 15px; background: var(--panel); }
 .login-box .field input { width: 100%; }
 .login-box .btn.primary { width: 100%; justify-content: center; padding: 9px; margin-top: 6px; }
+.login-box .sso { margin: 14px 0 0; }
+.login-box .sso .btn { width: 100%; justify-content: center; padding: 9px; }
 .foot { margin: 16px 0 0; font-size: 12px; color: var(--muted); text-align: center; }
 
 /* 窄視窗：有 JS 時側邊欄變抽屜；沒有 JS 時排在內容上方 */

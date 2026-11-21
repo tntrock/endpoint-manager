@@ -37,4 +37,14 @@
 {% endif %}
 {% else %}<p><span class="tag">未啟用</span></p>{% endif %}
 </fieldset>
+{% if sso_enabled || a.sso %}
+<fieldset><legend>單一登入</legend>
+{% if a.sso %}
+<form method="post" action="/accounts/{{ a.id }}/oidc-unlink" data-confirm="解除後，下一個用相同名稱單一登入的公司帳號會綁定到這個帳號。確定解除？">
+  <input type="hidden" name="csrf" value="{{ nav.csrf }}">
+  <span class="tag ok">已綁定</span> <button class="btn danger">解除綁定</button> <span class="help">對方改用新的公司帳號時使用。</span>
+</form>
+{% else %}<p><span class="tag">未綁定</span> <span class="help">第一次用單一登入時，會綁定名稱與帳號相同的公司帳號。</span></p>{% endif %}
+</fieldset>
+{% endif %}
 {% endblock %}

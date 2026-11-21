@@ -74,6 +74,20 @@ pub enum LoginOutcome {
         challenge_token: String,
     },
     Failed,
+    /// 密碼正確，但這個帳號只能用單一登入
+    SsoOnly,
+}
+
+/// 單一登入的結果
+#[derive(Debug, PartialEq, Eq)]
+pub enum OidcOutcome {
+    Ok {
+        session_token: String,
+    },
+    /// 沒有對應（或已停用）的管理帳號
+    NoAccount,
+    /// 名稱相同的帳號已綁定別的身分提供者使用者
+    Conflict,
 }
 
 /// 驗證碼步驟的結果
@@ -115,7 +129,7 @@ impl Session {
     }
 }
 
-fn sha256_hex(s: &str) -> String {
+pub(crate) fn sha256_hex(s: &str) -> String {
     use sha2::{Digest, Sha256};
     hex::encode(Sha256::digest(s.as_bytes()))
 }
@@ -164,17 +178,30 @@ pub(crate) async fn record_failure(
 }
 
 pub async fn login(pool: &PgPool, username: &str, password: &str) -> anyhow::Result<LoginOutcome> {
+    login_checked(pool, username, password, false).await
+}
+
+/// id、密碼雜湊、鎖定期限、是否有 MFA、角色
+type LoginRow = (i64, String, Option<DateTime<Utc>>, bool, String);
+
+/// `sso_only`：設定了單一登入且密碼登入只限平台管理員
+pub async fn login_checked(
+    pool: &PgPool,
+    username: &str,
+    password: &str,
+    sso_only: bool,
+) -> anyhow::Result<LoginOutcome> {
     let username: String = username.chars().take(MAX_USERNAME_LEN).collect();
     let mut tx = pool.begin().await?;
     // FOR UPDATE：同一帳號的登入依序處理，平行請求無法繞過失敗次數上限
-    let row: Option<(i64, String, Option<DateTime<Utc>>, bool)> = sqlx::query_as(
-        "SELECT id, password_hash, locked_until, mfa_secret IS NOT NULL FROM admins \
+    let row: Option<LoginRow> = sqlx::query_as(
+        "SELECT id, password_hash, locked_until, mfa_secret IS NOT NULL, role FROM admins \
          WHERE username = $1 AND disabled_at IS NULL FOR UPDATE",
     )
     .bind(&username)
     .fetch_optional(&mut *tx)
     .await?;
-    let Some((admin_id, hash, locked_until, has_mfa)) = row else {
+    let Some((admin_id, hash, locked_until, has_mfa, role)) = row else {
         verify_blocking(password, dummy_hash()).await;
         crate::audit::record(
             &mut tx,
@@ -205,6 +232,19 @@ pub async fn login(pool: &PgPool, username: &str, password: &str) -> anyhow::Res
         .await?;
         tx.commit().await?;
         return Ok(LoginOutcome::Failed);
+    }
+    // 密碼正確才告知「只能用單一登入」：密碼錯誤時的回應與其他帳號相同
+    if sso_only && role != Role::Platform.as_str() {
+        crate::audit::record(
+            &mut tx,
+            &username,
+            "login_failed",
+            None,
+            serde_json::json!({ "reason": "sso_only" }),
+        )
+        .await?;
+        tx.commit().await?;
+        return Ok(LoginOutcome::SsoOnly);
     }
     sqlx::query("DELETE FROM mfa_challenges WHERE expires_at < now()")
         .execute(&mut *tx)
@@ -250,8 +290,173 @@ pub async fn login(pool: &PgPool, username: &str, password: &str) -> anyhow::Res
     })
 }
 
-fn new_token() -> String {
+pub(crate) fn new_token() -> String {
     format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
+}
+
+/// 單一登入：依綁定或帳號名稱找到管理帳號並建立工作階段（見設計文件 §3 第 5 步）
+pub async fn login_oidc(
+    pool: &PgPool,
+    issuer: &str,
+    id: &crate::oidc::Identity,
+) -> anyhow::Result<OidcOutcome> {
+    let mut tx = pool.begin().await?;
+    // 已綁定的帳號即使停用了也算數：不能改用名稱去綁另一個帳號
+    let bound: Option<(i64, String, bool)> = sqlx::query_as(
+        "SELECT id, username, disabled_at IS NOT NULL FROM admins \
+         WHERE oidc_issuer = $1 AND oidc_subject = $2 FOR UPDATE",
+    )
+    .bind(issuer)
+    .bind(&id.subject)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let (admin_id, username) = match bound {
+        Some((_, username, true)) => {
+            crate::audit::record(
+                &mut tx,
+                &username,
+                "login_failed",
+                None,
+                serde_json::json!({ "reason": "oidc_disabled" }),
+            )
+            .await?;
+            tx.commit().await?;
+            return Ok(OidcOutcome::NoAccount);
+        }
+        Some((admin_id, username, false)) => (admin_id, username),
+        None => {
+            let by_name: Option<(i64, String, Option<String>)> = sqlx::query_as(
+                "SELECT id, username, oidc_subject FROM admins \
+                 WHERE lower(username) = lower($1) AND disabled_at IS NULL FOR UPDATE",
+            )
+            .bind(&id.username)
+            .fetch_optional(&mut *tx)
+            .await?;
+            let outcome = match by_name {
+                None => Err((OidcOutcome::NoAccount, "oidc_no_account")),
+                Some((_, _, Some(_))) => Err((OidcOutcome::Conflict, "oidc_conflict")),
+                Some((admin_id, username, None)) => Ok((admin_id, username)),
+            };
+            match outcome {
+                Ok((admin_id, username)) => {
+                    sqlx::query(
+                        "UPDATE admins SET oidc_issuer = $2, oidc_subject = $3 WHERE id = $1",
+                    )
+                    .bind(admin_id)
+                    .bind(issuer)
+                    .bind(&id.subject)
+                    .execute(&mut *tx)
+                    .await?;
+                    crate::audit::record(
+                        &mut tx,
+                        &username,
+                        "oidc_linked",
+                        Some(&username),
+                        serde_json::json!({ "issuer": issuer, "subject": id.subject }),
+                    )
+                    .await?;
+                    (admin_id, username)
+                }
+                Err((outcome, reason)) => {
+                    let actor: String = id.username.chars().take(MAX_USERNAME_LEN).collect();
+                    crate::audit::record(
+                        &mut tx,
+                        &actor,
+                        "login_failed",
+                        None,
+                        serde_json::json!({ "reason": reason }),
+                    )
+                    .await?;
+                    tx.commit().await?;
+                    return Ok(outcome);
+                }
+            }
+        }
+    };
+    let token = create_session(&mut tx, admin_id, false).await?;
+    crate::audit::record(
+        &mut tx,
+        &username,
+        "login",
+        None,
+        serde_json::json!({ "method": "oidc" }),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(OidcOutcome::Ok {
+        session_token: token,
+    })
+}
+
+/// 解除帳號的單一登入綁定（平台管理員）；回傳是否有綁定
+pub async fn unlink_oidc(pool: &PgPool, admin_id: i64, actor: &str) -> anyhow::Result<bool> {
+    let mut tx = pool.begin().await?;
+    let row: Option<(String, Option<String>)> =
+        sqlx::query_as("SELECT username, oidc_subject FROM admins WHERE id = $1 FOR UPDATE")
+            .bind(admin_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let Some((username, Some(subject))) = row else {
+        return Ok(false);
+    };
+    sqlx::query("UPDATE admins SET oidc_issuer = NULL, oidc_subject = NULL WHERE id = $1")
+        .bind(admin_id)
+        .execute(&mut *tx)
+        .await?;
+    crate::audit::record(
+        &mut tx,
+        actor,
+        "oidc_unlinked",
+        Some(&username),
+        serde_json::json!({ "subject": subject }),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(true)
+}
+
+pub const PASSWORD_LOGIN_KEY: &str = "password_login";
+
+/// 密碼登入是否只限平台管理員；讀不到或被改壞時視為所有帳號都可以（預設值）
+pub async fn password_login_platform_only(pool: &PgPool) -> Result<bool, sqlx::Error> {
+    let v: Option<Option<String>> =
+        sqlx::query_scalar("SELECT value #>> '{}' FROM settings WHERE key = $1")
+            .bind(PASSWORD_LOGIN_KEY)
+            .fetch_optional(pool)
+            .await?;
+    Ok(v.flatten().as_deref() == Some("platform"))
+}
+
+pub async fn set_password_login_platform_only(
+    pool: &PgPool,
+    on: bool,
+    actor: &str,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let old: Option<Option<String>> =
+        sqlx::query_scalar("SELECT value #>> '{}' FROM settings WHERE key = $1 FOR UPDATE")
+            .bind(PASSWORD_LOGIN_KEY)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let value = if on { "platform" } else { "all" };
+    sqlx::query(
+        "INSERT INTO settings (key, value) VALUES ($1, to_jsonb($2::text)) \
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+    )
+    .bind(PASSWORD_LOGIN_KEY)
+    .bind(value)
+    .execute(&mut *tx)
+    .await?;
+    crate::audit::record(
+        &mut tx,
+        actor,
+        "setting_password_login",
+        None,
+        serde_json::json!({ "value": value, "old": old.flatten().unwrap_or_else(|| "all".into()) }),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(())
 }
 
 async fn create_session(
@@ -572,7 +777,7 @@ mod tests {
     async fn ok(pool: &PgPool, pw: &str) -> Option<String> {
         match login(pool, "alice", pw).await.unwrap() {
             LoginOutcome::Ok { session_token } => Some(session_token),
-            LoginOutcome::Failed | LoginOutcome::MfaRequired { .. } => None,
+            LoginOutcome::Failed | LoginOutcome::SsoOnly | LoginOutcome::MfaRequired { .. } => None,
         }
     }
 

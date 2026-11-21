@@ -43,6 +43,19 @@ impl TestServer {
     }
 
     pub async fn start_with(pool: PgPool, limits: tls::ConnLimits) -> TestServer {
+        Self::start_inner(pool, limits, None).await
+    }
+
+    /// 設定了單一登入的測試伺服器
+    pub async fn start_oidc(pool: PgPool, cfg: endpoint_server::oidc::OidcConfig) -> TestServer {
+        Self::start_inner(pool, tls::ConnLimits::default(), Some(cfg)).await
+    }
+
+    async fn start_inner(
+        pool: PgPool,
+        limits: tls::ConnLimits,
+        oidc: Option<endpoint_server::oidc::OidcConfig>,
+    ) -> TestServer {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let dir = tempfile::tempdir().unwrap();
         ca::init_ca(dir.path(), vec!["localhost".into()]).unwrap();
@@ -65,7 +78,8 @@ impl TestServer {
             )
             .with_linux_packages(Some(deb_path), Some(rpm_path))
             .with_packages(dir.path().join("packages"), 2)
-            .with_metrics_token(Some(METRICS_TOKEN));
+            .with_metrics_token(Some(METRICS_TOKEN))
+            .with_oidc(oidc.map(|c| endpoint_server::oidc::Provider::new(c).unwrap()));
         let cfg = tls::server_config(dir.path()).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();

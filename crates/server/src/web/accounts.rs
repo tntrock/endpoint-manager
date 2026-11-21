@@ -25,6 +25,8 @@ pub struct AccountRow {
     pub locked: bool,
     pub disabled: bool,
     pub mfa: bool,
+    /// 已綁定單一登入
+    pub sso: bool,
 }
 
 #[derive(Template)]
@@ -32,6 +34,9 @@ pub struct AccountRow {
 struct AccountsPage {
     nav: Nav,
     mfa_required: bool,
+    /// 有設定單一登入
+    sso_enabled: bool,
+    password_platform_only: bool,
     roles: Vec<SelectOption>,
     groups: Vec<SelectOption>,
     rows: Vec<AccountRow>,
@@ -41,6 +46,7 @@ struct AccountsPage {
 #[template(path = "account.html")]
 struct AccountPage {
     nav: Nav,
+    sso_enabled: bool,
     a: AccountRow,
     is_self: bool,
     roles: Vec<SelectOption>,
@@ -57,6 +63,7 @@ type Row = (
     DateTime<Utc>,
     Vec<i64>,
     bool,
+    bool,
 );
 
 const SELECT: &str = "SELECT a.id, a.username, a.role, \
@@ -64,11 +71,12 @@ const SELECT: &str = "SELECT a.id, a.username, a.role, \
           JOIN device_groups g ON g.id = ag.group_id WHERE ag.admin_id = a.id), \
        a.locked_until, a.disabled_at, a.created_at, \
        ARRAY(SELECT group_id FROM admin_groups WHERE admin_id = a.id), \
-       a.mfa_secret IS NOT NULL \
+       a.mfa_secret IS NOT NULL, a.oidc_subject IS NOT NULL \
      FROM admins a";
 
 fn to_row(st: &AppState, r: Row) -> (AccountRow, Vec<i64>) {
-    let (id, username, role, groups, locked_until, disabled_at, created_at, group_ids, mfa) = r;
+    let (id, username, role, groups, locked_until, disabled_at, created_at, group_ids, mfa, sso) =
+        r;
     let locked = locked_until.is_some_and(|t| t > Utc::now());
     let (state, state_class) = if disabled_at.is_some() {
         ("已停用", "bad")
@@ -89,6 +97,7 @@ fn to_row(st: &AppState, r: Row) -> (AccountRow, Vec<i64>) {
             locked,
             disabled: disabled_at.is_some(),
             mfa,
+            sso,
         },
         group_ids,
     )
@@ -137,6 +146,10 @@ pub async fn list(
     Ok(render(&AccountsPage {
         nav: Nav::new(&s, "accounts"),
         mfa_required: crate::mfa::required(&st.pool).await.map_err(db_error)?,
+        sso_enabled: st.oidc.is_some(),
+        password_platform_only: crate::web::auth::password_login_platform_only(&st.pool)
+            .await
+            .map_err(db_error)?,
         roles: roles("group_admin"),
         groups: all_groups(&st, &[]).await.map_err(db_error)?,
         rows: rows.into_iter().map(|r| to_row(&st, r).0).collect(),
@@ -162,6 +175,7 @@ pub async fn detail(
     Ok(render(&AccountPage {
         nav: Nav::new(&s, "accounts"),
         is_self: id == s.admin_id,
+        sso_enabled: st.oidc.is_some(),
         roles: roles(&role),
         groups: all_groups(&st, &group_ids).await.map_err(db_error)?,
         a,
@@ -341,6 +355,35 @@ pub async fn set_mfa_required(
     check_csrf(&s, &f.csrf)?;
     platform(&s)?;
     crate::mfa::set_required(&st.pool, !f.on.is_empty(), &s.username)
+        .await
+        .map_err(db_error)?;
+    Ok(Redirect::to("/accounts").into_response())
+}
+
+/// 解除單一登入綁定（員工改用新的公司帳號時）
+pub async fn unlink_oidc(
+    State(st): State<AppState>,
+    AdminSession(s): AdminSession,
+    Path(id): Path<i64>,
+    Form(f): Form<CsrfForm>,
+) -> Result<Response, Response> {
+    check_csrf(&s, &f.csrf)?;
+    platform(&s)?;
+    crate::web::auth::unlink_oidc(&st.pool, id, &s.username)
+        .await
+        .map_err(conflict)?;
+    Ok(Redirect::to(&format!("/accounts/{id}")).into_response())
+}
+
+/// 密碼登入：所有帳號，或只限平台管理員（設定了單一登入才生效）
+pub async fn set_password_login(
+    State(st): State<AppState>,
+    AdminSession(s): AdminSession,
+    Form(f): Form<MfaRequiredForm>,
+) -> Result<Response, Response> {
+    check_csrf(&s, &f.csrf)?;
+    platform(&s)?;
+    crate::web::auth::set_password_login_platform_only(&st.pool, !f.on.is_empty(), &s.username)
         .await
         .map_err(db_error)?;
     Ok(Redirect::to("/accounts").into_response())

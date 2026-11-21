@@ -45,6 +45,9 @@ fn label(action: &str) -> &str {
         "notify_settings" => "修改通知設定",
         "setting_retention" => "修改資料保留",
         "retention_purge" => "清除過期資料",
+        "oidc_linked" => "綁定單一登入",
+        "oidc_unlinked" => "解除單一登入綁定",
+        "setting_password_login" => "修改密碼登入範圍",
         other => other,
     }
 }
