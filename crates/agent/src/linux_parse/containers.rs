@@ -243,8 +243,14 @@ mod tests {
         assert_eq!((job.host_network, job.ports.len()), (Some(true), 0));
         // 不收集環境變數、參數與標籤
         let all = serde_json::to_string(&v).unwrap();
-        for secret in ["hunter2", "s3cret", "DB_PASSWORD", "Labels", "secret"] {
-            assert!(!all.contains(secret), "{secret}");
+        for (i, needle) in ["hunter2", "s3cret", "DB_PASSWORD", "Labels", "secret"]
+            .iter()
+            .enumerate()
+        {
+            assert!(
+                !all.contains(needle),
+                "fixture value #{i} leaked into the result"
+            );
         }
     }
 
