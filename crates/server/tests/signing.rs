@@ -43,6 +43,8 @@ fn alice() -> Actor {
 }
 
 async fn checkin(s: &TestServer, a: &TestAgent, keys: Vec<String>) -> protocol::CheckinResponse {
+    // 派送清單每 5 秒才重新確認一次：測試裡要立即看到變更
+    s.state.deploy.invalidate();
     s.client(Some(a))
         .post(s.url("/v1/checkin"))
         .json(&protocol::CheckinRequest {

@@ -233,6 +233,7 @@ pub async fn update_script(
         sqlx::query(
             "UPDATE scripts SET name = $2, description = $3, content = $4, sha256 = $5, \
                timeout_minutes = $6, status = $7, updated_by = $8, updated_at = now(), \
+               signature = NULL, \
                approved_by = CASE WHEN $7 = 'approved' THEN $8 END, \
                approved_at = CASE WHEN $7 = 'approved' THEN now() END, \
                editors = CASE WHEN status = 'approved' OR $7 = 'approved' THEN ARRAY[$8] \
