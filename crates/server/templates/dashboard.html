@@ -1,17 +1,61 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m %}
 {% block content %}
-<div class="page-head"><div><h1>總覽</h1><div class="sub">管理範圍內的裝置狀態</div></div></div>
+<div class="page-head">
+  <div><h1>總覽</h1><div class="sub">{{ scope }}</div></div>
+  <div class="actions"><a class="btn" href="/report?days={{ days }}">主管報告</a></div>
+</div>
 {% if let Some(r) = approve_result %}<div class="notice ok">已核准 {{ r.0 }} 台{% if r.1 > 0 %}，略過 {{ r.1 }} 台（原因記錄在伺服器日誌）{% endif %}。</div>{% endif %}
-<div class="cards">
-  <div class="card kpi"><div class="kpi-label">裝置總數</div><div class="kpi-value num">{{ total }}</div></div>
-  <div class="card kpi"><div class="kpi-label">在線</div><div class="kpi-value num ok">{{ online }}</div></div>
-  <div class="card kpi"><div class="kpi-label">離線</div><div class="kpi-value num">{{ total - online }}</div></div>
-  <div class="card kpi"><div class="kpi-label">疑似重複</div><div class="kpi-value num{% if duplicate > 0 %} error{% endif %}">{{ duplicate }}</div></div>
-  <div class="card kpi"><div class="kpi-label">待核准</div><div class="kpi-value num">{{ pending.len() }}</div></div>
+<div class="cards kpis">
+  <div class="card kpi"><div class="kpi-label">裝置總數</div><div class="kpi-value num">{{ o.now.managed }}</div>
+    {% if let Some(d) = o.total_delta %}<div class="delta {{ d.dir }}">{{ d.text }}<span class="muted">　較 7 天前</span></div>{% endif %}
+    {% if let Some(p) = o.spark_total %}<svg class="spark" viewBox="0 0 96 32" aria-hidden="true"><polyline class="line-a" points="{{ p }}"></polyline></svg>{% endif %}</div>
+  <div class="card kpi"><div class="kpi-label">在線</div><div class="kpi-value num">{{ o.now.seen }}<small> / {{ o.now.managed }}</small></div>
+    <div class="delta muted">離線 {{ o.now.managed - o.now.seen }} 台</div>
+    <svg class="ring" viewBox="0 0 64 64" role="img" aria-label="在線率 {{ o.online_pct }}%"><circle class="ring-track" cx="32" cy="32" r="26"></circle><circle class="ring-fill" cx="32" cy="32" r="26" stroke-dasharray="{{ o.ring }}" transform="rotate(-90 32 32)"></circle><text x="32" y="36" text-anchor="middle">{{ o.online_pct }}%</text></svg></div>
+  <div class="card kpi"><div class="kpi-label">合規率</div><div class="kpi-value num">{{ o.compliance_pct }}<small>%</small></div>
+    {% if let Some(d) = o.compliance_delta %}<div class="delta {{ d.dir }}">{{ d.text }}<span class="muted">　較 7 天前</span></div>{% endif %}
+    {% if let Some(p) = o.spark_compliance %}<svg class="spark" viewBox="0 0 96 32" aria-hidden="true"><polyline class="line-ok" points="{{ p }}"></polyline></svg>{% endif %}</div>
+  <div class="card kpi"><div class="kpi-label">高風險裝置</div><div class="kpi-value num{% if o.now.high_risk > 0 %} error{% endif %}">{{ o.now.high_risk }}</div>
+    {% if let Some(d) = o.high_delta %}<div class="delta {{ d.dir }} inverse">{{ d.text }}<span class="muted">　較 7 天前</span></div>{% endif %}
+    {% if let Some(p) = o.spark_high %}<svg class="spark" viewBox="0 0 96 32" aria-hidden="true"><polyline class="line-b" points="{{ p }}"></polyline></svg>{% endif %}</div>
+</div>
+<div class="dash-grid">
+  <section class="card">
+    <div class="card-head"><div><h2>違規趨勢</h2><div class="sub">有違規與高風險的裝置數</div></div>
+      <nav class="seg" aria-label="期間">{% for r in ranges %}{% if r.on %}<strong aria-current="true">{{ r.days }} 天</strong>{% else %}<a href="/?days={{ r.days }}">{{ r.days }} 天</a>{% endif %}{% endfor %}</nav></div>
+    {% include "_trend.html" %}
+  </section>
+  <section class="card">
+    <div class="card-head"><div><h2>需要處理</h2><div class="sub">依嚴重度排序</div></div>{% if !todo.is_empty() %}<span class="tag">{{ todo.len() }} 項</span>{% endif %}</div>
+    {% if todo.is_empty() %}<p class="muted">目前沒有需要處理的項目。</p>{% else %}
+    <ul class="todo">
+      {% for t in todo %}<li><span class="sev-dot {{ t.severity }}" aria-hidden="true"></span><a href="{{ t.href }}"><span class="t">{{ t.title }}</span><span class="d">{{ t.detail }}</span></a><span class="n num">{{ t.count }}</span></li>{% endfor %}
+    </ul>{% endif %}
+  </section>
+  {% if !sites.is_empty() %}
+  <section class="card">
+    <div class="card-head"><div><h2>各據點狀態</h2><div class="sub">依裝置最後回報的 IP</div></div></div>
+    <div class="site-rows">
+      {% for st in sites %}<div class="site-row"><b>{{ st.name }}</b>
+        <svg class="meter" viewBox="0 0 100 8" preserveAspectRatio="none" role="img" aria-label="合規 {{ st.ok }}、有違規 {{ st.bad }}、離線 {{ st.off }}">{% for g in st.segs %}<rect class="seg-{{ loop.index }}" x="{{ g.0 }}" y="0" width="{{ g.1 }}" height="8"></rect>{% endfor %}</svg>
+        <span class="num">{{ st.total }}</span></div>{% endfor %}
+    </div>
+    <div class="legend"><span><i class="seg-1"></i>在線且合規</span><span><i class="seg-2"></i>有違規</span><span><i class="seg-3"></i>離線</span></div>
+  </section>
+  {% endif %}
+  <section class="card">
+    <div class="card-head"><div><h2>違規最多的規則</h2><div class="sub">違規台數</div></div><a class="btn sm" href="/compliance">合規</a></div>
+    {% if rules.is_empty() %}<p class="muted">目前沒有違規。</p>{% else %}
+    <div class="bars">
+      {% for r in rules %}<a class="bar-row" href="/compliance/violations?rule={{ r.id }}&amp;status=violating"><span class="name">{{ r.name }}</span>
+        <svg class="bar" viewBox="0 0 100 8" preserveAspectRatio="none" aria-hidden="true"><rect class="track" x="0" y="0" width="100" height="8"></rect><rect class="fill {{ r.severity }}" x="0" y="0" width="{{ r.width }}" height="8"></rect></svg>
+        <span class="num">{{ r.count }}</span></a>{% endfor %}
+    </div>{% endif %}
+  </section>
 </div>
 {% if !pending.is_empty() %}
-<div class="card">
+<div class="card" id="pending">
 <h2>待核准的重新註冊</h2>
 <p class="muted">硬體識別與既有裝置相同（通常是重灌）。核准後新憑證會接手原裝置的記錄；若不是預期的重灌，請拒絕。</p>
 {% if nav.manage %}

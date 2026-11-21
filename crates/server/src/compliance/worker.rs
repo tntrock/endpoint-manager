@@ -232,6 +232,7 @@ pub async fn cleanup_history(pool: &PgPool, today: time::Date) -> Result<u64, sq
         .bind(today)
         .execute(pool)
         .await?;
+    crate::stats::cleanup(pool, today, days).await?;
     Ok(events)
 }
 
@@ -257,6 +258,9 @@ pub fn spawn(pool: PgPool) {
                 let today = super::today(time::OffsetDateTime::now_utc());
                 if let Err(e) = snapshot_daily(&pool, today).await {
                     tracing::error!(error = %e, "compliance snapshot failed");
+                }
+                if let Err(e) = crate::stats::snapshot(&pool, today).await {
+                    tracing::error!(error = %e, "device stats snapshot failed");
                 }
                 if let Err(e) = cleanup_history(&pool, today).await {
                     tracing::error!(error = %e, "violation history cleanup failed");

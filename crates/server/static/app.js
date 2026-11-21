@@ -14,6 +14,13 @@
   }
 
   document.addEventListener('DOMContentLoaded', function () {
+    // 主管報告的列印按鈕
+    var printBtn = document.querySelector('[data-print]');
+    if (printBtn) {
+      printBtn.hidden = false;
+      printBtn.addEventListener('click', function () { window.print(); });
+    }
+
     var btn = document.querySelector('.theme-btn');
     if (btn) {
       btn.hidden = false;

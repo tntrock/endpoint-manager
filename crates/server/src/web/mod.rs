@@ -7,6 +7,7 @@ pub mod accounts;
 pub mod audit;
 pub mod auth;
 pub mod caches;
+pub mod chart;
 pub mod commands;
 pub mod compliance;
 pub mod dashboard;
@@ -19,6 +20,7 @@ pub mod notify;
 pub mod packages;
 pub mod password;
 pub mod registry;
+pub mod report;
 pub mod rules;
 pub mod scripts;
 pub mod signing;
@@ -135,6 +137,7 @@ fn asset(body: &'static str, content_type: &'static str) -> Response {
 pub fn web_router(state: AppState) -> Router {
     Router::new()
         .route("/", get(dashboard::page))
+        .route("/report", get(report::page))
         .route("/ui/status", get(dashboard::status))
         .route("/login", get(login::form).post(login::submit))
         .route("/login/mfa", get(login::mfa_form).post(login::mfa_submit))

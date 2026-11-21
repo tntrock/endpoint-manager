@@ -29,6 +29,7 @@ pub mod ratelimit;
 pub mod renew;
 pub mod retention;
 pub mod signing;
+pub mod stats;
 pub mod tls;
 pub mod tokens;
 pub mod totp;

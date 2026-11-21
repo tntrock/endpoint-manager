@@ -1,0 +1,13 @@
+{% if let Some(c) = o.chart %}
+<svg class="chart" viewBox="0 0 640 210" role="img" aria-label="違規趨勢：有違規與高風險的裝置數">
+  <g class="grid">{% for t in c.y_ticks %}<line x1="44" y1="{{ t.0 }}" x2="630" y2="{{ t.0 }}"></line>{% endfor %}</g>
+  <g class="axis">
+    {% for t in c.y_ticks %}<text x="36" y="{{ t.0 + 4.0 }}" text-anchor="end">{{ t.1 }}</text>{% endfor %}
+    {% for l in c.x_labels %}<text x="{{ l.0 }}" y="194" text-anchor="{% if loop.first %}start{% else if loop.last %}end{% else %}middle{% endif %}">{{ l.1 }}</text>{% endfor %}
+  </g>
+  {% for sr in c.series %}<polyline class="{{ sr.class }}" points="{{ sr.points }}"></polyline><circle class="{{ sr.class }} end" cx="{{ sr.last.0 }}" cy="{{ sr.last.1 }}" r="4"></circle>{% endfor %}
+</svg>
+<div class="legend"><span><i class="line-a"></i>有違規</span><span><i class="line-b"></i>高風險</span></div>
+{% else %}
+<p class="muted">累積兩天以上的資料後會顯示趨勢。</p>
+{% endif %}

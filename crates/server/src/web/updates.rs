@@ -716,7 +716,7 @@ pub async fn overview(
     }))
 }
 
-fn state_label(state: &str) -> &'static str {
+pub(super) fn state_label(state: &str) -> &'static str {
     match state {
         "applied" => "已套用",
         "conflict" => "衝突",
