@@ -1,6 +1,5 @@
 //! 收集來源的抽象：Windows 上是 WMI + 登錄檔，測試用假資料。所有方法都是阻塞呼叫。
 
-use chrono::{DateTime, Utc};
 use protocol::{InventoryPayload, OsFamily, RegistryQuery, Section};
 
 #[derive(Debug, Clone)]
@@ -13,7 +12,7 @@ pub struct Identity {
 
 #[derive(Debug, Clone)]
 pub struct Heartbeat {
-    pub boot_time: DateTime<Utc>,
+    pub boot_time: time::OffsetDateTime,
     pub logged_on_user: Option<String>,
     pub ip_addresses: Vec<String>,
 }

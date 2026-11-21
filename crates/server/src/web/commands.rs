@@ -4,7 +4,6 @@ use askama::Template;
 use axum::extract::{Path, Query, RawForm, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Redirect, Response};
-use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -122,8 +121,8 @@ type RunDbRow = (
     String,
     String,
     String,
-    DateTime<Utc>,
-    DateTime<Utc>,
+    time::OffsetDateTime,
+    time::OffsetDateTime,
     bool,
     i64,
     i64,
@@ -418,7 +417,7 @@ type TargetDbRow = (
     String,
     String,
     Option<i32>,
-    Option<DateTime<Utc>>,
+    Option<time::OffsetDateTime>,
     String,
 );
 
@@ -601,7 +600,7 @@ type TabDbRow = (
     i64,
     String,
     String,
-    DateTime<Utc>,
+    time::OffsetDateTime,
     String,
     Option<i32>,
     String,

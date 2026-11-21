@@ -6,14 +6,15 @@ pub mod deploy;
 pub mod matcher;
 pub mod regpath;
 pub mod signing;
+pub mod timefmt;
 pub mod update;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 pub const SCHEMA_VERSION: u32 = 1;
@@ -140,7 +141,8 @@ pub struct EnrollResponse {
 pub struct CheckinRequest {
     pub schema_version: u32,
     pub agent_version: String,
-    pub boot_time: DateTime<Utc>,
+    #[serde(with = "timefmt::rfc3339")]
+    pub boot_time: OffsetDateTime,
     pub logged_on_user: Option<String>,
     pub ip_addresses: Vec<String>,
     pub section_hashes: BTreeMap<Section, String>,
@@ -313,7 +315,8 @@ pub struct DefenderInfo {
     pub active: bool,
     pub realtime: bool,
     pub tamper: bool,
-    pub signature_updated: Option<DateTime<Utc>>,
+    #[serde(with = "timefmt::rfc3339_option", default)]
+    pub signature_updated: Option<OffsetDateTime>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -384,7 +387,8 @@ pub struct LocalUser {
     pub shell: String,
     /// None = 讀不到（沒有 shadow 權限）
     pub locked: Option<bool>,
-    pub password_changed: Option<chrono::NaiveDate>,
+    #[serde(with = "timefmt::date_option", default)]
+    pub password_changed: Option<time::Date>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -586,7 +590,7 @@ mod tests {
         CheckinRequest {
             schema_version: SCHEMA_VERSION,
             agent_version: "1".into(),
-            boot_time: DateTime::<Utc>::UNIX_EPOCH,
+            boot_time: OffsetDateTime::UNIX_EPOCH,
             logged_on_user: None,
             ip_addresses: vec![],
             section_hashes: BTreeMap::new(),
@@ -627,7 +631,7 @@ mod tests {
                 uid: 1001,
                 shell: "/bin/sh".into(),
                 locked: Some(true),
-                password_changed: chrono::NaiveDate::from_ymd_opt(2026, 1, 2),
+                password_changed: Some(time::macros::date!(2026 - 01 - 02)),
             },
         ];
         let mut privileged = vec![

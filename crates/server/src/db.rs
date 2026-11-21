@@ -108,7 +108,7 @@ mod tests {
     #[sqlx::test(migrations = false)]
     async fn maintain_partitions_is_idempotent(pool: PgPool) {
         migrate(&pool).await.unwrap();
-        let now = chrono::Utc::now();
+        let now = time::OffsetDateTime::now_utc();
         crate::partitions::maintain_partitions(&pool, now)
             .await
             .unwrap();

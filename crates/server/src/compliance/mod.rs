@@ -38,20 +38,20 @@ impl Snapshot for RuleSet {
 
 /// 管理網頁的時區（「太久沒更新」以這個時區的日期計算天數）
 // ponytail: 一個程序只有一個時區；同一程序要跑多個不同時區的 AppState 時改成由呼叫端傳入
-static DISPLAY_OFFSET: std::sync::OnceLock<chrono::FixedOffset> = std::sync::OnceLock::new();
+static DISPLAY_OFFSET: std::sync::OnceLock<time::UtcOffset> = std::sync::OnceLock::new();
 
 /// 伺服器啟動時設定一次（之後再設定會被忽略）
-pub fn set_display_offset(o: chrono::FixedOffset) {
+pub fn set_display_offset(o: time::UtcOffset) {
     let _ = DISPLAY_OFFSET.set(o);
 }
 
 /// 管理網頁時區的今天；沒設定時用 +8（與 AppState 的預設相同）
-pub fn today(now: chrono::DateTime<chrono::Utc>) -> chrono::NaiveDate {
+pub fn today(now: time::OffsetDateTime) -> time::Date {
     let o = DISPLAY_OFFSET
         .get()
         .copied()
-        .unwrap_or_else(|| chrono::FixedOffset::east_opt(8 * 3600).expect("valid offset"));
-    now.with_timezone(&o).date_naive()
+        .unwrap_or_else(|| time::UtcOffset::from_whole_seconds(8 * 3600).expect("valid offset"));
+    now.to_offset(o).date()
 }
 
 /// 會影響合規結果的區段

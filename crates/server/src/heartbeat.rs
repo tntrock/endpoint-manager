@@ -3,7 +3,6 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -11,10 +10,10 @@ pub const FLUSH_INTERVAL_SECS: u64 = 30;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HotFields {
-    pub seen_at: DateTime<Utc>,
+    pub seen_at: time::OffsetDateTime,
     pub ip: Option<String>,
     pub logged_on_user: Option<String>,
-    pub boot_time: DateTime<Utc>,
+    pub boot_time: time::OffsetDateTime,
     pub agent_version: String,
     pub section_errors: serde_json::Value,
 }
@@ -152,10 +151,10 @@ mod tests {
         hb.record(
             Uuid::new_v4(),
             HotFields {
-                seen_at: Utc::now(),
+                seen_at: time::OffsetDateTime::now_utc(),
                 ip: None,
                 logged_on_user: None,
-                boot_time: Utc::now(),
+                boot_time: time::OffsetDateTime::now_utc(),
                 agent_version: "t".into(),
                 section_errors: serde_json::json!({}),
             },

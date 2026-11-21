@@ -2,7 +2,6 @@
 //! 會影響報到下發 package_source 的異動都推進 branch_state.generation。
 
 use anyhow::{Context, bail, ensure};
-use chrono::Utc;
 use serde_json::json;
 use sqlx::{PgConnection, PgPool};
 
@@ -52,7 +51,7 @@ async fn issue(conn: &mut PgConnection, ca: &Ca, id: i64) -> anyhow::Result<()> 
             .bind(id)
             .fetch_one(&mut *conn)
             .await?;
-    let cert = ca.sign_cache_csr(&csr, id, &dns, Utc::now())?;
+    let cert = ca.sign_cache_csr(&csr, id, &dns, time::OffsetDateTime::now_utc())?;
     insert_cert(conn, id, &cert).await?;
     Ok(())
 }

@@ -125,9 +125,9 @@ impl Metrics {
         c.fetch_add(n, Ordering::Relaxed);
     }
 
-    pub fn retention_succeeded(&self, at: chrono::DateTime<chrono::Utc>) {
+    pub fn retention_succeeded(&self, at: time::OffsetDateTime) {
         self.retention_last_success
-            .store(at.timestamp(), Ordering::Relaxed);
+            .store(at.unix_timestamp(), Ordering::Relaxed);
     }
 
     /// 程序內的指標
@@ -265,8 +265,8 @@ impl Metrics {
 async fn render_db(pool: &PgPool) -> Result<String, sqlx::Error> {
     let mut out = String::new();
     let settings = crate::db::load_settings(pool).await?;
-    let cutoff = chrono::Utc::now()
-        - chrono::Duration::seconds(3 * i64::from(settings.checkin_interval_secs));
+    let cutoff = time::OffsetDateTime::now_utc()
+        - time::Duration::seconds(3 * i64::from(settings.checkin_interval_secs));
 
     let rows: Vec<(String, String, i64)> = sqlx::query_as(
         "SELECT os_family, status, count(*) FROM devices GROUP BY 1, 2 ORDER BY 1, 2",

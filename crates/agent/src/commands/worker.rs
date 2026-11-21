@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::Utc;
 use protocol::command::{Command, CommandAction, CommandResult, CommandStatus, ScriptLanguage};
 use tokio::sync::watch;
 
@@ -167,7 +166,7 @@ impl<H: CommandHost> CommandWorker<H> {
         }
         let before = self.state.clone();
         let ids: Vec<i64> = w.commands.iter().map(|c| c.id).collect();
-        self.state.prune(&ids, Utc::now());
+        self.state.prune(&ids, time::OffsetDateTime::now_utc());
         if self.state != before {
             self.save();
         }
@@ -178,7 +177,7 @@ impl<H: CommandHost> CommandWorker<H> {
         self.state.entries.insert(
             c.id,
             Entry {
-                started_at: Some(Utc::now()),
+                started_at: Some(time::OffsetDateTime::now_utc()),
                 result: None,
                 reported: false,
             },

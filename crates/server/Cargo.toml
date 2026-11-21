@@ -11,7 +11,6 @@ name = "endpoint_server"
 protocol.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-chrono.workspace = true
 uuid.workspace = true
 sha2.workspace = true
 hex.workspace = true
@@ -49,7 +48,6 @@ reqwest = { workspace = true, features = ["cookies", "form"] }
 tempfile.workspace = true
 rcgen.workspace = true
 rustls.workspace = true
-chrono.workspace = true
 serde_json.workspace = true
 flate2.workspace = true
 ring = "0.17"

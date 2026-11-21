@@ -32,10 +32,10 @@ async fn settings(s: &TestServer, id: i64) -> (i32, PolicySettings) {
     (rev, serde_json::from_str(&json).unwrap())
 }
 
-fn today(s: &TestServer) -> chrono::NaiveDate {
-    chrono::Utc::now()
-        .with_timezone(&s.state.display_offset)
-        .date_naive()
+fn today(s: &TestServer) -> time::Date {
+    time::OffsetDateTime::now_utc()
+        .to_offset(s.state.display_offset)
+        .date()
 }
 
 #[sqlx::test(migrations = false)]
@@ -148,7 +148,7 @@ async fn create_edit_pause_delete(pool: PgPool) {
          WHERE id = $1",
     )
     .bind(id)
-    .bind((today(&s) - chrono::Duration::days(40)).to_string())
+    .bind((today(&s) - time::Duration::days(40)).to_string())
     .execute(&s.pool)
     .await
     .unwrap();
@@ -281,7 +281,10 @@ async fn overview_ubr_and_reboot(pool: PgPool) {
     set_build(&s, &a2, "19045", 5000).await;
     set_build(&s, &a3, "22631", 4000).await;
     set_build(&s, &ks, "26100", 1742).await;
-    let since = (chrono::Utc::now() - chrono::Duration::days(3)).to_rfc3339();
+    let since = protocol::timefmt::format_rfc3339(
+        time::OffsetDateTime::now_utc() - time::Duration::days(3),
+    )
+    .unwrap();
     let mut b = status(None, None, "unmanaged");
     b["reboot_pending"] = true.into();
     b["reboot_pending_since"] = since.into();
@@ -576,7 +579,10 @@ async fn linux_devices_not_counted(pool: PgPool) {
         .await
         .unwrap();
     set_build(&s, &lx, "99999", 1).await;
-    let since = (chrono::Utc::now() - chrono::Duration::days(3)).to_rfc3339();
+    let since = protocol::timefmt::format_rfc3339(
+        time::OffsetDateTime::now_utc() - time::Duration::days(3),
+    )
+    .unwrap();
     let mut b = status(None, None, "unmanaged");
     b["reboot_pending"] = true.into();
     b["reboot_pending_since"] = since.into();

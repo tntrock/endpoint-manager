@@ -3,7 +3,6 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
-use chrono::{DateTime, Utc};
 use protocol::{Probe, RegKind, RegState, RegistryValue, SecurityInfo};
 use serde_json::{Value, json};
 
@@ -43,9 +42,9 @@ pub struct DeviceFacts {
     /// Agent 回報的 Windows Update 狀態（None：從未回報）
     pub update_status: Option<UpdateFact>,
     /// 評估時的「現在」（病毒碼天數用）：由呼叫端提供，評估本身維持純函式
-    pub now: DateTime<Utc>,
+    pub now: time::OffsetDateTime,
     /// 管理網頁時區的今天：修補的安裝日期是裝置本地日期，「太久沒更新」用它計算天數
-    pub today: chrono::NaiveDate,
+    pub today: time::Date,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -54,8 +53,8 @@ pub struct UpdateFact {
     pub state: String,
     pub detail: String,
     pub reboot_pending: bool,
-    pub reboot_pending_since: Option<DateTime<Utc>>,
-    pub last_patch_date: Option<chrono::NaiveDate>,
+    pub reboot_pending_since: Option<time::OffsetDateTime>,
+    pub last_patch_date: Option<time::Date>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -248,7 +247,7 @@ fn check_one(c: &Check, f: &DeviceFacts) -> Option<(Status, Value)> {
             let Some(last) = u.last_patch_date else {
                 return Some((Status::Unknown, json!({"reason": "no_patch_date"})));
             };
-            let days = (f.today - last).num_days();
+            let days = (f.today - last).whole_days();
             (days > i64::from(*max_days)).then(|| {
                 (
                     Status::Violating,
@@ -262,11 +261,11 @@ fn check_one(c: &Check, f: &DeviceFacts) -> Option<(Status, Value)> {
             };
             // 沒有起始時間無法判斷天數：不算違規
             let since = u.reboot_pending_since.filter(|_| u.reboot_pending)?;
-            let days = (f.now - since).num_days();
+            let days = (f.now - since).whole_days();
             (days > i64::from(*max_days)).then(|| {
                 (
                     Status::Violating,
-                    json!({"reboot_pending_since": since.to_rfc3339(), "days": days}),
+                    json!({"reboot_pending_since": offset_rfc3339(since), "days": days}),
                 )
             })
         }
@@ -383,7 +382,7 @@ fn check_one(c: &Check, f: &DeviceFacts) -> Option<(Status, Value)> {
                 match d.signature_updated {
                     None => signature_unknown = true,
                     Some(updated) => {
-                        let age = (f.now - updated).num_days().max(0);
+                        let age = (f.now - updated).whole_days().max(0);
                         if age > i64::from(*max) {
                             failed.push("signature");
                             detail.insert("signature_age_days".into(), json!(age));
@@ -802,11 +801,32 @@ pub fn evaluate(facts: &DeviceFacts, rules: &RuleSet) -> Vec<Outcome> {
         .collect()
 }
 
+/// 與先前（chrono `to_rfc3339`）相同的格式：UTC 寫成 `+00:00`，小數秒 0／3／6／9 位。
+/// 違規細節存在資料庫，格式一變就會被當成內容變更。
+fn offset_rfc3339(t: time::OffsetDateTime) -> String {
+    let t = t.to_offset(time::UtcOffset::UTC);
+    let base = t
+        .format(time::macros::format_description!(
+            "[year]-[month]-[day]T[hour]:[minute]:[second]"
+        ))
+        .unwrap_or_default();
+    let ns = t.nanosecond();
+    let frac = if ns == 0 {
+        String::new()
+    } else if ns.is_multiple_of(1_000_000) {
+        format!(".{:03}", ns / 1_000_000)
+    } else if ns.is_multiple_of(1_000) {
+        format!(".{:06}", ns / 1_000)
+    } else {
+        format!(".{ns:09}")
+    };
+    format!("{base}{frac}+00:00")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::compliance::rules::{Params, Rule, RuleSet, Severity};
-    use chrono::Utc;
     use protocol::{
         AccountInfo, DefenderInfo, FirewallInfo, PasswordPolicy, Probe, RegKind, RegState,
         RegistryValue, SecurityInfo, VolumeInfo,
@@ -836,8 +856,8 @@ mod tests {
             services: None,
             agent_version: Some("0.3.0".into()),
             update_status: None,
-            now: Utc::now(),
-            today: Utc::now().date_naive(),
+            now: time::OffsetDateTime::now_utc(),
+            today: time::OffsetDateTime::now_utc().date(),
         }
     }
 
@@ -888,7 +908,9 @@ mod tests {
                     active: true,
                     realtime: true,
                     tamper: false,
-                    signature_updated: Some(Utc::now() - chrono::Duration::days(10)),
+                    signature_updated: Some(
+                        time::OffsetDateTime::now_utc() - time::Duration::days(10),
+                    ),
                 }),
                 password: Probe::Ok(PasswordPolicy {
                     min_length: 8,
@@ -1345,25 +1367,44 @@ mod tests {
             (Status::Unknown, Some("no_patch_date"))
         );
         let today = f.today;
-        f.update_status.as_mut().unwrap().last_patch_date =
-            Some(today - chrono::Duration::days(30));
+        f.update_status.as_mut().unwrap().last_patch_date = Some(today - time::Duration::days(30));
         assert_eq!(one(&f, "patch_age", p.clone()), None, "剛好 30 天不算");
-        f.update_status.as_mut().unwrap().last_patch_date =
-            Some(today - chrono::Duration::days(31));
+        f.update_status.as_mut().unwrap().last_patch_date = Some(today - time::Duration::days(31));
         let (st, d) = one(&f, "patch_age", p).unwrap();
         assert_eq!((st, d["days"].as_i64()), (Status::Violating, Some(31)));
         assert!(summarize(&d).contains("31 天前"), "{}", summarize(&d));
     }
 
+    /// 違規細節裡的時間要和 chrono 時代寫進資料庫的格式完全相同
+    #[test]
+    fn offset_rfc3339_matches_previous_format() {
+        use time::macros::datetime;
+        assert_eq!(
+            offset_rfc3339(datetime!(2026-10-02 20:00 UTC)),
+            "2026-10-02T20:00:00+00:00"
+        );
+        assert_eq!(
+            offset_rfc3339(datetime!(2026-10-02 20:00:01.5 UTC)),
+            "2026-10-02T20:00:01.500+00:00"
+        );
+        assert_eq!(
+            offset_rfc3339(datetime!(2026-10-02 20:00:01.123456 UTC)),
+            "2026-10-02T20:00:01.123456+00:00"
+        );
+        assert_eq!(
+            offset_rfc3339(datetime!(2026-10-03 04:00 +08:00)),
+            "2026-10-02T20:00:00+00:00"
+        );
+    }
+
     #[test]
     fn patch_age_uses_display_date() {
-        use chrono::TimeZone;
         let mut f = facts(vec![]);
         // UTC 還是 10/2，管理網頁的時區（+8）已是 10/3：以 10/3 計算是 31 天
-        f.now = Utc.with_ymd_and_hms(2026, 10, 2, 20, 0, 0).unwrap();
-        f.today = chrono::NaiveDate::from_ymd_opt(2026, 10, 3).unwrap();
+        f.now = time::macros::datetime!(2026-10-02 20:00 UTC);
+        f.today = protocol::timefmt::ymd(2026, 10, 3).unwrap();
         let mut u = upd("applied");
-        u.last_patch_date = chrono::NaiveDate::from_ymd_opt(2026, 9, 2);
+        u.last_patch_date = protocol::timefmt::ymd(2026, 9, 2);
         f.update_status = Some(u);
         let (st, d) = one(&f, "patch_age", json!({"max_days": 30})).unwrap();
         assert_eq!((st, d["days"].as_i64()), (Status::Violating, Some(31)));
@@ -1387,10 +1428,10 @@ mod tests {
             "沒有起始時間不判違規"
         );
         f.update_status.as_mut().unwrap().reboot_pending_since =
-            Some(f.now - chrono::Duration::days(6));
+            Some(f.now - time::Duration::days(6));
         assert_eq!(one(&f, "reboot_pending", p.clone()), None);
         f.update_status.as_mut().unwrap().reboot_pending_since =
-            Some(f.now - chrono::Duration::days(8));
+            Some(f.now - time::Duration::days(8));
         let (st, d) = one(&f, "reboot_pending", p).unwrap();
         assert_eq!((st, d["days"].as_i64()), (Status::Violating, Some(8)));
         assert!(

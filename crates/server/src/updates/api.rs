@@ -3,7 +3,6 @@
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use chrono::Utc;
 use protocol::update::UpdateStatus;
 
 use crate::AppState;
@@ -15,7 +14,7 @@ pub async fn status(
     device: AuthedDevice,
     Json(s): Json<UpdateStatus>,
 ) -> Result<StatusCode, AppError> {
-    s.validate(Utc::now())
+    s.validate(time::OffsetDateTime::now_utc())
         .map_err(|e| AppError::BadRequest(e.into()))?;
     let detail: String = s.detail.chars().filter(|c| !c.is_control()).collect();
     sqlx::query(

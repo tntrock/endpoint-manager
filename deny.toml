@@ -1,10 +1,7 @@
 [advisories]
 version = 2
 yanked = "deny"
-ignore = [
-    # chrono unmaintained (chronotope/chrono#1768); used by every crate and by sqlx's chrono types. Drop once migrated to jiff or time.
-    { id = "RUSTSEC-2026-0543", reason = "no maintained drop-in; migration is a separate change" },
-]
+ignore = []
 
 [licenses]
 version = 2

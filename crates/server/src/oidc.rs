@@ -324,7 +324,13 @@ pub async fn finish(
         tracing::warn!(error = %format!("{e:#}"), "oidc token exchange failed");
         Failure::Token
     })?;
-    validate_id_token(&token, &p.cfg, &nonce, chrono::Utc::now().timestamp()).map_err(|why| {
+    validate_id_token(
+        &token,
+        &p.cfg,
+        &nonce,
+        time::OffsetDateTime::now_utc().unix_timestamp(),
+    )
+    .map_err(|why| {
         tracing::warn!(why, "oidc id token rejected");
         Failure::Token
     })

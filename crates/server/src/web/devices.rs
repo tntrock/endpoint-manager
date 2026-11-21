@@ -3,8 +3,8 @@
 use askama::Template;
 use axum::extract::{Form, Path, Query, RawForm, State};
 use axum::response::{IntoResponse, Redirect, Response};
-use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
+use time::Duration;
 use uuid::Uuid;
 
 use super::auth::{AdminSession, Nav, Session, check_csrf};
@@ -18,9 +18,9 @@ pub const PAGE_SIZE: i64 = 50;
 /// 頁碼上限：避免 page * PAGE_SIZE 溢位
 pub const MAX_PAGE: i64 = 100_000;
 
-pub async fn online_cutoff(st: &AppState) -> Result<DateTime<Utc>, sqlx::Error> {
+pub async fn online_cutoff(st: &AppState) -> Result<time::OffsetDateTime, sqlx::Error> {
     let s = load_settings(&st.pool).await?;
-    Ok(Utc::now() - Duration::seconds(3 * i64::from(s.checkin_interval_secs)))
+    Ok(time::OffsetDateTime::now_utc() - Duration::seconds(3 * i64::from(s.checkin_interval_secs)))
 }
 
 /// 作業系統篩選值：只接受 windows、linux，其他（含空白）一律當成全部
@@ -184,7 +184,7 @@ type ListRow = (
     String,
     String,
     String,
-    Option<DateTime<Utc>>,
+    Option<time::OffsetDateTime>,
     String,
     String,
 );
@@ -479,9 +479,9 @@ type DetailRow = (
     Option<String>,
     Option<String>,
     Option<String>,
-    Option<DateTime<Utc>>,
-    Option<DateTime<Utc>>,
-    DateTime<Utc>,
+    Option<time::OffsetDateTime>,
+    Option<time::OffsetDateTime>,
+    time::OffsetDateTime,
     Option<String>,
     String,
     String,

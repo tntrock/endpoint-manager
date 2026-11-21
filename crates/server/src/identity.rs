@@ -3,7 +3,6 @@
 
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
-use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::AppState;
@@ -13,7 +12,7 @@ use crate::tls::PeerCert;
 #[derive(Debug, Clone)]
 pub struct AuthedDevice {
     pub device_id: Uuid,
-    pub cert_not_after: DateTime<Utc>,
+    pub cert_not_after: time::OffsetDateTime,
 }
 
 impl FromRequestParts<AppState> for AuthedDevice {
@@ -24,7 +23,7 @@ impl FromRequestParts<AppState> for AuthedDevice {
             .extensions
             .get::<PeerCert>()
             .ok_or(AppError::Unauthorized)?;
-        let row: Option<(Uuid, DateTime<Utc>)> = sqlx::query_as(
+        let row: Option<(Uuid, time::OffsetDateTime)> = sqlx::query_as(
             "SELECT device_id, not_after FROM device_certs \
              WHERE fingerprint = $1 AND revoked_at IS NULL AND not_after > now()",
         )

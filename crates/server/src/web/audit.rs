@@ -4,7 +4,6 @@ use askama::Template;
 use axum::extract::{Query, RawForm, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Redirect, Response};
-use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
 use super::auth::{AdminSession, Nav, Session, check_csrf, platform};
@@ -85,7 +84,7 @@ struct AuditPage {
     max_days: i32,
 }
 
-type Row = (DateTime<Utc>, String, String, Option<String>, String);
+type Row = (time::OffsetDateTime, String, String, Option<String>, String);
 
 pub async fn page(
     State(st): State<AppState>,

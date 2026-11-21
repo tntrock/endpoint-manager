@@ -115,7 +115,8 @@ pub async fn test(
         None => Err("尚未設定 Webhook".to_string()),
         Some(url) => match send::webhook_client(&[]) {
             Ok(c) => {
-                let body = digest::webhook_body(&digest::test_digest(), chrono::Utc::now());
+                let body =
+                    digest::webhook_body(&digest::test_digest(), time::OffsetDateTime::now_utc());
                 send::send_webhook(&c, url, st.notify.webhook_secret.as_deref(), &body).await
             }
             Err(err) => Err(err.to_string()),

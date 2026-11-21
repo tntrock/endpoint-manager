@@ -291,12 +291,12 @@ async fn exemption_marks_exempt_and_revoke_restores(pool: PgPool) {
     put(&s, &a, InventoryPayload::Patches(vec![])).await;
     assert_eq!(violations(&s, &a).await, vec![(rule, "violating".into())]);
 
-    let now = chrono::Utc::now();
-    let soon = now + chrono::Duration::days(30);
+    let now = time::OffsetDateTime::now_utc();
+    let soon = now + time::Duration::days(30);
     for (reason, until) in [
         (" ", soon),
-        ("ok", now + chrono::Duration::days(400)),
-        ("ok", now - chrono::Duration::minutes(1)),
+        ("ok", now + time::Duration::days(400)),
+        ("ok", now - time::Duration::minutes(1)),
     ] {
         assert!(
             admin::create_exemption(&s.pool, a.device_id, rule, reason, until, "admin")
@@ -407,7 +407,7 @@ async fn expired_exemption_is_removed_and_reevaluated(pool: PgPool) {
         a.device_id,
         rule,
         "暫時",
-        chrono::Utc::now() + chrono::Duration::days(1),
+        time::OffsetDateTime::now_utc() + time::Duration::days(1),
         "admin",
     )
     .await
@@ -434,7 +434,7 @@ async fn daily_snapshot_and_history_cleanup(pool: PgPool) {
         .await
         .unwrap();
     put(&s, &a, InventoryPayload::Patches(vec![])).await;
-    let today = chrono::Utc::now().date_naive();
+    let today = time::OffsetDateTime::now_utc().date();
     worker::snapshot_daily(&s.pool, today).await.unwrap();
     worker::snapshot_daily(&s.pool, today).await.unwrap();
     let row: (i32, i32, i32) = sqlx::query_as(
@@ -461,7 +461,7 @@ async fn cleanup_uses_given_today(pool: PgPool) {
     let rule = admin::create_rule(&s.pool, &kb_rule("KB5031455"), "admin")
         .await
         .unwrap();
-    let future = chrono::Utc::now().date_naive() + chrono::Duration::days(500);
+    let future = time::OffsetDateTime::now_utc().date() + time::Duration::days(500);
     sqlx::query(
         "INSERT INTO compliance_daily (day, rule_id, violating, unknown, exempt) VALUES ($1, $2, 0, 0, 0)",
     )
@@ -471,7 +471,7 @@ async fn cleanup_uses_given_today(pool: PgPool) {
     .await
     .unwrap();
     // 保留天數預設 365：以 future + 400 天為今天，future 已超過保留期
-    worker::cleanup_history(&s.pool, future + chrono::Duration::days(400))
+    worker::cleanup_history(&s.pool, future + time::Duration::days(400))
         .await
         .unwrap();
     let n: i64 = sqlx::query_scalar("SELECT count(*) FROM compliance_daily WHERE day = $1")
@@ -642,7 +642,7 @@ async fn daily_snapshot_includes_rules_without_violations(pool: PgPool) {
     let rule = admin::create_rule(&s.pool, &kb_rule("KB5031455"), "admin")
         .await
         .unwrap();
-    let today = chrono::Utc::now().date_naive();
+    let today = time::OffsetDateTime::now_utc().date();
     worker::snapshot_daily(&s.pool, today).await.unwrap();
     let row: Option<(i32, i32, i32)> = sqlx::query_as(
         "SELECT violating, unknown, exempt FROM compliance_daily WHERE day = $1 AND rule_id = $2",
@@ -680,7 +680,7 @@ async fn linux_device_has_no_violations(pool: PgPool) {
     assert_eq!(violations(&s, &win).await, vec![(id, "violating".into())]);
     assert!(violations(&s, &lin).await.is_empty());
 
-    let today = chrono::Utc::now().date_naive();
+    let today = time::OffsetDateTime::now_utc().date();
     worker::snapshot_daily(&s.pool, today).await.unwrap();
     let violating: i32 = sqlx::query_scalar(
         "SELECT violating FROM compliance_daily WHERE day = $1 AND rule_id = $2",
@@ -758,7 +758,7 @@ async fn checkin_switching_to_linux_clears_violations(pool: PgPool) {
             signing_keys: vec![],
             schema_version: SCHEMA_VERSION,
             agent_version: "0.1.0".into(),
-            boot_time: chrono::Utc::now(),
+            boot_time: time::OffsetDateTime::now_utc(),
             logged_on_user: None,
             ip_addresses: vec![],
             section_hashes: Default::default(),

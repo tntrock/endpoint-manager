@@ -10,7 +10,7 @@ fn checkin() -> CheckinRequest {
         signing_keys: vec![],
         schema_version: SCHEMA_VERSION,
         agent_version: "0.1.0".into(),
-        boot_time: chrono::Utc::now(),
+        boot_time: time::OffsetDateTime::now_utc(),
         logged_on_user: None,
         ip_addresses: vec![],
         section_hashes: Default::default(),

@@ -362,7 +362,7 @@ async fn package_source(
             signing_keys: vec![],
             schema_version: protocol::SCHEMA_VERSION,
             agent_version: "0.7.0".into(),
-            boot_time: chrono::Utc::now(),
+            boot_time: time::OffsetDateTime::now_utc(),
             logged_on_user: None,
             ip_addresses: vec!["10.1.0.5".into()],
             section_hashes: Default::default(),

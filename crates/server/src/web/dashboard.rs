@@ -4,7 +4,6 @@ use askama::Template;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
-use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use super::auth::{AdminSession, Nav, Session};
@@ -13,7 +12,14 @@ use super::{fmt_time, render};
 use crate::AppState;
 use crate::error::AppError;
 
-type PendingDbRow = (Uuid, String, Uuid, String, Option<String>, DateTime<Utc>);
+type PendingDbRow = (
+    Uuid,
+    String,
+    Uuid,
+    String,
+    Option<String>,
+    time::OffsetDateTime,
+);
 
 pub struct PendingRow {
     pub id: Uuid,

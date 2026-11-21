@@ -1,7 +1,6 @@
 //! 管理員兩步驟驗證（TOTP）：設定、停用、復原碼、重設與「必須使用」的系統設定。
 
 use anyhow::Context;
-use chrono::{DateTime, Utc};
 use serde_json::json;
 use sqlx::{PgConnection, PgPool};
 
@@ -80,7 +79,7 @@ pub async fn set_required(pool: &PgPool, on: bool, actor: &str) -> Result<(), sq
 }
 
 pub struct Status {
-    pub enabled_at: Option<DateTime<Utc>>,
+    pub enabled_at: Option<time::OffsetDateTime>,
     pub recovery_left: i64,
 }
 
@@ -113,7 +112,7 @@ pub async fn pending_secret(pool: &PgPool, admin_id: i64) -> Result<String, sqlx
 }
 
 fn now_secs() -> i64 {
-    Utc::now().timestamp()
+    time::OffsetDateTime::now_utc().unix_timestamp()
 }
 
 /// 用驗證碼或復原碼驗證。成功時更新最後使用的時間步，或把復原碼標成已用。

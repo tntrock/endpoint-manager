@@ -13,7 +13,7 @@ async fn enroll_heartbeat_upload(pool: PgPool) {
     let pki = tempfile::tempdir().unwrap();
     ca::init_ca(pki.path(), vec!["127.0.0.1".into()]).unwrap();
     db::migrate(&pool).await.unwrap();
-    partitions::maintain_partitions(&pool, chrono::Utc::now())
+    partitions::maintain_partitions(&pool, time::OffsetDateTime::now_utc())
         .await
         .unwrap();
     let state_dir = pki.path().join("packages");
@@ -192,7 +192,7 @@ async fn cache_deploy_through_real_cache(pool: PgPool) {
     let pki = tempfile::tempdir().unwrap();
     ca::init_ca(pki.path(), vec!["127.0.0.1".into()]).unwrap();
     db::migrate(&pool).await.unwrap();
-    partitions::maintain_partitions(&pool, chrono::Utc::now())
+    partitions::maintain_partitions(&pool, time::OffsetDateTime::now_utc())
         .await
         .unwrap();
     let state_dir = pki.path().join("packages");

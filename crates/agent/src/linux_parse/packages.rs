@@ -1,6 +1,5 @@
 //! dpkg-query／rpm 輸出的解析。
 
-use chrono::DateTime;
 use protocol::{Arch, SoftwareItem};
 
 /// 套件架構對應：amd64／x86_64 → X64，i386～i686 → X86，其他（all、noarch、aarch64…）→ Other
@@ -62,8 +61,8 @@ pub fn parse_rpm(out: &str) -> Vec<SoftwareItem> {
                 .trim()
                 .parse::<i64>()
                 .ok()
-                .and_then(|s| DateTime::from_timestamp(s, 0))
-                .map(|d| d.format("%Y-%m-%d").to_string());
+                .and_then(|s| time::OffsetDateTime::from_unix_timestamp(s).ok())
+                .map(|d| protocol::timefmt::format_date(d.date()));
             Some(SoftwareItem {
                 name: name.to_string(),
                 version: non_empty(&version),

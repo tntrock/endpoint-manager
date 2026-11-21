@@ -1,6 +1,9 @@
 //! 第五期：Windows Update 原則（伺服器下發）與套用狀態（Agent 回報）。
 
-use chrono::{DateTime, Duration, NaiveDate, Utc};
+use time::macros::date;
+use time::{Date, Duration, OffsetDateTime};
+
+use crate::timefmt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -126,13 +129,15 @@ pub struct UpdateStatus {
     #[serde(default)]
     pub detail: String,
     pub reboot_pending: bool,
-    pub reboot_pending_since: Option<DateTime<Utc>>,
-    pub last_patch_date: Option<NaiveDate>,
+    #[serde(with = "timefmt::rfc3339_option", default)]
+    pub reboot_pending_since: Option<OffsetDateTime>,
+    #[serde(with = "timefmt::date_option", default)]
+    pub last_patch_date: Option<Date>,
 }
 
 impl UpdateStatus {
     /// 端點時鐘或時區可能差一點：容許比伺服器現在晚 1 天
-    pub fn validate(&self, now: DateTime<Utc>) -> Result<(), &'static str> {
+    pub fn validate(&self, now: OffsetDateTime) -> Result<(), &'static str> {
         if self.detail.chars().count() > MAX_DETAIL_LEN {
             return Err("detail too long");
         }
@@ -143,11 +148,9 @@ impl UpdateStatus {
             return Err("unknown state");
         }
         // 超出資料庫範圍的日期會讓寫入失敗（500）：2000 年以前一律拒收
-        let floor = NaiveDate::from_ymd_opt(2000, 1, 1).expect("valid date");
+        let floor = date!(2000 - 01 - 01);
         if self.last_patch_date.is_some_and(|d| d < floor)
-            || self
-                .reboot_pending_since
-                .is_some_and(|t| t.date_naive() < floor)
+            || self.reboot_pending_since.is_some_and(|t| t.date() < floor)
         {
             return Err("date is too old");
         }
@@ -155,7 +158,7 @@ impl UpdateStatus {
         if self.reboot_pending_since.is_some_and(|t| t > limit) {
             return Err("reboot_pending_since is in the future");
         }
-        if self.last_patch_date.is_some_and(|d| d > limit.date_naive()) {
+        if self.last_patch_date.is_some_and(|d| d > limit.date()) {
             return Err("last_patch_date is in the future");
         }
         Ok(())
@@ -165,7 +168,7 @@ impl UpdateStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{Duration, TimeZone};
+    use time::macros::datetime;
 
     fn policy(values: Vec<PolicyValue>) -> UpdatePolicy {
         UpdatePolicy {
@@ -242,7 +245,7 @@ mod tests {
 
     #[test]
     fn status_validation() {
-        let now = Utc.with_ymd_and_hms(2026, 9, 30, 12, 0, 0).unwrap();
+        let now = datetime!(2026-09-30 12:00 UTC);
         assert!(status().validate(now).is_ok());
         let mut s = status();
         s.detail = "字".repeat(MAX_DETAIL_LEN);
@@ -256,9 +259,9 @@ mod tests {
         s.state = ApplyState::Unknown;
         assert!(s.validate(now).is_err());
         let mut s = status();
-        s.last_patch_date = Some(NaiveDate::from_ymd_opt(2026, 10, 1).unwrap());
+        s.last_patch_date = Some(date!(2026 - 10 - 01));
         assert!(s.validate(now).is_ok(), "明天（時區差）可接受");
-        s.last_patch_date = Some(NaiveDate::from_ymd_opt(2026, 10, 2).unwrap());
+        s.last_patch_date = Some(date!(2026 - 10 - 02));
         assert!(s.validate(now).is_err());
         let mut s = status();
         s.reboot_pending_since = Some(now + Duration::hours(23));
@@ -270,14 +273,14 @@ mod tests {
     #[test]
     fn ancient_dates_are_rejected() {
         // 超出 Postgres 範圍的日期會讓寫入變成 500：2000 年以前一律拒收
-        let now = Utc.with_ymd_and_hms(2026, 9, 30, 12, 0, 0).unwrap();
+        let now = datetime!(2026-09-30 12:00 UTC);
         let mut s = status();
-        s.last_patch_date = Some(NaiveDate::from_ymd_opt(1999, 12, 31).unwrap());
+        s.last_patch_date = Some(date!(1999 - 12 - 31));
         assert!(s.validate(now).is_err());
-        s.last_patch_date = Some(NaiveDate::from_ymd_opt(2000, 1, 1).unwrap());
+        s.last_patch_date = Some(date!(2000 - 01 - 01));
         assert!(s.validate(now).is_ok());
         let mut s = status();
-        s.reboot_pending_since = Some(Utc.with_ymd_and_hms(1900, 1, 1, 0, 0, 0).unwrap());
+        s.reboot_pending_since = Some(datetime!(1900-01-01 0:00 UTC));
         assert!(s.validate(now).is_err());
     }
 

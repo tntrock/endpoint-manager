@@ -60,7 +60,7 @@ impl TestServer {
         let dir = tempfile::tempdir().unwrap();
         ca::init_ca(dir.path(), vec!["localhost".into()]).unwrap();
         db::migrate(&pool).await.unwrap();
-        partitions::maintain_partitions(&pool, chrono::Utc::now())
+        partitions::maintain_partitions(&pool, time::OffsetDateTime::now_utc())
             .await
             .unwrap();
 

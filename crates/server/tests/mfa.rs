@@ -24,7 +24,7 @@ async fn post(
 }
 
 fn now_step() -> i64 {
-    totp::step_of(chrono::Utc::now().timestamp())
+    totp::step_of(time::OffsetDateTime::now_utc().unix_timestamp())
 }
 
 fn code(secret_b32: &str, step: i64) -> String {

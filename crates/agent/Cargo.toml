@@ -11,7 +11,7 @@ name = "endpoint_agent"
 protocol.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-chrono.workspace = true
+time.workspace = true
 uuid.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
@@ -27,7 +27,7 @@ hex.workspace = true
 x509-parser.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-wmi = "0.18"
+wmi = { version = "0.18", default-features = false, features = ["time"] }
 winreg = "0.56"
 windows-service = "0.8"
 windows-sys = { version = "0.61", features = [
@@ -54,7 +54,6 @@ futures-util = "0.3"
 bytes = "1"
 sqlx.workspace = true
 tempfile.workspace = true
-chrono.workspace = true
 rcgen.workspace = true
 rustls.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

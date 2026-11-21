@@ -7,7 +7,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
-use chrono::Utc;
 use protocol::{
     CheckinRequest, CheckinResponse, CollectionIntervals, EnrollRequest, InventoryPayload,
     InventoryUpload, RegistryQuery, RenewRequest, SCHEMA_VERSION, Section,
@@ -318,7 +317,11 @@ impl<C: Collector> Agent<C> {
             return self.retry_later();
         }
         // 憑證已過期（離線超過一年）：伺服器必定拒絕，停止並要求重新安裝
-        if self.state.cert_not_after().is_some_and(|t| t <= Utc::now()) {
+        if self
+            .state
+            .cert_not_after()
+            .is_some_and(|t| t <= time::OffsetDateTime::now_utc())
+        {
             tracing::error!("device certificate expired; agent stops (reinstall required)");
             return Cycle::Stop;
         }
@@ -336,7 +339,7 @@ impl<C: Collector> Agent<C> {
                 }
                 self.heartbeat_error = Some(msg);
                 Heartbeat {
-                    boot_time: Utc::now(),
+                    boot_time: time::OffsetDateTime::now_utc(),
                     logged_on_user: None,
                     ip_addresses: vec![],
                 }

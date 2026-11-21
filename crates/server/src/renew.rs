@@ -3,8 +3,8 @@
 
 use axum::Json;
 use axum::extract::State;
-use chrono::{Duration, Utc};
 use protocol::{RenewRequest, RenewResponse};
+use time::Duration;
 
 use crate::AppState;
 use crate::checkin::RENEW_BEFORE_DAYS;
@@ -16,12 +16,17 @@ pub async fn renew(
     device: AuthedDevice,
     Json(req): Json<RenewRequest>,
 ) -> Result<Json<RenewResponse>, AppError> {
-    if device.cert_not_after - Utc::now() >= Duration::days(RENEW_BEFORE_DAYS) {
+    if device.cert_not_after - time::OffsetDateTime::now_utc() >= Duration::days(RENEW_BEFORE_DAYS)
+    {
         return Err(AppError::BadRequest("renewal not due".into()));
     }
     let issued = st
         .ca
-        .sign_device_csr(&req.csr_pem, device.device_id, Utc::now())
+        .sign_device_csr(
+            &req.csr_pem,
+            device.device_id,
+            time::OffsetDateTime::now_utc(),
+        )
         .map_err(|e| AppError::BadRequest(format!("{e:#}")))?;
     sqlx::query(
         "INSERT INTO device_certs (serial, fingerprint, device_id, not_after) \

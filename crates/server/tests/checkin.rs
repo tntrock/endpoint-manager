@@ -12,7 +12,7 @@ fn body(hashes: BTreeMap<Section, String>) -> CheckinRequest {
         signing_keys: vec![],
         schema_version: SCHEMA_VERSION,
         agent_version: "0.1.0".into(),
-        boot_time: chrono::Utc::now(),
+        boot_time: time::OffsetDateTime::now_utc(),
         logged_on_user: Some("CORP\\alice".into()),
         ip_addresses: vec!["10.0.0.5".into()],
         section_hashes: hashes,
@@ -158,7 +158,7 @@ async fn future_boot_time_is_clamped(pool: PgPool) {
     let tok = s.create_token(1).await;
     let a = s.enroll_ok(&tok, None, None).await;
     let mut b = body(BTreeMap::new());
-    b.boot_time = "+200000-01-01T00:00:00Z".parse().unwrap();
+    b.boot_time = time::macros::datetime!(9999-12-31 0:00 UTC);
     let r = s
         .client(Some(&a))
         .post(s.url("/v1/checkin"))
@@ -168,13 +168,13 @@ async fn future_boot_time_is_clamped(pool: PgPool) {
         .unwrap();
     assert_eq!(r.status(), 200);
     s.state.heartbeat.flush(&s.pool).await.unwrap();
-    let boot: chrono::DateTime<chrono::Utc> =
+    let boot: time::OffsetDateTime =
         sqlx::query_scalar("SELECT boot_time FROM devices WHERE id = $1")
             .bind(a.device_id)
             .fetch_one(&s.pool)
             .await
             .unwrap();
-    assert!(boot <= chrono::Utc::now());
+    assert!(boot <= time::OffsetDateTime::now_utc());
 }
 
 #[sqlx::test(migrations = false)]
@@ -184,10 +184,10 @@ async fn poisoned_row_does_not_block_other_devices(pool: PgPool) {
     let bad = s.enroll_ok(&tok, None, None).await;
     let good = s.enroll_ok(&tok, None, None).await;
     let hot = |user: &str| endpoint_server::heartbeat::HotFields {
-        seen_at: chrono::Utc::now(),
+        seen_at: time::OffsetDateTime::now_utc(),
         ip: None,
         logged_on_user: Some(user.into()),
-        boot_time: chrono::Utc::now(),
+        boot_time: time::OffsetDateTime::now_utc(),
         agent_version: "0.1.0".into(),
         section_errors: serde_json::json!({}),
     };
@@ -197,7 +197,7 @@ async fn poisoned_row_does_not_block_other_devices(pool: PgPool) {
     let _ = s.state.heartbeat.flush(&s.pool).await;
     let _ = s.state.heartbeat.flush(&s.pool).await;
 
-    let seen: Option<chrono::DateTime<chrono::Utc>> =
+    let seen: Option<time::OffsetDateTime> =
         sqlx::query_scalar("SELECT last_seen_at FROM devices WHERE id = $1")
             .bind(good.device_id)
             .fetch_one(&s.pool)

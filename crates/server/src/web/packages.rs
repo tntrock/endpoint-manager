@@ -6,7 +6,6 @@ use axum::body::Body;
 use axum::extract::{Path, Query, RawForm, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
-use chrono::{DateTime, Utc};
 use serde_json::json;
 
 use super::auth::{AdminSession, Nav, Session, check_csrf, platform};
@@ -54,7 +53,16 @@ fn kind_label(k: &str) -> &'static str {
     if k == "msi" { "MSI" } else { "EXE" }
 }
 
-type ListRow = (i64, String, String, String, String, i64, i64, DateTime<Utc>);
+type ListRow = (
+    i64,
+    String,
+    String,
+    String,
+    String,
+    i64,
+    i64,
+    time::OffsetDateTime,
+);
 
 pub async fn list(
     State(st): State<AppState>,

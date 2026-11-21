@@ -66,7 +66,7 @@ async fn approve_promotes_when_original_was_retired(pool: PgPool) {
         .post(s.url("/v1/checkin"))
         .json(&serde_json::json!({
             "schema_version": protocol::SCHEMA_VERSION, "agent_version": "t",
-            "boot_time": chrono::Utc::now(), "logged_on_user": null, "ip_addresses": [],
+            "boot_time": protocol::timefmt::format_rfc3339(time::OffsetDateTime::now_utc()).unwrap(), "logged_on_user": null, "ip_addresses": [],
             "section_hashes": {}, "section_errors": {}
         }))
         .send()

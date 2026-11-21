@@ -52,11 +52,11 @@ impl AgentState {
     }
 
     /// 裝置憑證（chain 的第一張）的到期時間。
-    pub fn cert_not_after(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+    pub fn cert_not_after(&self) -> Option<time::OffsetDateTime> {
         use rustls::pki_types::{CertificateDer, pem::PemObject};
         let der = CertificateDer::from_pem_slice(self.chain_pem.as_ref()?.as_bytes()).ok()?;
         let (_, cert) = x509_parser::parse_x509_certificate(&der).ok()?;
-        chrono::DateTime::from_timestamp(cert.validity().not_after.timestamp(), 0)
+        time::OffsetDateTime::from_unix_timestamp(cert.validity().not_after.timestamp()).ok()
     }
 
     pub fn identity_pem(&self) -> Option<String> {

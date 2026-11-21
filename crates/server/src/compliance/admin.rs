@@ -1,9 +1,9 @@
 //! 規則與豁免的增刪改（權限由網頁層檢查）。每個動作寫入稽核記錄。
 
 use anyhow::{Context, ensure};
-use chrono::{DateTime, Duration, Utc};
 use serde_json::json;
 use sqlx::{PgConnection, PgPool};
+use time::Duration;
 use uuid::Uuid;
 
 use super::rules::{Params, Severity, registry_key};
@@ -269,7 +269,7 @@ pub async fn create_exemption(
     device_id: Uuid,
     rule_id: i64,
     reason: &str,
-    expires_at: DateTime<Utc>,
+    expires_at: time::OffsetDateTime,
     actor: &str,
 ) -> anyhow::Result<i64> {
     let reason = reason.trim();
@@ -277,7 +277,7 @@ pub async fn create_exemption(
         !reason.is_empty() && reason.chars().count() <= MAX_REASON_LEN,
         "豁免原因必填，最多 {MAX_REASON_LEN} 字"
     );
-    let now = Utc::now();
+    let now = time::OffsetDateTime::now_utc();
     ensure!(
         expires_at > now && expires_at <= now + Duration::days(MAX_EXEMPTION_DAYS),
         "到期日須在今天之後、{MAX_EXEMPTION_DAYS} 天之內"
@@ -303,7 +303,7 @@ pub async fn create_exemption(
         actor,
         "exemption_create",
         Some(&device_id.to_string()),
-        json!({"id": id, "rule_id": rule_id, "reason": reason, "expires_at": expires_at}),
+        json!({"id": id, "rule_id": rule_id, "reason": reason, "expires_at": protocol::timefmt::format_rfc3339(expires_at).ok()}),
     )
     .await?;
     refresh_device_fresh(&mut tx, device_id).await?;

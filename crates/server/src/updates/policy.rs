@@ -1,7 +1,6 @@
 //! 更新原則的表單設定：驗證，以及轉成 Agent 要寫入的登錄檔值。
 
 use anyhow::ensure;
-use chrono::NaiveDate;
 use protocol::update::{PolicyData, PolicyValue};
 use serde::{Deserialize, Serialize};
 
@@ -27,8 +26,10 @@ pub struct PolicySettings {
     pub quality_defer_days: Option<u32>,
     pub feature_defer_days: Option<u32>,
     /// 暫停只由「暫停／恢復」按鈕設定，表單不含
-    pub quality_pause_start: Option<NaiveDate>,
-    pub feature_pause_start: Option<NaiveDate>,
+    #[serde(with = "protocol::timefmt::date_option", default)]
+    pub quality_pause_start: Option<time::Date>,
+    #[serde(with = "protocol::timefmt::date_option", default)]
+    pub feature_pause_start: Option<time::Date>,
     pub quality_deadline: Option<Deadline>,
     pub feature_deadline: Option<Deadline>,
     /// 寬限期結束前不自動重開機（套用到有設定的期限）
@@ -94,7 +95,7 @@ impl PolicySettings {
             if let Some(d) = pause {
                 v.push(PolicyValue {
                     name: format!("Pause{prefix}UpdatesStartTime"),
-                    data: PolicyData::String(d.format("%Y-%m-%d").to_string()),
+                    data: PolicyData::String(protocol::timefmt::format_date(d)),
                 });
             }
         }
@@ -150,8 +151,8 @@ mod tests {
             .map(|v| v.data)
     }
 
-    fn date() -> NaiveDate {
-        NaiveDate::from_ymd_opt(2026, 9, 30).unwrap()
+    fn date() -> time::Date {
+        protocol::timefmt::ymd(2026, 9, 30).unwrap()
     }
 
     #[test]

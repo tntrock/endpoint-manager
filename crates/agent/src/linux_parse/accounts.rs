@@ -1,16 +1,16 @@
 //! passwd / shadow / group / sudoers 的解析。
 //! 安全：shadow 的密碼欄位只用來判斷是否鎖定，不會被存進任何結構、錯誤或訊息。
 
-use chrono::NaiveDate;
 use protocol::{LocalUser, PrincipalKind, PrivilegeEntry};
 use std::collections::HashMap;
+use time::Date;
 
 const UNPARSED_MAX_LINES: usize = 50;
 const UNPARSED_MAX_CHARS: usize = 200;
 const ADMIN_GROUPS: [&str; 3] = ["sudo", "wheel", "admin"];
 const ALIAS_KEYWORDS: [&str; 4] = ["User_Alias", "Runas_Alias", "Host_Alias", "Cmnd_Alias"];
-/// 1970-01-01 距西元 1 年 1 月 1 日的天數
-const UNIX_EPOCH_DAYS_FROM_CE: i64 = 719_163;
+/// 1970-01-01 的儒略日（shadow 的日期是從這天起算的天數）
+const UNIX_EPOCH_JULIAN_DAY: i64 = 2_440_588;
 
 /// `/etc/login.defs` 的 `UID_MIN`，沒有或無法解析 → 1000。
 pub fn uid_min(login_defs: &str) -> u32 {
@@ -25,7 +25,7 @@ pub fn uid_min(login_defs: &str) -> u32 {
 }
 
 /// 只保留 (是否鎖定, 最後變更日)，密碼欄位在這裡就丟掉。
-fn parse_shadow(shadow: &str) -> HashMap<&str, (bool, Option<NaiveDate>)> {
+fn parse_shadow(shadow: &str) -> HashMap<&str, (bool, Option<Date>)> {
     shadow
         .lines()
         .filter_map(|l| {
@@ -37,8 +37,8 @@ fn parse_shadow(shadow: &str) -> HashMap<&str, (bool, Option<NaiveDate>)> {
                 .next()
                 .and_then(|d| d.trim().parse::<i64>().ok())
                 .filter(|&n| n != 0)
-                .and_then(|n| i32::try_from(n.checked_add(UNIX_EPOCH_DAYS_FROM_CE)?).ok())
-                .and_then(NaiveDate::from_num_days_from_ce_opt);
+                .and_then(|n| i32::try_from(n.checked_add(UNIX_EPOCH_JULIAN_DAY)?).ok())
+                .and_then(|j| Date::from_julian_day(j).ok());
             Some((name, (locked, changed)))
         })
         .collect()
@@ -256,8 +256,8 @@ svc:x:999:999::/:/bin/bash\n";
 alice:$6$abc$hash:19500:0:99999:7:::\n\
 bob:!$6$x:0:0:99999:7:::\n";
 
-    fn d(y: i32, m: u32, day: u32) -> Option<NaiveDate> {
-        NaiveDate::from_ymd_opt(y, m, day)
+    fn d(y: i32, m: u8, day: u8) -> Option<Date> {
+        protocol::timefmt::ymd(y, m, day)
     }
 
     #[test]

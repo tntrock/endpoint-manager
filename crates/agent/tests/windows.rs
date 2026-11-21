@@ -187,7 +187,7 @@ fn collector_reports_this_machine() {
     assert!(!id.hostname.is_empty());
 
     let hb = c.heartbeat().unwrap();
-    assert!(hb.boot_time < chrono::Utc::now());
+    assert!(hb.boot_time < time::OffsetDateTime::now_utc());
 
     // Registry 不經 collect（走 collect_registry）
     for s in Section::WINDOWS

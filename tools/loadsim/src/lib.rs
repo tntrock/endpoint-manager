@@ -86,7 +86,7 @@ fn checkin_req(ip: &str, section_hashes: BTreeMap<Section, String>) -> CheckinRe
         schema_version: SCHEMA_VERSION,
         // 模擬支援組態區段的 Agent（組態規則要求 0.3.0 以上）
         agent_version: "0.3.0".into(),
-        boot_time: chrono::Utc::now() - chrono::Duration::hours(1),
+        boot_time: time::OffsetDateTime::now_utc() - time::Duration::hours(1),
         logged_on_user: Some(r"LOADSIM\user".into()),
         ip_addresses: vec![ip.to_string()],
         section_hashes,
@@ -222,7 +222,7 @@ pub fn security(device: usize) -> SecurityInfo {
             active: true,
             realtime: true,
             tamper: true,
-            signature_updated: Some(chrono::Utc::now()),
+            signature_updated: Some(time::OffsetDateTime::now_utc()),
         }),
         password: Probe::Ok(protocol::PasswordPolicy {
             min_length: 8,
@@ -417,7 +417,7 @@ pub async fn updates(t: &Target, devices: &[Device], concurrency: usize) -> (Rep
                 detail: String::new(),
                 reboot_pending: false,
                 reboot_pending_since: None,
-                last_patch_date: Some(chrono::Utc::now().date_naive()),
+                last_patch_date: Some(time::OffsetDateTime::now_utc().date()),
             })
             .await
             .map_err(|e| eprintln!("update-status {}: {e}", d.device_id))

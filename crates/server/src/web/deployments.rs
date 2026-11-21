@@ -4,7 +4,6 @@
 use askama::Template;
 use axum::extract::{Path, Query, RawForm, State};
 use axum::response::{IntoResponse, Redirect, Response};
-use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -336,7 +335,7 @@ type DeviceDbRow = (
     String,
     Option<String>,
     Option<String>,
-    Option<DateTime<Utc>>,
+    Option<time::OffsetDateTime>,
     Option<String>,
     bool,
 );
@@ -525,7 +524,7 @@ type TabDbRow = (
     String,
     Option<String>,
     Option<String>,
-    Option<DateTime<Utc>>,
+    Option<time::OffsetDateTime>,
 );
 
 /// 裝置頁的「派送」分頁（htmx 片段）：這台是對象的派送與狀態。範圍外的裝置回 404。
