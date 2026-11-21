@@ -557,3 +557,45 @@ async fn bulk_exemptions(pool: PgPool) {
     .await;
     assert_eq!(st, 403);
 }
+
+#[sqlx::test(migrations = false)]
+async fn bulk_edge_cases(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(1).await;
+    let id = s.enroll_ok(&tok, None, None).await.device_id;
+    let admin = s.admin_client().await;
+    let (_, html) = s.page(&admin, "/devices").await;
+    let csrf = csrf_from(&html);
+    // 回到的網址格式不對時用預設清單；不認得的欄位忽略
+    let (st, html, _) = post(
+        &s,
+        &admin,
+        "/devices/bulk",
+        &[
+            ("csrf", csrf.clone()),
+            ("op", "retire".into()),
+            ("ids", id.to_string()),
+            ("back", "/devices?page=abc".into()),
+            ("extra", "1".into()),
+        ],
+    )
+    .await;
+    assert_eq!(st, 400);
+    assert!(html.contains("除役前請勾選確認"));
+    assert!(html.contains(r#"<input type="hidden" name="sort" value="hostname">"#));
+
+    let mut form = vec![
+        ("csrf", csrf),
+        ("reason", "r".to_string()),
+        ("days", "30".to_string()),
+        (
+            "back",
+            "/compliance/violations?page=x&severity=high".to_string(),
+        ),
+        ("extra", "1".to_string()),
+    ];
+    form.extend((0..201).map(|i| ("keys", format!("{}:{i}", Uuid::new_v4()))));
+    let (st, html, _) = post(&s, &admin, "/compliance/violations/exempt", &form).await;
+    assert_eq!(st, 400);
+    assert!(html.contains("一次最多 200 筆"), "{html}");
+}

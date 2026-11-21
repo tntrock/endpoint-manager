@@ -136,6 +136,15 @@ mod tests {
     }
 
     #[test]
+    fn columns_built_at_runtime() {
+        let name = std::hint::black_box("名稱");
+        let c = Column::new("k", name, "x.k").desc_first();
+        assert!(c.desc_first && !c.num && c.label == "名稱");
+        let f = Column::fixed(name);
+        assert!(f.sql.is_empty() && f.key.is_empty());
+    }
+
+    #[test]
     fn header_links_toggle() {
         let s = Sort::parse("name", &COLS, ("name", false));
         let h = headers(&COLS, s, |p| format!("/x?sort={p}"));
