@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 use super::auth::{AdminSession, Nav, Session, check_csrf};
 use super::login::CsrfForm;
+use super::sort::{self, Column, Sort};
 use super::{enc, escape_like, fmt_time, forbidden, not_found, render};
 use crate::AppState;
 use crate::db::load_settings;
@@ -145,6 +146,9 @@ pub struct ListQuery {
     os: String,
     #[serde(default)]
     page: i64,
+    /// 排序（`web::sort`）
+    #[serde(default)]
+    sort: String,
 }
 
 pub struct DeviceRow {
@@ -165,6 +169,14 @@ pub struct DeviceRow {
 #[template(path = "devices.html")]
 struct DevicesPage {
     nav: Nav,
+    /// 批次「移到群組」的選項（只有平台管理員）
+    move_groups: Vec<SelectOption>,
+    scripts: Vec<SelectOption>,
+    /// 目前清單的網址（批次操作後回到這裡）
+    back: String,
+    headers: Vec<sort::Header>,
+    sort: String,
+    notice: Option<String>,
     q: String,
     software: String,
     version: String,
@@ -191,27 +203,52 @@ type ListRow = (
     String,
 );
 
-fn page_url(q: &ListQuery, page: i64) -> String {
+fn page_url(q: &ListQuery, sort: &str, page: i64) -> String {
     format!(
-        "/devices?q={}&status={}&group={}&os={}&software={}&version={}&page={page}",
+        "/devices?q={}&status={}&group={}&os={}&software={}&version={}&sort={}&page={page}",
         enc(&q.q),
         enc(&q.status),
         enc(&q.group),
         enc(&q.os),
         enc(&q.software),
-        enc(&q.version)
+        enc(&q.version),
+        enc(sort)
     )
 }
+
+/// 裝置清單的欄位（排序白名單）
+const LIST_COLS: [Column; 8] = [
+    Column::new("hostname", "電腦名稱", "d.hostname"),
+    Column::new("group", "群組", "g.name"),
+    Column::fixed("網域"),
+    Column::new("os", "作業系統", "d.os_caption"),
+    Column::new("user", "使用者", "d.logged_on_user"),
+    Column::new("ip", "IP", "try_inet(d.last_ip)"),
+    Column::new("last_seen", "最後報到", "d.last_seen_at").desc_first(),
+    Column::new("status", "狀態", "d.status"),
+];
 
 pub async fn list(
     State(st): State<AppState>,
     AdminSession(s): AdminSession,
     Query(q): Query<ListQuery>,
 ) -> Result<Response, AppError> {
-    let cutoff = online_cutoff(&st).await?;
+    list_page(&st, &s, q, None).await
+}
+
+/// 清單頁；`notice` 是批次操作的結果
+async fn list_page(
+    st: &AppState,
+    s: &Session,
+    q: ListQuery,
+    notice: Option<String>,
+) -> Result<Response, AppError> {
+    let cutoff = online_cutoff(st).await?;
     let page = q.page.clamp(0, MAX_PAGE);
     let group_filter: Option<i64> = q.group.parse().ok();
-    let mut rows: Vec<ListRow> = sqlx::query_as(
+    let sort = Sort::parse(&q.sort, &LIST_COLS, ("hostname", false));
+    let sort_param = sort.param(&LIST_COLS);
+    let mut rows: Vec<ListRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT d.id, d.hostname, g.name, coalesce(d.domain, ''), coalesce(d.os_caption, ''), \
                 coalesce(d.logged_on_user, ''), coalesce(d.last_ip, ''), d.last_seen_at, d.status, \
                 d.os_family \
@@ -227,8 +264,9 @@ pub async fn list(
                      ELSE d.group_id = $7 END) \
            AND ($8 = '' OR EXISTS (SELECT 1 FROM device_software sw WHERE sw.device_id = d.id \
                                    AND sw.name = $8 AND ($9 = '' OR coalesce(sw.version, '') = $9))) \
-         ORDER BY d.hostname, d.id LIMIT $10 OFFSET $11",
-    )
+         ORDER BY {}, d.hostname, d.id LIMIT $10 OFFSET $11",
+        sort.order_by(&LIST_COLS)
+    )))
     .bind(s.all_devices())
     .bind(&s.groups)
     .bind(&q.q)
@@ -259,7 +297,7 @@ pub async fn list(
                     os,
                     user,
                     ip,
-                    last_seen: fmt_time(&st, last_seen),
+                    last_seen: fmt_time(st, last_seen),
                     badge,
                     badge_label,
                     linux: os_family == "linux",
@@ -294,12 +332,23 @@ pub async fn list(
         selected: os_filter(&q.os) == v,
     })
     .collect();
+    let headers = sort::headers(&LIST_COLS, sort, |p| page_url(&q, p, 0));
     Ok(render(&DevicesPage {
         oses,
-        groups: group_options(&st, &s, &q.group, true).await?,
-        nav: Nav::new(&s, "devices"),
-        prev_url: page_url(&q, page - 1),
-        next_url: page_url(&q, page + 1),
+        groups: group_options(st, s, &q.group, true).await?,
+        move_groups: if s.all_devices() {
+            group_options(st, s, "", false).await?
+        } else {
+            vec![]
+        },
+        scripts: super::commands::approved_scripts(st, s, None).await?,
+        nav: Nav::new(s, "devices"),
+        prev_url: page_url(&q, &sort_param, page - 1),
+        next_url: page_url(&q, &sort_param, page + 1),
+        back: page_url(&q, &sort_param, page),
+        headers,
+        sort: sort_param,
+        notice,
         q: q.q,
         software: q.software,
         version: q.version,
@@ -856,4 +905,189 @@ pub async fn move_group(
         .await
         .map_err(action_error)?;
     Ok(Redirect::to(&format!("/devices/{id}")).into_response())
+}
+
+/// 一次批次操作最多幾台
+pub const MAX_BULK: usize = 200;
+
+#[derive(Default)]
+struct BulkForm {
+    csrf: String,
+    ids: Vec<Uuid>,
+    /// 有 id 格式不對
+    bad_id: bool,
+    op: String,
+    group: String,
+    action: String,
+    delay_minutes: Option<i32>,
+    bad_delay: bool,
+    script_id: Option<i64>,
+    confirm: bool,
+    /// 回到的清單網址（只取查詢字串）
+    back: String,
+}
+
+fn parse_bulk(raw: &[u8]) -> BulkForm {
+    let mut f = BulkForm::default();
+    for (k, v) in form_urlencoded::parse(raw) {
+        let v = v.trim();
+        match k.as_ref() {
+            "csrf" => f.csrf = v.into(),
+            "ids" => match v.parse() {
+                Ok(id) => f.ids.push(id),
+                Err(_) => f.bad_id = true,
+            },
+            "op" => f.op = v.into(),
+            "group" => f.group = v.into(),
+            "action" => f.action = v.into(),
+            "delay_minutes" if !v.is_empty() => match v.parse() {
+                Ok(d) => f.delay_minutes = Some(d),
+                Err(_) => f.bad_delay = true,
+            },
+            "script_id" => f.script_id = v.parse().ok(),
+            "confirm" => f.confirm = v == "1",
+            "back" => f.back = v.into(),
+            _ => {}
+        }
+    }
+    f.ids.sort();
+    f.ids.dedup();
+    f
+}
+
+/// 批次操作後回到的清單條件；格式不對就用預設
+fn back_query(back: &str) -> ListQuery {
+    let query = back.split_once('?').map(|(_, q)| q).unwrap_or("");
+    let uri: axum::http::Uri = format!("/devices?{query}")
+        .parse()
+        .unwrap_or_else(|_| axum::http::Uri::from_static("/devices"));
+    Query::<ListQuery>::try_from_uri(&uri)
+        .map(|q| q.0)
+        .unwrap_or_else(|_| {
+            Query::<ListQuery>::try_from_uri(&axum::http::Uri::from_static("/devices"))
+                .expect("empty query")
+                .0
+        })
+}
+
+fn result_text(verb: &str, ok: usize, skipped: usize) -> String {
+    if skipped == 0 {
+        format!("已{verb} {ok} 台。")
+    } else {
+        format!("已{verb} {ok} 台，略過 {skipped} 台（不在管理範圍、不存在或狀態不符）。")
+    }
+}
+
+/// `POST /devices/bulk`：勾選的裝置移到群組、下遠端指令或除役
+pub async fn bulk(
+    State(st): State<AppState>,
+    AdminSession(s): AdminSession,
+    RawForm(raw): RawForm,
+) -> Result<Response, Response> {
+    let f = parse_bulk(&raw);
+    check_csrf(&s, &f.csrf)?;
+    if !s.can_manage() {
+        return Err(forbidden());
+    }
+    let back = back_query(&f.back);
+    let show = |notice: String, status: axum::http::StatusCode| {
+        let (st, s) = (&st, &s);
+        async move {
+            match list_page(st, s, back, Some(notice)).await {
+                Ok(r) => (status, r).into_response(),
+                Err(e) => e.into_response(),
+            }
+        }
+    };
+    use axum::http::StatusCode;
+    if f.bad_id || f.ids.len() > MAX_BULK {
+        return Ok(show(
+            format!("選取的裝置格式不正確，或超過 {MAX_BULK} 台。"),
+            StatusCode::BAD_REQUEST,
+        )
+        .await);
+    }
+    if f.ids.is_empty() {
+        return Ok(show("沒有選取任何裝置。".into(), StatusCode::BAD_REQUEST).await);
+    }
+    match f.op.as_str() {
+        "move" => {
+            if !s.all_devices() {
+                return Err(forbidden());
+            }
+            let group = match f.group.as_str() {
+                "" | "none" => None,
+                g => {
+                    let id: Option<i64> = g.parse().ok();
+                    let exists: bool = sqlx::query_scalar(
+                        "SELECT EXISTS (SELECT 1 FROM device_groups WHERE id = $1)",
+                    )
+                    .bind(id)
+                    .fetch_one(&st.pool)
+                    .await
+                    .map_err(db_error)?;
+                    if !exists {
+                        return Ok(show("群組不存在。".into(), StatusCode::BAD_REQUEST).await);
+                    }
+                    id
+                }
+            };
+            let (mut ok, mut skipped) = (0, 0);
+            for id in &f.ids {
+                match crate::groups::move_device(&st.pool, *id, group, &s.username).await {
+                    Ok(()) => ok += 1,
+                    Err(_) => skipped += 1,
+                }
+            }
+            Ok(show(result_text("移動", ok, skipped), StatusCode::OK).await)
+        }
+        "retire" => {
+            if !f.confirm {
+                return Ok(show("除役前請勾選確認。".into(), StatusCode::BAD_REQUEST).await);
+            }
+            let (mut ok, mut skipped) = (0, 0);
+            for id in &f.ids {
+                let in_scope = device_group_in_scope(&st, &s, *id)
+                    .await
+                    .map_err(db_error)?
+                    .is_some();
+                if in_scope
+                    && crate::devices::retire(&st.pool, *id, &s.username)
+                        .await
+                        .is_ok()
+                {
+                    ok += 1;
+                } else {
+                    skipped += 1;
+                }
+            }
+            Ok(show(result_text("除役", ok, skipped), StatusCode::OK).await)
+        }
+        "command" => {
+            if f.bad_delay {
+                return Ok(show(
+                    "延遲必須是 0–60 分鐘的整數。".into(),
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                )
+                .await);
+            }
+            let input = crate::commands::runs::RunInput {
+                action: f.action.clone(),
+                target: crate::commands::runs::Target::Devices(f.ids.clone()),
+                delay_minutes: f.delay_minutes,
+                script_id: f.script_id,
+                expires_hours: crate::commands::runs::DEFAULT_EXPIRES_HOURS,
+            };
+            match crate::commands::runs::create_run(&st.pool, &input, &super::commands::actor(&s))
+                .await
+            {
+                Ok((id, ..)) => Ok(Redirect::to(&format!("/commands/{id}")).into_response()),
+                Err(e) => match super::commands::form_error(&e) {
+                    Some((status, m)) => Ok(show(m, status).await),
+                    None => Err(super::commands::command_error(e)),
+                },
+            }
+        }
+        _ => Ok(show("不支援的操作。".into(), StatusCode::BAD_REQUEST).await),
+    }
 }

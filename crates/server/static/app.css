@@ -40,6 +40,7 @@
 
 /* 基本 */
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html { background: var(--bg); }
 body { margin: 0; min-height: 100vh; background: var(--glow), var(--bg); background-attachment: fixed;
   color: var(--text); font: 14px/1.5 var(--sans); -webkit-font-smoothing: antialiased; }
@@ -400,3 +401,13 @@ a.stat:hover { text-decoration: none; border-color: var(--accent); }
 .tl-detail { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
 .tl-link { flex: none; font-size: 12px; }
 .tl-more { margin: 14px 0 0; }
+
+/* 表格排序與批次操作 */
+th a.sort { color: inherit; display: inline-flex; gap: 2px; }
+th a.sort:hover { color: var(--text); }
+th[aria-sort] a.sort { color: var(--accent); }
+th.pick, td.pick { width: 1%; padding-right: 0; }
+.bulk-bar { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; margin: 0 0 12px; }
+.bulk-bar legend { padding: 0 6px; color: var(--muted); font-size: 12.5px; }
+.bulk-op { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.bulk-op input[name="reason"] { min-width: 16em; }

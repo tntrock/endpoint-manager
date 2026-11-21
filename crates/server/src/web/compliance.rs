@@ -13,6 +13,7 @@ use super::devices::{
     MAX_PAGE, PAGE_SIZE, SelectOption, action_error, db_error, device_group_in_scope, group_options,
 };
 use super::login::CsrfForm;
+use super::sort::{self, Column, Sort};
 use super::{enc, escape_like, fmt_time, forbidden, not_found, render};
 use crate::AppState;
 use crate::compliance::evaluate::{Status, summarize};
@@ -34,6 +35,9 @@ pub struct ViolationFilter {
     /// 文字：格式不對時當第 1 頁，不回 axum 的英文錯誤
     #[serde(default)]
     pub page: String,
+    /// 排序（`web::sort`）；CSV 不使用
+    #[serde(default)]
+    pub sort: String,
 }
 
 impl ViolationFilter {
@@ -61,6 +65,8 @@ const FILTER: &str = "($1::bool OR d.group_id = ANY($2::bigint[])) \
 
 pub struct ViolationRow {
     pub device_id: Uuid,
+    /// 批次豁免用：`<裝置 ID>:<規則 ID>`
+    pub key: String,
     pub hostname: String,
     pub group: String,
     pub rule: String,
@@ -105,11 +111,12 @@ fn status_label(s: &str) -> &'static str {
 }
 
 fn to_row(st: &AppState, r: RawViolation) -> ViolationRow {
-    let (device_id, _, hostname, group, rule, severity, status, detail, since) = r;
+    let (device_id, rule_id, hostname, group, rule, severity, status, detail, since) = r;
     let sev = severity_of(&severity);
     let detail: serde_json::Value = serde_json::from_str(&detail).unwrap_or_default();
     ViolationRow {
         device_id,
+        key: format!("{device_id}:{rule_id}"),
         hostname,
         group: group.unwrap_or_else(|| "未分組".into()),
         rule,
@@ -136,6 +143,12 @@ fn select(options: &[(&str, &str)], current: &str) -> Vec<SelectOption> {
 #[template(path = "violations.html")]
 struct ViolationsPage {
     nav: Nav,
+    headers: Vec<sort::Header>,
+    sort: String,
+    /// 目前清單的網址（批次豁免後回到這裡）
+    back: String,
+    notice: Option<String>,
+    max_days: i64,
     q: String,
     rules: Vec<SelectOption>,
     severities: Vec<SelectOption>,
@@ -149,15 +162,42 @@ struct ViolationsPage {
     csv_url: String,
 }
 
+/// 違規清單的欄位（排序白名單）
+const VIOLATION_COLS: [Column; 7] = [
+    Column::new("hostname", "電腦名稱", "d.hostname"),
+    Column::new("group", "群組", "g.name"),
+    Column::new("rule", "規則", "r.name"),
+    Column::new(
+        "severity",
+        "嚴重度",
+        "CASE r.severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END",
+    ),
+    Column::new("status", "狀態", "v.status"),
+    Column::fixed("細節"),
+    Column::new("since", "開始時間", "v.since").desc_first(),
+];
+
 pub async fn violations(
     State(st): State<AppState>,
     AdminSession(s): AdminSession,
     Query(f): Query<ViolationFilter>,
 ) -> Result<Response, AppError> {
+    violations_page(&st, &s, f, None).await
+}
+
+async fn violations_page(
+    st: &AppState,
+    s: &Session,
+    f: ViolationFilter,
+    notice: Option<String>,
+) -> Result<Response, AppError> {
     let page = f.page.trim().parse::<i64>().unwrap_or(0).clamp(0, MAX_PAGE);
+    let sort = Sort::parse(&f.sort, &VIOLATION_COLS, ("since", true));
+    let sort_param = sort.param(&VIOLATION_COLS);
     let sql = format!(
-        "{} ORDER BY v.since DESC, v.device_id, v.rule_id LIMIT $9 OFFSET $10",
-        violation_select()
+        "{} ORDER BY {}, v.device_id, v.rule_id LIMIT $9 OFFSET $10",
+        violation_select(),
+        sort.order_by(&VIOLATION_COLS)
     );
     let mut rows: Vec<RawViolation> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
         .bind(s.all_devices())
@@ -189,8 +229,16 @@ pub async fn violations(
         label: name,
     }));
     let qs = f.query_string();
+    let list_url = |sort: &str, page: i64| {
+        format!("/compliance/violations?{qs}&sort={}&page={page}", enc(sort))
+    };
     Ok(render(&ViolationsPage {
-        nav: Nav::new(&s, "compliance"),
+        nav: Nav::new(s, "compliance"),
+        headers: sort::headers(&VIOLATION_COLS, sort, |p| list_url(p, 0)),
+        back: list_url(&sort_param, page),
+        sort: sort_param.clone(),
+        notice,
+        max_days: crate::compliance::admin::MAX_EXEMPTION_DAYS,
         rules,
         severities: select(
             &[
@@ -210,12 +258,12 @@ pub async fn violations(
             ],
             &f.status,
         ),
-        groups: group_options(&st, &s, &f.group, true).await?,
-        rows: rows.into_iter().map(|r| to_row(&st, r)).collect(),
+        groups: group_options(st, s, &f.group, true).await?,
+        rows: rows.into_iter().map(|r| to_row(st, r)).collect(),
         page,
         has_next,
-        prev_url: format!("/compliance/violations?{qs}&page={}", page - 1),
-        next_url: format!("/compliance/violations?{qs}&page={}", page + 1),
+        prev_url: list_url(&sort_param, page - 1),
+        next_url: list_url(&sort_param, page + 1),
         csv_url: format!("/compliance/violations.csv?{qs}"),
         q: f.q,
     }))
@@ -854,4 +902,115 @@ pub async fn security_tab(st: &AppState, s: &Session, id: Uuid) -> Result<Respon
         }
     };
     Ok(render(&SecurityTab { updated, lines }))
+}
+
+/// `POST /compliance/violations/exempt`：對勾選的（裝置, 規則）建立或更新豁免（平台管理員）
+pub async fn bulk_exempt(
+    State(st): State<AppState>,
+    AdminSession(s): AdminSession,
+    axum::extract::RawForm(raw): axum::extract::RawForm,
+) -> Result<Response, Response> {
+    use axum::http::StatusCode;
+    let (mut csrf, mut keys, mut reason, mut days, mut back) = (
+        String::new(),
+        vec![],
+        String::new(),
+        String::new(),
+        String::new(),
+    );
+    for (k, v) in form_urlencoded::parse(&raw) {
+        match k.as_ref() {
+            "csrf" => csrf = v.into_owned(),
+            "keys" => keys.push(v.into_owned()),
+            "reason" => reason = v.into_owned(),
+            "days" => days = v.trim().to_string(),
+            "back" => back = v.into_owned(),
+            _ => {}
+        }
+    }
+    check_csrf(&s, &csrf)?;
+    if !s.all_devices() {
+        return Err(forbidden());
+    }
+    let filter = {
+        let query = back.split_once('?').map(|(_, q)| q).unwrap_or("");
+        format!("/compliance/violations?{query}")
+            .parse::<axum::http::Uri>()
+            .ok()
+            .and_then(|u| Query::<ViolationFilter>::try_from_uri(&u).ok())
+            .map(|q| q.0)
+            .unwrap_or_default()
+    };
+    let show = |notice: String, status: StatusCode| {
+        let (st, s) = (&st, &s);
+        async move {
+            match violations_page(st, s, filter, Some(notice)).await {
+                Ok(r) => (status, r).into_response(),
+                Err(e) => e.into_response(),
+            }
+        }
+    };
+    let max = crate::compliance::admin::MAX_EXEMPTION_DAYS;
+    let Some(days) = days.parse::<i64>().ok().filter(|d| (1..=max).contains(d)) else {
+        return Ok(show(
+            format!("有效天數須為 1–{max} 的整數。"),
+            StatusCode::BAD_REQUEST,
+        )
+        .await);
+    };
+    let reason_len = reason.trim().chars().count();
+    if reason_len == 0 || reason_len > crate::compliance::admin::MAX_REASON_LEN {
+        return Ok(show(
+            format!(
+                "豁免原因必填，最多 {} 字。",
+                crate::compliance::admin::MAX_REASON_LEN
+            ),
+            StatusCode::BAD_REQUEST,
+        )
+        .await);
+    }
+    if keys.is_empty() {
+        return Ok(show("沒有選取任何違規。".into(), StatusCode::BAD_REQUEST).await);
+    }
+    if keys.len() > super::devices::MAX_BULK {
+        return Ok(show(
+            format!("一次最多 {} 筆。", super::devices::MAX_BULK),
+            StatusCode::BAD_REQUEST,
+        )
+        .await);
+    }
+    keys.sort();
+    keys.dedup();
+    let expires = time::OffsetDateTime::now_utc() + time::Duration::days(days);
+    let (mut ok, mut skipped) = (0, 0);
+    for key in &keys {
+        let parsed = key
+            .split_once(':')
+            .and_then(|(d, r)| Some((d.parse::<Uuid>().ok()?, r.parse::<i64>().ok()?)));
+        let done = match parsed {
+            Some((device, rule)) => crate::compliance::admin::create_exemption(
+                &st.pool,
+                device,
+                rule,
+                &reason,
+                expires,
+                &s.username,
+            )
+            .await
+            .is_ok(),
+            None => false,
+        };
+        if done {
+            ok += 1;
+        } else {
+            skipped += 1;
+        }
+    }
+    let mut msg = format!("已建立或更新 {ok} 筆豁免，{days} 天後到期。");
+    if skipped > 0 {
+        msg.push_str(&format!(
+            "略過 {skipped} 筆（格式不正確，或裝置、規則已不存在）。"
+        ));
+    }
+    Ok(show(msg, StatusCode::OK).await)
 }

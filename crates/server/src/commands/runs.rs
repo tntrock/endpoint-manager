@@ -13,10 +13,12 @@ pub const DEFAULT_DELAY_MINUTES: i32 = 10;
 pub const DEFAULT_EXPIRES_HOURS: i64 = 24 * 7;
 pub const MAX_EXPIRES_HOURS: i64 = 24 * 30;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum Target {
     Device(Uuid),
     Group(i64),
+    /// 勾選的多台裝置：範圍外、不存在或未啟用的略過
+    Devices(Vec<Uuid>),
 }
 
 #[derive(Debug, Clone)]
@@ -43,9 +45,9 @@ pub async fn create_run(
         return Err(CmdError::Forbidden("只有平台管理員能執行腳本".into()).into());
     }
     // 群組：範圍先於存在，群組管理員無法藉錯誤訊息得知群組是否存在
-    if let Target::Group(g) = i.target
+    if let Target::Group(g) = &i.target
         && !actor.platform
-        && !actor.groups.contains(&g)
+        && !actor.groups.contains(g)
     {
         return Err(CmdError::Forbidden("這個群組不在你的管理範圍".into()).into());
     }
@@ -119,8 +121,12 @@ pub async fn create_run(
 
     // 對象與範圍：非平台管理員只能選自己群組（未分組的裝置不在範圍內）
     let in_scope = |g: Option<i64>| actor.platform || g.is_some_and(|g| actor.groups.contains(&g));
-    let label = match i.target {
+    // 多台：範圍內、使用中、作業系統相符的裝置
+    let mut picked: Vec<Uuid> = vec![];
+    let mut skipped = 0i64;
+    let label = match &i.target {
         Target::Device(d) => {
+            let d = *d;
             // FOR SHARE：檢查範圍到建立完成之間，裝置不會被移到別的群組
             let row: Option<(String, Option<i64>, String)> = sqlx::query_as(
                 "SELECT hostname, group_id, os_family FROM devices \
@@ -148,7 +154,35 @@ pub async fn create_run(
             }
             format!("裝置 {hostname}")
         }
+        Target::Devices(ids) => {
+            let rows: Vec<(Uuid, Option<i64>, String)> = sqlx::query_as(
+                "SELECT id, group_id, os_family FROM devices \n                 WHERE id = ANY($1) AND status = 'active' ORDER BY id FOR SHARE",
+            )
+            .bind(ids)
+            .fetch_all(&mut *tx)
+            .await?;
+            let scoped: Vec<_> = rows.into_iter().filter(|r| in_scope(r.1)).collect();
+            check!(
+                !scoped.is_empty(),
+                Invalid,
+                "選取的裝置都不在管理範圍內或不是使用中"
+            );
+            for (id, _, os) in scoped {
+                if need_os.is_some_and(|n| n != os) {
+                    skipped += 1;
+                } else {
+                    picked.push(id);
+                }
+            }
+            check!(
+                !picked.is_empty(),
+                Invalid,
+                "選取的裝置作業系統都不支援這個動作"
+            );
+            format!("{} 台裝置", picked.len())
+        }
         Target::Group(g) => {
+            let g = *g;
             let name: Option<String> =
                 sqlx::query_scalar("SELECT name FROM device_groups WHERE id = $1")
                     .bind(g)
@@ -180,9 +214,17 @@ pub async fn create_run(
     .bind(script.as_ref().and_then(|s| s.5.clone()))
     .fetch_one(&mut *tx)
     .await?;
-    let mut skipped = 0i64;
-    let count = match i.target {
+    let count = match &i.target {
+        Target::Devices(_) => sqlx::query(
+            "INSERT INTO command_targets (run_id, device_id) SELECT $1, unnest($2::uuid[])",
+        )
+        .bind(run_id)
+        .bind(&picked)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected(),
         Target::Device(d) => {
+            let d = *d;
             sqlx::query("INSERT INTO command_targets (run_id, device_id) VALUES ($1, $2)")
                 .bind(run_id)
                 .bind(d)
@@ -191,6 +233,7 @@ pub async fn create_run(
                 .rows_affected()
         }
         Target::Group(g) => {
+            let g = *g;
             skipped = sqlx::query_scalar(
                 "SELECT count(*) FROM devices \
                  WHERE status = 'active' AND group_id = $1 AND os_family <> $2",

@@ -24,7 +24,12 @@
   </fieldset>
 </form>
 {% endif %}
-{% if rows.is_empty() %}{% call m::empty("還沒有遠端指令", "") %}{% endcall %}{% else %}
+<form class="filters" method="get" action="/commands">
+  <select name="action" aria-label="動作">{% for o in actions %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}</select>
+  <label class="checks"><input type="checkbox" name="failed" value="1" {% if failed_only %}checked{% endif %}> 只看有失敗的</label>
+  <button class="btn primary">篩選</button>
+</form>
+{% if rows.is_empty() %}{% call m::empty("沒有符合條件的遠端指令", "") %}{% endcall %}{% else %}
 <table>
   <tr><th>動作</th><th>對象</th><th>建立者</th><th>建立時間</th><th>過期</th><th class="num">台數</th><th class="num">等待中</th><th class="num">成功</th><th class="num">失敗</th><th class="num">已過期</th><th class="num">已取消</th></tr>
   {% for r in rows %}

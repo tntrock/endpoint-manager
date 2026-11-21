@@ -6,19 +6,36 @@
   <div class="actions"><a class="btn" href="{{ csv_url }}">匯出 CSV</a></div>
 </div>
 {% call m::compliance_tabs("violations", nav.platform) %}{% endcall %}
+{% if let Some(n) = notice %}<div class="notice ok" role="status">{{ n }}</div>{% endif %}
 <form class="filters" method="get" action="/compliance/violations">
   <input name="q" value="{{ q }}" placeholder="電腦名稱" aria-label="電腦名稱">
   <select name="rule" aria-label="規則">{% for o in rules %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}</select>
   <select name="severity" aria-label="嚴重度">{% for o in severities %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}</select>
   <select name="status" aria-label="狀態">{% for o in statuses %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}</select>
   <select name="group" aria-label="群組">{% for o in groups %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}</select>
+  <input type="hidden" name="sort" value="{{ sort }}">
   <button class="btn primary">搜尋</button>
 </form>
 {% if rows.is_empty() %}{% call m::empty("沒有符合條件的違規", "") %}{% endcall %}{% else %}
+<form method="post" action="/compliance/violations/exempt">
+{% if nav.platform %}
+<input type="hidden" name="csrf" value="{{ nav.csrf }}">
+<input type="hidden" name="back" value="{{ back }}">
+<button type="submit" disabled hidden aria-hidden="true" tabindex="-1"></button>
+<fieldset class="bulk-bar">
+  <legend>批次豁免（勾選下方的違規，<span class="num" data-selected-count>0</span> 筆已選）</legend>
+  <div class="bulk-op">
+    <input name="reason" maxlength="500" placeholder="豁免原因（必填）" aria-label="豁免原因">
+    <label>有效 <input name="days" value="30" inputmode="numeric" size="3" aria-label="有效天數"> 天（1–{{ max_days }}）</label>
+    <button class="btn" name="op" value="exempt">建立豁免</button>
+  </div>
+</fieldset>
+{% endif %}
 <table>
-  <tr><th>電腦名稱</th><th>群組</th><th>規則</th><th>嚴重度</th><th>狀態</th><th>細節</th><th>開始時間</th></tr>
+  <tr>{% if nav.platform %}<th class="pick"><input type="checkbox" data-select-all aria-label="全選本頁" hidden></th>{% endif %}{% call m::sort_head(headers) %}{% endcall %}</tr>
   {% for v in rows %}
   <tr>
+    {% if nav.platform %}<td class="pick"><input type="checkbox" name="keys" value="{{ v.key }}" aria-label="選取 {{ v.hostname }}：{{ v.rule }}"></td>{% endif %}
     <td><a href="/devices/{{ v.device_id }}">{{ v.hostname }}</a></td>
     <td>{{ v.group }}</td><td>{{ v.rule }}</td>
     <td><span class="sev {{ v.severity_class }}">{{ v.severity }}</span></td>
@@ -27,6 +44,7 @@
   </tr>
   {% endfor %}
 </table>
+</form>
 {% endif %}
 <div class="pager">
   {% if page > 0 %}<a class="btn sm" href="{{ prev_url }}">← 上一頁</a>{% endif %}

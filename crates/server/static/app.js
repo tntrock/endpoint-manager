@@ -14,6 +14,32 @@
   }
 
   document.addEventListener('DOMContentLoaded', function () {
+    // 批次操作：全選本頁與已選數量（沒有 JS 時逐一勾選）
+    document.querySelectorAll('form').forEach(function (form) {
+      var all = form.querySelector('[data-select-all]');
+      var count = form.querySelector('[data-selected-count]');
+      var boxes = form.querySelectorAll('input[type=checkbox][name=ids], input[type=checkbox][name=keys]');
+      if (!boxes.length || (!all && !count)) return;
+      function update() {
+        var n = 0;
+        boxes.forEach(function (b) { if (b.checked) n++; });
+        if (count) count.textContent = String(n);
+        if (all) {
+          all.checked = n === boxes.length;
+          all.indeterminate = n > 0 && n < boxes.length;
+        }
+      }
+      if (all) {
+        all.hidden = false;
+        all.addEventListener('change', function () {
+          boxes.forEach(function (b) { b.checked = all.checked; });
+          update();
+        });
+      }
+      boxes.forEach(function (b) { b.addEventListener('change', update); });
+      update();
+    });
+
     // 主管報告的列印按鈕
     var printBtn = document.querySelector('[data-print]');
     if (printBtn) {

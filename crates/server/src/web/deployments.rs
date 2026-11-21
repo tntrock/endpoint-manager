@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 use super::auth::{AdminSession, Nav, Session, check_csrf, platform};
 use super::devices::{SelectOption, action_error, db_error, device_group_in_scope};
+use super::sort::{self, Column, Sort};
 use super::{enc, fmt_time, not_found, render};
 use crate::AppState;
 use crate::deploy::admin::{self, DeploymentInput, Transition};
@@ -84,6 +85,7 @@ pub struct ListRow {
 #[template(path = "deployments.html")]
 struct ListPage {
     nav: Nav,
+    filters: Vec<FilterLink>,
     rows: Vec<ListRow>,
 }
 
@@ -121,18 +123,62 @@ fn to_row(r: CountRow) -> ListRow {
     }
 }
 
+#[derive(Deserialize)]
+pub struct ListQuery {
+    /// 空白＝全部、active＝進行中、paused、stopped
+    #[serde(default)]
+    stage: String,
+}
+
+/// 派送狀態篩選的分類
+fn stage_group(stage: &str) -> &'static str {
+    match stage {
+        "pilot" | "all" => "active",
+        "paused" => "paused",
+        _ => "stopped",
+    }
+}
+
 pub async fn list(
     State(st): State<AppState>,
     AdminSession(s): AdminSession,
+    Query(q): Query<ListQuery>,
 ) -> Result<Response, AppError> {
     let rows: Vec<CountRow> = sqlx::query_as(sqlx::AssertSqlSafe(counts_sql("")))
         .bind(s.all_devices())
         .bind(&s.groups)
         .fetch_all(&st.pool)
         .await?;
+    let current = match q.stage.as_str() {
+        s @ ("active" | "paused" | "stopped") => s,
+        _ => "",
+    };
+    let count = |g: &str| rows.iter().filter(|r| stage_group(&r.4) == g).count();
+    let filters = [
+        ("", format!("全部：{}", rows.len())),
+        ("active", format!("進行中：{}", count("active"))),
+        ("paused", format!("已暫停：{}", count("paused"))),
+        ("stopped", format!("已停止：{}", count("stopped"))),
+    ]
+    .into_iter()
+    .map(|(k, label)| FilterLink {
+        label,
+        url: if k.is_empty() {
+            "/deployments".into()
+        } else {
+            format!("/deployments?stage={k}")
+        },
+        active: k == current,
+    })
+    .collect();
     Ok(render(&ListPage {
         nav: Nav::new(&s, "deployments"),
-        rows: rows.into_iter().map(to_row).collect(),
+        filters,
+        rows: rows
+            .into_iter()
+            .filter(|r| current.is_empty() || stage_group(&r.4) == current)
+            .map(to_row)
+            .collect(),
     }))
 }
 
@@ -278,7 +324,18 @@ pub struct DetailQuery {
     status: String,
     #[serde(default)]
     page: i64,
+    #[serde(default)]
+    sort: String,
 }
+
+/// 派送詳細頁的裝置表（排序白名單）
+const DEVICE_COLS: [Column; 5] = [
+    Column::new("hostname", "主機名稱", "lower(v.hostname)"),
+    Column::new("status", "狀態", "ds.status"),
+    Column::fixed("來源"),
+    Column::fixed("訊息"),
+    Column::new("updated", "更新時間", "ds.updated_at").desc_first(),
+];
 
 pub struct DeviceRow {
     pub id: String,
@@ -313,6 +370,7 @@ struct DetailPage {
     counts: Counts,
     failures: Vec<(String, i64)>,
     filters: Vec<FilterLink>,
+    headers: Vec<sort::Header>,
     devices: Vec<DeviceRow>,
     prev: Option<String>,
     next: Option<String>,
@@ -383,6 +441,8 @@ pub async fn detail(
         _ => "",
     };
     let page = q.page.clamp(0, super::devices::MAX_PAGE);
+    let sort = Sort::parse(&q.sort, &DEVICE_COLS, ("hostname", false));
+    let sort_param = sort.param(&DEVICE_COLS);
     // 等待中＝範圍內但還沒有狀態列
     let rows: Vec<DeviceDbRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT v.id, v.hostname, ds.status, ds.message, ds.updated_at, ds.source, \
@@ -392,7 +452,8 @@ pub async fn detail(
          WHERE d.id = $3 AND CASE $4::text WHEN '' THEN TRUE \
            WHEN 'pending' THEN ds.device_id IS NULL OR ds.revision < d.revision \
            ELSE ds.status = $4 AND ds.revision = d.revision END \
-         ORDER BY lower(v.hostname), v.id LIMIT $5 OFFSET $6"
+         ORDER BY {}, lower(v.hostname), v.id LIMIT $5 OFFSET $6",
+        sort.order_by(&DEVICE_COLS)
     )))
     .bind(s.all_devices())
     .bind(&s.groups)
@@ -403,8 +464,8 @@ pub async fn detail(
     .fetch_all(&st.pool)
     .await?;
     let more = rows.len() as i64 > DEVICE_PAGE;
-    let url = |status: &str, page: i64| {
-        let mut u = format!("/deployments/{id}?page={page}");
+    let url = |status: &str, sort: &str, page: i64| {
+        let mut u = format!("/deployments/{id}?page={page}&sort={}", enc(sort));
         if !status.is_empty() {
             u.push_str(&format!("&status={}", enc(status)));
         }
@@ -421,7 +482,7 @@ pub async fn detail(
     .into_iter()
     .map(|(k, label)| FilterLink {
         label,
-        url: url(k, 0),
+        url: url(k, &sort_param, 0),
         active: k == status,
     })
     .collect();
@@ -465,8 +526,9 @@ pub async fn detail(
                 },
             })
             .collect(),
-        prev: (page > 0).then(|| url(status, page - 1)),
-        next: more.then(|| url(status, page + 1)),
+        prev: (page > 0).then(|| url(status, &sort_param, page - 1)),
+        next: more.then(|| url(status, &sort_param, page + 1)),
+        headers: sort::headers(&DEVICE_COLS, sort, |p| url(status, p, 0)),
     }))
 }
 

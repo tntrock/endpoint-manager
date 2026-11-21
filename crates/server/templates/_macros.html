@@ -64,3 +64,5 @@
   {% else %}<p class="muted">{{ not_ready_hint }}</p>{% endif %}
 </fieldset>
 {% endmacro %}
+
+{% macro sort_head(hs) %}{% for h in hs %}<th{% if h.num %} class="num"{% endif %}{% if !h.aria.is_empty() %} aria-sort="{{ h.aria }}"{% endif %}>{% if let Some(u) = h.url %}<a class="sort" href="{{ u }}">{{ h.label }}{{ h.arrow }}</a>{% else %}{{ h.label }}{% endif %}</th>{% endfor %}{% endmacro %}
