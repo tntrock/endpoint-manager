@@ -69,6 +69,8 @@ jobs:
         run: |
           file target/x86_64-unknown-linux-musl/release/endpoint-agent
           file target/x86_64-unknown-linux-musl/release/endpoint-agent | grep -E 'statically linked|static-pie linked'
+          file target/linux-release/endpoint-sign-*-x86_64-linux | grep -E 'statically linked|static-pie linked'
+          target/linux-release/endpoint-sign-*-x86_64-linux 2>&1 | grep -q 'endpoint-sign keygen'
       - name: deb 安裝
         run: |
           sudo dpkg -i target/linux-release/endpoint-agent_*_amd64.deb

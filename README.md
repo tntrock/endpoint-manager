@@ -500,7 +500,7 @@ Windows 與 Linux 裝置在同一份清單：
 
 #### 1. 產生金鑰（在管理者的電腦）
 
-從 GitHub Release 下載 `endpoint-sign`，然後執行：
+從 GitHub Release 下載 `endpoint-sign`（Windows 用 `endpoint-sign.exe`，Linux 用 `endpoint-sign-<版本>-x86_64-linux`，下載後 `chmod +x`），然後執行：
 
 ```
 endpoint-sign keygen sign-key-1.json     # 輸入兩次密語（至少 12 字元），印出公鑰與金鑰 ID
