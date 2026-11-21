@@ -128,6 +128,8 @@ pub fn web_router(state: AppState) -> Router {
         .route("/ui/status", get(dashboard::status))
         .route("/login", get(login::form).post(login::submit))
         .route("/login/mfa", get(login::mfa_form).post(login::mfa_submit))
+        .route("/login/oidc", get(login::oidc_start))
+        .route("/login/oidc/callback", get(login::oidc_callback))
         .route("/mfa", get(mfa::form))
         .route("/mfa/enable", post(mfa::enable))
         .route("/mfa/disable", post(mfa::disable))
@@ -232,6 +234,11 @@ pub fn web_router(state: AppState) -> Router {
         .route("/accounts/{id}/password", post(accounts::reset_password))
         .route("/accounts/{id}/mfa-reset", post(accounts::reset_mfa))
         .route("/accounts/mfa-required", post(accounts::set_mfa_required))
+        .route(
+            "/accounts/password-login",
+            post(accounts::set_password_login),
+        )
+        .route("/accounts/{id}/oidc-unlink", post(accounts::unlink_oidc))
         .route("/password", get(password::form).post(password::submit))
         .route("/audit", get(audit::page))
         .route("/audit/retention", post(audit::retention))

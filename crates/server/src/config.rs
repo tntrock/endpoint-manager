@@ -30,6 +30,8 @@ pub struct Config {
     pub download_concurrency: usize,
     /// `/metrics` 的 Bearer 權杖（`EM_METRICS_TOKEN`）；None 表示關閉
     pub metrics_token: Option<String>,
+    /// 管理網頁單一登入（`EM_OIDC_*`）；None 表示關閉
+    pub oidc: Option<crate::oidc::OidcConfig>,
 }
 
 impl Config {
@@ -38,7 +40,9 @@ impl Config {
     }
 
     pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> anyhow::Result<Config> {
+        let oidc = crate::oidc::OidcConfig::from_lookup(&get)?;
         Ok(Config {
+            oidc,
             database_url: get("DATABASE_URL").context("DATABASE_URL is required")?,
             ca_dir: get("EM_CA_DIR").unwrap_or_else(|| "./pki".into()).into(),
             agent_listen: get("EM_AGENT_LISTEN")

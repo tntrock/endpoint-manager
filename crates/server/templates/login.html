@@ -8,6 +8,7 @@
     <label class="field">密碼 <input name="password" type="password" autocomplete="current-password" required></label>
     <button class="btn primary">登入</button>
   </form>
+  {% if let Some(label) = sso_label %}<p class="sso"><a class="btn" href="/login/oidc">{{ label }}</a></p>{% endif %}
   <p class="foot">連續失敗多次會暫時鎖定帳號。</p>
 </main>
 {% endblock %}

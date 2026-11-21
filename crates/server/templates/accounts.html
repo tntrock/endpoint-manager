@@ -5,8 +5,16 @@
   <input type="hidden" name="csrf" value="{{ nav.csrf }}">
   <label><input type="checkbox" name="on" value="1" {% if mfa_required %}checked{% endif %}> 所有帳號都必須使用兩步驟驗證</label>
   <button class="btn sm">儲存</button>
-  <span class="help">開啟後，還沒設定的帳號下次登入時必須先完成設定才能使用管理網頁。開啟前請先設定好自己的。</span>
+  <span class="help">開啟後，還沒設定的帳號下次登入時必須先完成設定才能使用管理網頁。開啟前請先設定好自己的。用單一登入時，兩步驟驗證由公司的身分提供者負責。</span>
 </form>
+{% if sso_enabled %}
+<form class="card actions" method="post" action="/accounts/password-login">
+  <input type="hidden" name="csrf" value="{{ nav.csrf }}">
+  <label><input type="checkbox" name="on" value="1" {% if password_platform_only %}checked{% endif %}> 密碼登入只限平台管理員，其他帳號必須用單一登入</label>
+  <button class="btn sm">儲存</button>
+  <span class="help">員工離職時，在公司的身分系統停用帳號即可。平台管理員保留密碼登入，在身分提供者故障時使用。</span>
+</form>
+{% endif %}
 <fieldset><legend>建立帳號</legend>
 <form method="post" action="/accounts">
   <input type="hidden" name="csrf" value="{{ nav.csrf }}">
@@ -20,10 +28,10 @@
 </form>
 </fieldset>
 <table>
-  <tr><th>帳號</th><th>角色</th><th>群組</th><th>狀態</th><th>兩步驟驗證</th><th>建立時間</th></tr>
+  <tr><th>帳號</th><th>角色</th><th>群組</th><th>狀態</th><th>兩步驟驗證</th>{% if sso_enabled %}<th>單一登入</th>{% endif %}<th>建立時間</th></tr>
   {% for a in rows %}
   <tr><td><a href="/accounts/{{ a.id }}">{{ a.username }}</a></td><td>{{ a.role }}</td><td>{{ a.groups }}</td>
-    <td><span class="tag {{ a.state_class }}">{{ a.state }}</span></td><td>{% if a.mfa %}<span class="tag ok">已啟用</span>{% else %}<span class="tag">未啟用</span>{% endif %}</td><td><span class="num">{{ a.created_at }}</span></td></tr>
+    <td><span class="tag {{ a.state_class }}">{{ a.state }}</span></td><td>{% if a.mfa %}<span class="tag ok">已啟用</span>{% else %}<span class="tag">未啟用</span>{% endif %}</td>{% if sso_enabled %}<td>{% if a.sso %}<span class="tag ok">已綁定</span>{% else %}<span class="faint">—</span>{% endif %}</td>{% endif %}<td><span class="num">{{ a.created_at }}</span></td></tr>
   {% endfor %}
 </table>
 {% endblock %}

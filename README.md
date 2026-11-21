@@ -108,6 +108,7 @@ flowchart LR
 | | `/v1/cache/…`（enroll、checkin、authorize、renew、packages） | 快取主機 |
 | 管理網頁（443） | `/`、`/devices`、`/compliance`……；靜態檔 `/static/*`；狀態數字 `/ui/status` | 瀏覽器 |
 | | `GET /metrics` | Prometheus（需要 `EM_METRICS_TOKEN`，沒設定時回 404） |
+| | `GET /login/oidc`、`GET /login/oidc/callback` | 瀏覽器（單一登入，沒設定時回 404） |
 
 ## 憑證與信任
 
@@ -185,6 +186,7 @@ Volume：
 | `EM_DISPLAY_UTC_OFFSET` | 8 | 管理網頁顯示時間用的時區（小時，-12～14） |
 | `EM_WEBHOOK_SECRET` | （空） | 合規通知 Webhook 的 HMAC 簽章密鑰 |
 | `EM_METRICS_TOKEN` | （空） | `/metrics` 的 Bearer 權杖，至少 32 字元；沒設定時不提供監控指標 |
+| `EM_OIDC_ISSUER` 等 | （空） | 單一登入，見「單一登入（OIDC）」 |
 
 ### 3. 安裝 Agent
 
@@ -361,6 +363,31 @@ docker run -d --restart unless-stopped -p 8443:8443 -v endpoint-cache-data:/data
   ```
 
 需要伺服器 0.9.0 以上。
+
+#### 單一登入（OIDC）
+
+可以用公司的身分提供者登入，例如 Microsoft Entra ID、Google Workspace、Keycloak、Okta 等支援 OpenID Connect 的系統。員工離職時，在公司的身分系統停用帳號，就不能再登入管理網頁。
+
+1. **在身分提供者註冊應用程式**（Web 類型，機密用戶端），重新導向網址填 `https://<管理網頁>/login/oidc/callback`。
+2. **設定伺服器的環境變數**後重新啟動：
+
+   | 環境變數 | 說明 |
+   |---|---|
+   | `EM_OIDC_ISSUER` | Issuer，例如 Entra ID 是 `https://login.microsoftonline.com/<租戶 ID>/v2.0` |
+   | `EM_OIDC_CLIENT_ID`、`EM_OIDC_CLIENT_SECRET` | 註冊的應用程式 |
+   | `EM_OIDC_REDIRECT_URL` | 與第 1 步相同的網址 |
+   | `EM_OIDC_USERNAME_CLAIM` | 用哪個欄位對應帳號名稱，預設 `email`。Entra ID 建議用 `preferred_username` |
+   | `EM_OIDC_LABEL` | 登入頁按鈕的文字，預設「使用公司帳號登入」 |
+
+3. **建立帳號**：在「帳號」頁建立名稱與公司帳號相同的帳號，例如 `alice@corp.example`，並指定角色與群組。單一登入**不會自動建立帳號**。
+4. 使用者在登入頁按「使用公司帳號登入」。第一次登入時，帳號會和這個公司帳號綁定，之後只認綁定的公司帳號，即使對方改了 email 也一樣。
+
+- **只用單一登入**：「帳號」頁可以設定「密碼登入只限平台管理員」。開啟後，其他帳號一定要走單一登入；平台管理員保留密碼登入，在身分提供者故障時使用。
+- **兩步驟驗證**由身分提供者負責：單一登入不再要求本系統的驗證碼，「所有帳號都必須使用兩步驟驗證」也不套用在單一登入。請在身分提供者要求 MFA。
+- **員工改用新的公司帳號**：在帳號頁「解除綁定」，下次單一登入時會綁定新的公司帳號。
+- 伺服器要能連到身分提供者（HTTPS 443），使用系統信任的根憑證。
+
+需要伺服器 0.10.0 以上。
 
 Windows 與 Linux 裝置在同一份清單：
 
