@@ -8,7 +8,7 @@
 {% call m::updates_tabs("policies") %}{% endcall %}
 {% if rows.is_empty() %}{% call m::empty("還沒有更新原則", "沒有原則的群組，Agent 不會改動 Windows Update 設定") %}{% endcall %}{% else %}
 <table>
-  <tr><th>名稱</th><th>群組</th><th>暫停</th><th class="num">對象</th><th class="num">已套用</th><th class="num">衝突</th><th class="num">錯誤</th><th class="num">尚未回報</th></tr>
+  <tr>{% call m::sort_head(headers) %}{% endcall %}</tr>
   {% for r in rows %}
   <tr>
     <td><a href="/updates/{{ r.id }}">{{ r.name }}</a></td>

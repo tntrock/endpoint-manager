@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 use super::auth::{AdminSession, Nav, Session, check_csrf, platform};
 use super::devices::{SelectOption, action_error, db_error};
+use super::sort::{self, Column, Sort};
 use super::{enc, fmt_time, not_found, render};
 use crate::AppState;
 use crate::error::AppError;
@@ -110,17 +111,42 @@ impl Counts {
 
 type CountRow = (i64, String, String, i32, i64, i64, i64, i64);
 
-fn counts_sql(filter: &str) -> String {
+/// `order` 是 `ORDER BY` 的內容（只由 [`LIST_COLS`] 白名單產生），可以用子查詢的欄位別名
+fn counts_sql(filter: &str, order: &str) -> String {
     format!(
-        "SELECT p.id, p.name, p.settings::text, p.revision, count(v.id), \
-           count(*) FILTER (WHERE {APPLIED}), count(*) FILTER (WHERE {CONFLICT}), \
-           count(*) FILTER (WHERE {ERROR}) \
+        "SELECT * FROM (SELECT p.id, p.name, p.settings::text, p.revision, count(v.id) AS targeted, \
+           count(*) FILTER (WHERE {APPLIED}) AS applied, count(*) FILTER (WHERE {CONFLICT}) AS conflict, \
+           count(*) FILTER (WHERE {ERROR}) AS error \
          FROM update_policies p \
          LEFT JOIN devices v ON {TARGET} \
          LEFT JOIN update_policy_status s ON s.device_id = v.id \
-         {filter} GROUP BY p.id ORDER BY lower(p.name), p.id"
+         {filter} GROUP BY p.id) t ORDER BY {order}, lower(t.name), t.id"
     )
 }
+
+/// 原則清單的欄位（排序白名單）
+const LIST_COLS: [Column; 8] = [
+    Column::new("name", "名稱", "lower(t.name)"),
+    Column::fixed("群組"),
+    Column::fixed("暫停"),
+    Column::new("targeted", "對象", "t.targeted")
+        .desc_first()
+        .num(),
+    Column::new("applied", "已套用", "t.applied")
+        .desc_first()
+        .num(),
+    Column::new("conflict", "衝突", "t.conflict")
+        .desc_first()
+        .num(),
+    Column::new("error", "錯誤", "t.error").desc_first().num(),
+    Column::new(
+        "pending",
+        "尚未回報",
+        "t.targeted - t.applied - t.conflict - t.error",
+    )
+    .desc_first()
+    .num(),
+];
 
 fn counts(r: &CountRow) -> Counts {
     Counts {
@@ -165,21 +191,34 @@ pub struct ListRow {
 struct ListPage {
     nav: Nav,
     rows: Vec<ListRow>,
+    headers: Vec<sort::Header>,
+}
+
+#[derive(Deserialize)]
+pub struct ListQuery {
+    #[serde(default)]
+    sort: String,
 }
 
 pub async fn list(
     State(st): State<AppState>,
     AdminSession(s): AdminSession,
+    Query(q): Query<ListQuery>,
 ) -> Result<Response, AppError> {
-    let rows: Vec<CountRow> = sqlx::query_as(sqlx::AssertSqlSafe(counts_sql("")))
-        .bind(s.all_devices())
-        .bind(&s.groups)
-        .fetch_all(&st.pool)
-        .await?;
+    let sort = Sort::parse(&q.sort, &LIST_COLS, ("name", false));
+    let rows: Vec<CountRow> = sqlx::query_as(sqlx::AssertSqlSafe(counts_sql(
+        "",
+        &sort.order_by(&LIST_COLS),
+    )))
+    .bind(s.all_devices())
+    .bind(&s.groups)
+    .fetch_all(&st.pool)
+    .await?;
     let mut names = group_names(&st, &s).await?;
     let today = crate::compliance::today(time::OffsetDateTime::now_utc());
     Ok(render(&ListPage {
         nav: Nav::new(&s, "updates"),
+        headers: sort::headers(&LIST_COLS, sort, |p| format!("/updates?sort={}", enc(p))),
         rows: rows
             .iter()
             .map(|r| ListRow {
@@ -461,7 +500,25 @@ pub struct DetailQuery {
     state: String,
     #[serde(default)]
     page: i64,
+    #[serde(default)]
+    sort: String,
 }
+
+/// 詳情頁裝置表的欄位（排序白名單）。狀態依「錯誤、衝突、尚未回報、已套用」排，
+/// 條件與 APPLIED／CONFLICT／ERROR 相同（const 不能串接，所以寫開）
+const DEVICE_COLS: [Column; 4] = [
+    Column::new("hostname", "主機名稱", "lower(v.hostname)"),
+    Column::new(
+        "state",
+        "狀態",
+        "CASE WHEN s.state = 'error' AND (s.policy_id IS NULL OR s.policy_id = p.id) THEN 0 \
+         WHEN s.state = 'conflict' AND s.policy_id = p.id AND s.revision = p.revision THEN 1 \
+         WHEN s.state = 'applied' AND s.policy_id = p.id AND s.revision = p.revision THEN 3 \
+         ELSE 2 END",
+    ),
+    Column::fixed("說明"),
+    Column::new("updated", "回報時間", "s.updated_at").desc_first(),
+];
 
 pub struct DeviceRow {
     pub id: String,
@@ -490,6 +547,7 @@ struct DetailPage {
     feature_paused: bool,
     filters: Vec<FilterLink>,
     devices: Vec<DeviceRow>,
+    headers: Vec<sort::Header>,
     prev: Option<String>,
     next: Option<String>,
 }
@@ -531,12 +589,13 @@ pub async fn detail(
     let Some((name, set, revision)) = load(&st, id).await? else {
         return Ok(not_found());
     };
-    let row: Option<CountRow> = sqlx::query_as(sqlx::AssertSqlSafe(counts_sql("WHERE p.id = $3")))
-        .bind(s.all_devices())
-        .bind(&s.groups)
-        .bind(id)
-        .fetch_optional(&st.pool)
-        .await?;
+    let row: Option<CountRow> =
+        sqlx::query_as(sqlx::AssertSqlSafe(counts_sql("WHERE p.id = $3", "t.id")))
+            .bind(s.all_devices())
+            .bind(&s.groups)
+            .bind(id)
+            .fetch_optional(&st.pool)
+            .await?;
     let c = row.as_ref().map(counts).unwrap_or(Counts {
         targeted: 0,
         applied: 0,
@@ -548,6 +607,8 @@ pub async fn detail(
         _ => "",
     };
     let page = q.page.clamp(0, super::devices::MAX_PAGE);
+    let sort = Sort::parse(&q.sort, &DEVICE_COLS, ("hostname", false));
+    let sort_param = sort.param(&DEVICE_COLS);
     let rows: Vec<DeviceDbRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT v.id, v.hostname, s.state, s.policy_id, s.revision, s.detail, s.updated_at \
          FROM update_policies p JOIN devices v ON {TARGET} \
@@ -557,7 +618,8 @@ pub async fn detail(
            WHEN 'conflict' THEN COALESCE({CONFLICT}, false) \
            WHEN 'error' THEN COALESCE({ERROR}, false) \
            ELSE NOT COALESCE({APPLIED} OR {CONFLICT} OR {ERROR}, false) END \
-         ORDER BY lower(v.hostname), v.id LIMIT $5 OFFSET $6"
+         ORDER BY {}, lower(v.hostname), v.id LIMIT $5 OFFSET $6",
+        sort.order_by(&DEVICE_COLS)
     )))
     .bind(s.all_devices())
     .bind(&s.groups)
@@ -568,8 +630,8 @@ pub async fn detail(
     .fetch_all(&st.pool)
     .await?;
     let more = rows.len() as i64 > DEVICE_PAGE;
-    let url = |state: &str, page: i64| {
-        let mut u = format!("/updates/{id}?page={page}");
+    let url = |state: &str, sort: &str, page: i64| {
+        let mut u = format!("/updates/{id}?page={page}&sort={}", enc(sort));
         if !state.is_empty() {
             u.push_str(&format!("&state={}", enc(state)));
         }
@@ -585,7 +647,7 @@ pub async fn detail(
     .into_iter()
     .map(|(k, label)| FilterLink {
         label,
-        url: url(k, 0),
+        url: url(k, &sort_param, 0),
         active: k == state,
     })
     .collect();
@@ -623,8 +685,9 @@ pub async fn detail(
                 updated: fmt_time(&st, at),
             })
             .collect(),
-        prev: (page > 0).then(|| url(state, page - 1)),
-        next: more.then(|| url(state, page + 1)),
+        headers: sort::headers(&DEVICE_COLS, sort, |p| url(state, p, 0)),
+        prev: (page > 0).then(|| url(state, &sort_param, page - 1)),
+        next: more.then(|| url(state, &sort_param, page + 1)),
     }))
 }
 

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_macros.html" as m %}
 {% block content %}
 <div class="page-head">
   <div><div class="crumb"><a href="/updates">Windows Update</a> ／ {{ name }}</div><h1>{{ name }}</h1>{% if !nav.platform %}<div class="sub">只顯示你管理範圍內的裝置。</div>{% endif %}</div>
@@ -20,7 +21,7 @@
 </table>
 <nav class="chips" aria-label="篩選">{% for f in filters %}{% if f.active %}<strong>{{ f.label }}</strong>{% else %}<a href="{{ f.url }}">{{ f.label }}</a>{% endif %}{% endfor %}</nav>
 <table>
-  <tr><th>主機名稱</th><th>狀態</th><th>說明</th><th>回報時間</th></tr>
+  <tr>{% call m::sort_head(headers) %}{% endcall %}</tr>
   {% for d in devices %}
   <tr><td><a href="/devices/{{ d.id }}">{{ d.hostname }}</a><span class="faint">{{ d.id }}</span></td><td>{{ d.state }}</td><td>{{ d.detail }}</td><td><span class="num">{{ d.updated }}</span></td></tr>
   {% endfor %}
