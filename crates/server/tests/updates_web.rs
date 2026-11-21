@@ -614,3 +614,98 @@ async fn linux_devices_not_counted(pool: PgPool) {
         "{html}"
     );
 }
+
+/// `names` 在表格裡出現的先後
+fn order(html: &str, names: &[&str]) -> Vec<usize> {
+    let html = &html[html.rfind("<table").expect("table")..];
+    let mut pos: Vec<(usize, usize)> = names
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (html.find(n).unwrap_or_else(|| panic!("{n}: {html}")), i))
+        .collect();
+    pos.sort();
+    pos.into_iter().map(|p| p.1).collect()
+}
+
+#[sqlx::test(migrations = false)]
+async fn list_and_detail_sort(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_group_token("台北", 3).await;
+    let a1 = s.enroll_ok(&tok, None, None).await;
+    let a2 = s.enroll_ok(&tok, None, None).await;
+    let a3 = s.enroll_ok(&tok, None, None).await;
+    let ks = s
+        .enroll_ok(&s.create_group_token("高雄", 1).await, None, None)
+        .await;
+    for (a, name) in [
+        (&a1, "host-a"),
+        (&a2, "host-b"),
+        (&a3, "host-c"),
+        (&ks, "host-k"),
+    ] {
+        sqlx::query("UPDATE devices SET hostname = $2 WHERE id = $1")
+            .bind(a.device_id)
+            .bind(name)
+            .execute(&s.pool)
+            .await
+            .unwrap();
+    }
+    let big = admin::create_policy(
+        &s.pool,
+        &PolicyInput {
+            name: "policy-b".into(),
+            settings: PolicySettings::default(),
+            groups: vec![s.group_id("台北").await],
+        },
+        "admin",
+    )
+    .await
+    .unwrap();
+    admin::create_policy(
+        &s.pool,
+        &PolicyInput {
+            name: "policy-a".into(),
+            settings: PolicySettings::default(),
+            groups: vec![s.group_id("高雄").await],
+        },
+        "admin",
+    )
+    .await
+    .unwrap();
+    put_status(&s, &a1, status(Some(big), Some(1), "applied")).await;
+    put_status(&s, &a3, status(None, None, "error")).await;
+
+    let c = s.admin_client().await;
+    // 清單：預設依名稱，可依台數遞減；表頭標示目前方向
+    let (_, html) = s.page(&c, "/updates").await;
+    assert_eq!(order(&html, &["policy-a", "policy-b"]), [0, 1]);
+    assert!(html.contains(r#"href="/updates?sort=-targeted""#), "{html}");
+    let (_, html) = s.page(&c, "/updates?sort=-targeted").await;
+    assert_eq!(order(&html, &["policy-b", "policy-a"]), [0, 1]);
+    assert!(html.contains(r#"aria-sort="descending""#), "{html}");
+    let (_, html) = s.page(&c, "/updates?sort=pending").await;
+    assert_eq!(order(&html, &["policy-a", "policy-b"]), [0, 1]);
+    let (st, html) = s.page(&c, "/updates?sort=bogus;--").await;
+    assert_eq!(st, 200);
+    assert_eq!(order(&html, &["policy-a", "policy-b"]), [0, 1]);
+
+    // 詳情：狀態依錯誤、尚未回報、已套用；主機名稱遞減；篩選與翻頁保留排序
+    let loc = format!("/updates/{big}");
+    let (_, html) = s.page(&c, &format!("{loc}?sort=state")).await;
+    assert_eq!(order(&html, &["host-c", "host-b", "host-a"]), [0, 1, 2]);
+    assert!(
+        html.contains(&format!(
+            "/updates/{big}?page=0&amp;sort=state&amp;state=error"
+        )) || html.contains(&format!(
+            "/updates/{big}?page=0&#38;sort=state&#38;state=error"
+        )),
+        "{html}"
+    );
+    let (_, html) = s.page(&c, &format!("{loc}?sort=-hostname")).await;
+    assert_eq!(order(&html, &["host-c", "host-b", "host-a"]), [0, 1, 2]);
+    let (_, html) = s.page(&c, &format!("{loc}?sort=-state")).await;
+    assert_eq!(order(&html, &["host-a", "host-b", "host-c"]), [0, 1, 2]);
+    let (_, html) = s.page(&c, &loc).await;
+    assert_eq!(order(&html, &["host-a", "host-b", "host-c"]), [0, 1, 2]);
+    assert!(!html.contains("host-k"), "{html}");
+}

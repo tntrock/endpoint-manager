@@ -28,6 +28,11 @@ impl Column {
         self
     }
 
+    pub const fn num(mut self) -> Column {
+        self.num = true;
+        self
+    }
+
     pub const fn fixed(label: &'static str) -> Column {
         Column::new("", label, "")
     }
@@ -140,6 +145,7 @@ mod tests {
         let name = std::hint::black_box("名稱");
         let c = Column::new("k", name, "x.k").desc_first();
         assert!(c.desc_first && !c.num && c.label == "名稱");
+        assert!(Column::new("n", name, "x.n").num().num);
         let f = Column::fixed(name);
         assert!(f.sql.is_empty() && f.key.is_empty());
     }
