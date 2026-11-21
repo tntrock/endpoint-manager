@@ -288,3 +288,76 @@ async fn timeline_pages_without_gaps(pool: PgPool) {
         .await;
     assert_eq!(st, 400);
 }
+
+#[sqlx::test(migrations = false)]
+async fn status_variants(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(3).await;
+    let dup = s.enroll_ok(&tok, None, None).await.device_id;
+    let linux = s.enroll_ok(&tok, None, None).await.device_id;
+    exec(
+        &s,
+        "UPDATE devices SET status = 'duplicate_suspect', last_seen_at = now() WHERE id = $1",
+        dup,
+    )
+    .await;
+    exec(
+        &s,
+        "INSERT INTO update_policy_status (device_id, state, detail, reboot_pending) \
+         VALUES ($1, 'conflict', '群組原則覆寫了設定', false)",
+        dup,
+    )
+    .await;
+    exec(
+        &s,
+        "INSERT INTO packages (name, version, kind, file_name, size, sha256, install_args, detect_name, created_by) \
+         SELECT 'App', '1', 'exe', 'a.exe', 10, repeat('a', 64), '/S', 'App*', 'admin' WHERE $1::uuid IS NOT NULL",
+        dup,
+    )
+    .await;
+    exec(
+        &s,
+        "WITH dep AS (INSERT INTO deployments (name, package_id, action, stage, max_failure_pct, min_samples, created_by) \
+         SELECT 'OK App', max(id), 'install', 'all', 10, 20, 'admin' FROM packages RETURNING id) \
+         INSERT INTO deployment_status (deployment_id, device_id, status, revision) \
+         SELECT dep.id, $1, 'succeeded', 1 FROM dep",
+        dup,
+    )
+    .await;
+    exec(
+        &s,
+        "UPDATE devices SET os_family = 'linux', agent_version = '0.10.0', last_seen_at = now() WHERE id = $1",
+        linux,
+    )
+    .await;
+    let admin = s.admin_client().await;
+    let (_, html) = s.page(&admin, &format!("/devices/{dup}")).await;
+    for needle in [
+        "<span class=\"t\">疑似重複</span>",
+        "更新原則衝突",
+        "群組原則覆寫了設定",
+        r#"<div class="stat-value">1 / 1</div><div class="stat-sub">全部成功</div>"#,
+        "最後修補日期・原則衝突",
+    ] {
+        assert!(html.contains(needle), "{needle}: {html}");
+    }
+    let (_, html) = s.page(&admin, &format!("/devices/{linux}")).await;
+    assert!(
+        html.contains(r#"<div class="stat-value">0.10.0</div>"#),
+        "{html}"
+    );
+
+    // 待核准的重新註冊
+    let old = s
+        .enroll_ok(&tok, Some("UUID-P"), Some("SN-P"))
+        .await
+        .device_id;
+    let tok2 = s.create_token(1).await;
+    let pending = s
+        .enroll_ok(&tok2, Some("UUID-P"), Some("SN-P"))
+        .await
+        .device_id;
+    assert_ne!(old, pending);
+    let (_, html) = s.page(&admin, &format!("/devices/{pending}")).await;
+    assert!(html.contains("待核准的重新註冊"), "{html}");
+}
