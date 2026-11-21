@@ -1,15 +1,17 @@
 //! 稽核記錄頁（平台管理員）。
 
 use askama::Template;
-use axum::extract::{Query, State};
-use axum::response::Response;
+use axum::extract::{Query, RawForm, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Redirect, Response};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
-use super::auth::{AdminSession, Nav};
+use super::auth::{AdminSession, Nav, Session, check_csrf, platform};
 use super::{fmt_time, forbidden, render};
 use crate::AppState;
 use crate::error::AppError;
+use crate::retention::{self, MAX_DAYS, MIN_AUDIT_DAYS, MIN_COMMAND_DAYS, Retention};
 
 const PAGE_SIZE: i64 = 50;
 
@@ -41,6 +43,8 @@ fn label(action: &str) -> &str {
         "exemption_expire" => "豁免到期",
         "compliance_export" => "匯出違規清單",
         "notify_settings" => "修改通知設定",
+        "setting_retention" => "修改資料保留",
+        "retention_purge" => "清除過期資料",
         other => other,
     }
 }
@@ -49,6 +53,8 @@ fn label(action: &str) -> &str {
 pub struct PageQuery {
     #[serde(default)]
     page: i64,
+    #[serde(default)]
+    saved: bool,
 }
 
 pub struct AuditRow {
@@ -66,6 +72,14 @@ struct AuditPage {
     rows: Vec<AuditRow>,
     page: i64,
     has_next: bool,
+    /// 表單上的保留天數（驗證失敗時是使用者輸入的原值）
+    command_days: String,
+    audit_days: String,
+    error: Option<String>,
+    saved: bool,
+    min_command: i32,
+    min_audit: i32,
+    max_days: i32,
 }
 
 type Row = (DateTime<Utc>, String, String, Option<String>, String);
@@ -78,7 +92,20 @@ pub async fn page(
     if !s.all_devices() {
         return Ok(forbidden());
     }
-    let page = q.page.clamp(0, super::devices::MAX_PAGE);
+    let r = retention::load(&st.pool).await?;
+    let form = (r.command_days.to_string(), r.audit_days.to_string());
+    Ok(render(&build(&st, &s, q.page, form, None, q.saved).await?))
+}
+
+async fn build(
+    st: &AppState,
+    s: &Session,
+    page: i64,
+    (command_days, audit_days): (String, String),
+    error: Option<String>,
+    saved: bool,
+) -> Result<AuditPage, AppError> {
+    let page = page.clamp(0, super::devices::MAX_PAGE);
     let mut rows: Vec<Row> = sqlx::query_as(
         "SELECT at, actor, action, target, detail::text FROM audit_log \
          ORDER BY id DESC LIMIT $1 OFFSET $2",
@@ -89,12 +116,12 @@ pub async fn page(
     .await?;
     let has_next = rows.len() as i64 > PAGE_SIZE;
     rows.truncate(PAGE_SIZE as usize);
-    Ok(render(&AuditPage {
-        nav: Nav::new(&s, "audit"),
+    Ok(AuditPage {
+        nav: Nav::new(s, "audit"),
         rows: rows
             .into_iter()
             .map(|(at, actor, action, target, detail)| AuditRow {
-                at: fmt_time(&st, Some(at)),
+                at: fmt_time(st, Some(at)),
                 actor,
                 action: label(&action).to_string(),
                 target: target.unwrap_or_default(),
@@ -107,5 +134,60 @@ pub async fn page(
             .collect(),
         page,
         has_next,
-    }))
+        command_days,
+        audit_days,
+        error,
+        saved,
+        min_command: MIN_COMMAND_DAYS,
+        min_audit: MIN_AUDIT_DAYS,
+        max_days: MAX_DAYS,
+    })
+}
+
+/// 修改資料保留天數（平台管理員）
+pub async fn retention(
+    State(st): State<AppState>,
+    AdminSession(s): AdminSession,
+    RawForm(raw): RawForm,
+) -> Result<Response, Response> {
+    let (mut csrf, mut command_days, mut audit_days) =
+        (String::new(), String::new(), String::new());
+    for (k, v) in form_urlencoded::parse(&raw) {
+        match k.as_ref() {
+            "csrf" => csrf = v.into_owned(),
+            "command_days" => command_days = v.trim().to_string(),
+            "audit_days" => audit_days = v.trim().to_string(),
+            _ => {}
+        }
+    }
+    check_csrf(&s, &csrf)?;
+    platform(&s)?;
+    let parsed = (command_days.parse::<i32>(), audit_days.parse::<i32>());
+    let error = match parsed {
+        (Ok(c), _) if !retention::valid(c, MIN_COMMAND_DAYS) => Some(format!(
+            "遠端指令的保留天數須為 0（永久保留）或 {MIN_COMMAND_DAYS}–{MAX_DAYS}"
+        )),
+        (_, Ok(a)) if !retention::valid(a, MIN_AUDIT_DAYS) => Some(format!(
+            "稽核記錄的保留天數須為 0（永久保留）或 {MIN_AUDIT_DAYS}–{MAX_DAYS}"
+        )),
+        (Ok(_), Ok(_)) => None,
+        _ => Some("保留天數須為整數".to_string()),
+    };
+    if let Some(e) = error {
+        let page = build(&st, &s, 0, (command_days, audit_days), Some(e), false)
+            .await
+            .map_err(IntoResponse::into_response)?;
+        return Err((StatusCode::UNPROCESSABLE_ENTITY, render(&page)).into_response());
+    }
+    let new = Retention {
+        command_days: parsed.0.unwrap_or_default(),
+        audit_days: parsed.1.unwrap_or_default(),
+    };
+    retention::save(&st.pool, new, &super::commands::actor(&s))
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %format!("{e:#}"), "saving retention failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "伺服器錯誤，請稍後再試").into_response()
+        })?;
+    Ok(Redirect::to("/audit?saved=true").into_response())
 }

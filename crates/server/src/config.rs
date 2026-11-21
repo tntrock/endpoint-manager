@@ -28,6 +28,8 @@ pub struct Config {
     pub package_dir: PathBuf,
     /// 同時下載套件的上限（`EM_DOWNLOAD_CONCURRENCY`，預設 50）
     pub download_concurrency: usize,
+    /// `/metrics` 的 Bearer 權杖（`EM_METRICS_TOKEN`）；None 表示關閉
+    pub metrics_token: Option<String>,
 }
 
 impl Config {
@@ -89,6 +91,18 @@ impl Config {
                 anyhow::ensure!(n >= 1, "EM_DOWNLOAD_CONCURRENCY must be >= 1");
                 n
             },
+            metrics_token: match get("EM_METRICS_TOKEN").map(|t| t.trim().to_string()) {
+                Some(t) if t.is_empty() => None,
+                Some(t) => {
+                    anyhow::ensure!(
+                        t.chars().count() >= crate::metrics::MIN_TOKEN_LEN,
+                        "EM_METRICS_TOKEN must be at least {} characters",
+                        crate::metrics::MIN_TOKEN_LEN
+                    );
+                    Some(t)
+                }
+                None => None,
+            },
         })
     }
 }
@@ -145,6 +159,24 @@ mod tests {
             Some(PathBuf::from("/agent/endpoint-agent.deb"))
         );
         assert_eq!(c.agent_rpm, None, "空字串視為未設定");
+    }
+
+    #[test]
+    fn metrics_token_env() {
+        let with = |v: &str| {
+            let v = v.to_string();
+            Config::from_lookup(move |k| match k {
+                "DATABASE_URL" => Some("postgres://x".into()),
+                "EM_METRICS_TOKEN" => Some(v.clone()),
+                _ => None,
+            })
+        };
+        let none = Config::from_lookup(|k| (k == "DATABASE_URL").then(|| "postgres://x".into()));
+        assert_eq!(none.unwrap().metrics_token, None);
+        assert_eq!(with("").unwrap().metrics_token, None, "空字串視為未設定");
+        assert!(with("too-short").is_err());
+        let t = "0123456789abcdef0123456789abcdef";
+        assert_eq!(with(t).unwrap().metrics_token.as_deref(), Some(t));
     }
 
     #[test]

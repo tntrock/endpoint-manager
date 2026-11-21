@@ -107,6 +107,7 @@ flowchart LR
 | | `GET /v1/packages/{id}/content` | Agent 向中央下載套件 |
 | | `/v1/cache/…`（enroll、checkin、authorize、renew、packages） | 快取主機 |
 | 管理網頁（443） | `/`、`/devices`、`/compliance`……；靜態檔 `/static/*`；狀態數字 `/ui/status` | 瀏覽器 |
+| | `GET /metrics` | Prometheus（需要 `EM_METRICS_TOKEN`，沒設定時回 404） |
 
 ## 憑證與信任
 
@@ -183,6 +184,7 @@ Volume：
 | `EM_RECOMPUTE_CONCURRENCY` | 4（最高 16） | 合規規則變更後全量重算時，同時處理的裝置數 |
 | `EM_DISPLAY_UTC_OFFSET` | 8 | 管理網頁顯示時間用的時區（小時，-12～14） |
 | `EM_WEBHOOK_SECRET` | （空） | 合規通知 Webhook 的 HMAC 簽章密鑰 |
+| `EM_METRICS_TOKEN` | （空） | `/metrics` 的 Bearer 權杖，至少 32 字元；沒設定時不提供監控指標 |
 
 ### 3. 安裝 Agent
 
@@ -566,6 +568,65 @@ endpoint-sign keygen sign-key-2.json     # 第二把：離線備援
 伺服器仍然決定「哪些電腦執行哪個已簽章的內容」，所以只對**可以安全重複執行**的內容簽章。
 
 需要伺服器與 Agent 都在 0.9.0 以上。
+
+### 監控指標（Prometheus）
+
+設定 `EM_METRICS_TOKEN`（至少 32 字元的隨機字串，例如 `openssl rand -hex 32`）後，管理網頁的連接埠會提供 `GET /metrics`：
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: endpoint-manager
+    scheme: https
+    authorization:
+      credentials_file: /etc/prometheus/em-metrics-token
+    tls_config:
+      ca_file: /etc/prometheus/em-root.pem   # 伺服器的根憑證 root.pem
+    static_configs:
+      - targets: ["em.example.com:443"]
+```
+
+- 只有統計數字，不含主機名稱、帳號等個別資料。不需要登入，也不受兩步驟驗證影響。
+- 資料庫相關的數字每 15 秒更新一次，建議收集間隔 30 秒以上。
+
+| 指標 | 說明 |
+|---|---|
+| `em_devices{os_family,status}` | 裝置數 |
+| `em_devices_online{os_family}` | 在線的使用中裝置（最近 3 個報到週期內有報到） |
+| `em_devices_violating` | 有合規違規的裝置數 |
+| `em_command_targets_open{status}` | 尚未完成的指令目標 |
+| `em_deployments{stage}`、`em_caches{status}`、`em_caches_stale` | 派送數、快取數，以及超過 5 分鐘沒報到的快取數 |
+| `em_http_requests_total`、`em_http_request_duration_seconds` | 依連接埠（`agent`／`web`）與路由統計的請求數與處理時間 |
+| `em_heartbeat_buffered`、`em_db_pool_connections` | 尚未寫入的報到數、資料庫連線數 |
+| `em_table_rows_estimate{table}`、`em_database_size_bytes` | 主要資料表的估計列數、資料庫大小 |
+| `em_retention_deleted_total{kind}`、`em_retention_last_success_timestamp_seconds` | 資料保留清除的列數、最近一次成功的時間 |
+| `em_metrics_db_up` | 這次收集時資料庫查詢是否成功 |
+
+告警範例：
+
+```yaml
+- alert: EndpointsOffline
+  expr: sum(em_devices_online) < 0.8 * sum(em_devices{status="active"})
+  for: 15m
+- alert: CheckinSlow
+  expr: histogram_quantile(0.95, sum by (le) (rate(em_http_request_duration_seconds_bucket{route="/v1/checkin"}[5m]))) > 1
+  for: 10m
+- alert: CacheDown
+  expr: em_caches_stale > 0
+  for: 10m
+```
+
+### 資料保留
+
+平台管理員在「稽核記錄」頁的「資料保留」區塊設定，伺服器每小時清除一次：
+
+| 資料 | 預設 | 可設定 |
+|---|---|---|
+| 遠端指令，以及每台的結果與輸出 | 180 天 | 0（永久保留）或 30–3650 天。只清除已經結束的指令 |
+| 稽核記錄 | 永久保留 | 0（永久保留）或 365–3650 天 |
+
+- 每次清除都會在稽核記錄留下一筆「清除過期資料」，記錄刪除的筆數。
+- 盤點變更記錄固定保留 12 個月。合規違規歷程預設保留 365 天（設定 `violation_history_days`）。
 
 ## 開發
 

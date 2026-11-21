@@ -1,6 +1,16 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="page-head"><div><h1>稽核記錄</h1><div class="sub">管理操作的記錄，新的在前</div></div></div>
+{% if saved %}<div class="notice ok" role="status">資料保留設定已儲存。</div>{% endif %}
+{% if let Some(e) = error %}<div class="notice error" role="alert">{{ e }}</div>{% endif %}
+<form class="card actions" method="post" action="/audit/retention" aria-label="資料保留">
+  <input type="hidden" name="csrf" value="{{ nav.csrf }}">
+  <strong>資料保留</strong>
+  <label>遠端指令與結果 <input class="num" type="number" name="command_days" value="{{ command_days }}" min="0" max="{{ max_days }}" required> 天</label>
+  <label>稽核記錄 <input class="num" type="number" name="audit_days" value="{{ audit_days }}" min="0" max="{{ max_days }}" required> 天</label>
+  <button class="btn sm">儲存</button>
+  <span class="help">0 表示永久保留。遠端指令可設 {{ min_command }}–{{ max_days }} 天，只清除已結束的指令；稽核記錄可設 {{ min_audit }}–{{ max_days }} 天。每小時清除一次。</span>
+</form>
 <table>
   <tr><th>時間</th><th>操作者</th><th>動作</th><th>對象</th><th>細節</th></tr>
   {% for r in rows %}<tr><td><span class="num">{{ r.at }}</span></td><td>{{ r.actor }}</td><td>{{ r.action }}</td><td>{{ r.target }}</td><td class="muted">{{ r.detail }}</td></tr>{% endfor %}

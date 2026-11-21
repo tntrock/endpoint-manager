@@ -9,6 +9,9 @@ use sqlx::PgPool;
 use tokio::net::TcpListener;
 use uuid::Uuid;
 
+/// 測試伺服器的 `/metrics` 權杖
+pub const METRICS_TOKEN: &str = "test-metrics-token-0123456789abcdef";
+
 pub struct TestServer {
     pub addr: SocketAddr,
     pub web_addr: SocketAddr,
@@ -61,7 +64,8 @@ impl TestServer {
                 vec!["localhost".into()],
             )
             .with_linux_packages(Some(deb_path), Some(rpm_path))
-            .with_packages(dir.path().join("packages"), 2);
+            .with_packages(dir.path().join("packages"), 2)
+            .with_metrics_token(Some(METRICS_TOKEN));
         let cfg = tls::server_config(dir.path()).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
