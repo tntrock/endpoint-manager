@@ -755,6 +755,7 @@ async fn checkin_switching_to_linux_clears_violations(pool: PgPool) {
         .post(s.url("/v1/checkin"))
         .json(&protocol::CheckinRequest {
             os_family: Some(protocol::OsFamily::Linux),
+            signing_keys: vec![],
             schema_version: SCHEMA_VERSION,
             agent_version: "0.1.0".into(),
             boot_time: chrono::Utc::now(),

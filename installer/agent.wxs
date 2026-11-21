@@ -1,5 +1,6 @@
 <!-- Endpoint Manager Agent 通用範本 MSI（WiX v5）。以 installer/build.ps1 建置。
-     SERVER_URL／ENROLL_TOKEN／ROOT_CA 由伺服器下載時寫入 Property 表，或以 msiexec 命令列指定。 -->
+     SERVER_URL／ENROLL_TOKEN／ROOT_CA 由伺服器下載時寫入 Property 表，或以 msiexec 命令列指定。
+     SIGNING_KEYS 只能以 msiexec 命令列或 GPO transform 指定。 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package Name="Endpoint Manager Agent" Manufacturer="Endpoint Manager"
            Version="$(Version)" UpgradeCode="C1FDEBF6-F5C5-46E4-A913-5B6690EB943B"
@@ -15,6 +16,9 @@
     <Property Id="SERVER_URL" Value=" " Secure="yes" />
     <Property Id="ENROLL_TOKEN" Value=" " Secure="yes" Hidden="yes" />
     <Property Id="ROOT_CA" Value=" " Secure="yes" />
+    <!-- 信任的簽章公鑰（逗號分隔）。有值就取代 Agent 原本的清單，空白沿用。
+         伺服器產生安裝檔時不寫入：信任必須來自伺服器以外（GPO transform 或 msiexec 命令列） -->
+    <Property Id="SIGNING_KEYS" Value=" " Secure="yes" />
 
     <!-- 安裝前資料目錄是否已存在（升級或重裝）：決定安裝失敗回復時能不能刪除 -->
     <Property Id="EM_DATA_EXISTS">
@@ -47,7 +51,7 @@
 
     <!-- HideTarget：命令列含註冊金鑰，不寫入 MSI 記錄 -->
     <CustomAction Id="Configure" FileRef="AgentExe"
-                  ExeCommand="configure --server-url &quot;[SERVER_URL]&quot; --token &quot;[ENROLL_TOKEN]&quot; --root-ca &quot;[ROOT_CA]&quot;"
+                  ExeCommand="configure --server-url &quot;[SERVER_URL]&quot; --token &quot;[ENROLL_TOKEN]&quot; --root-ca &quot;[ROOT_CA]&quot; --signing-keys &quot;[SIGNING_KEYS]&quot;"
                   Execute="deferred" Impersonate="no" Return="check" HideTarget="yes" />
     <CustomAction Id="Unconfigure" FileRef="AgentExe" ExeCommand="unconfigure"
                   Execute="deferred" Impersonate="no" Return="ignore" />

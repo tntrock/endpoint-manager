@@ -21,9 +21,10 @@ pub fn configure(
     server_url: Option<&str>,
     token: Option<&str>,
     root_ca: Option<&str>,
+    signing_keys: Option<&str>,
 ) -> anyhow::Result<()> {
     prepare_data_dir(data)?;
-    apply_install_config(data, server_url, token, root_ca)
+    apply_install_config(data, server_url, token, root_ca, signing_keys)
 }
 
 /// 失敗後 60 秒重啟（3 次）、24 小時重置；非當機的失敗（結束代碼非 0）也套用。

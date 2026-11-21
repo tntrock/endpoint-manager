@@ -376,6 +376,7 @@ impl<C: Collector> Agent<C> {
                 .map(|(s, e)| (*s, clean(e)))
                 .collect(),
             os_family: self.collector.os_family(),
+            signing_keys: self.config.signing_keys.clone(),
         };
         let resp = match client.checkin(&req).await {
             Ok(r) => r,
@@ -710,6 +711,7 @@ mod tests {
         AgentConfig {
             server_url: "https://a:8443".into(),
             enroll_token: Some("tok".into()),
+            signing_keys: vec![],
         }
         .save(dir.path())
         .unwrap();

@@ -36,6 +36,8 @@ fn lower_priority() {
 
 pub async fn run(dir: &Path, shutdown: watch::Receiver<bool>) -> anyhow::Result<()> {
     lower_priority();
+    // 只在啟動時讀：設定改變要重新啟動服務（安裝程式會重新啟動）
+    let signing_keys = crate::config::AgentConfig::load(dir)?.signing_keys;
     let (deploy_tx, deploy_rx) = watch::channel(None);
     let (updates_tx, updates_rx) = watch::channel(None);
     let (commands_tx, commands_rx) = watch::channel(None);
@@ -62,7 +64,8 @@ pub async fn run(dir: &Path, shutdown: watch::Receiver<bool>) -> anyhow::Result<
             dir,
             std::sync::Arc::new(collect::WindowsCollector),
             ProcessRunner,
-        ),
+        )
+        .with_signing_keys(signing_keys.clone()),
         deploy_rx,
         shutdown.clone(),
         deploy_nudge.clone(),
@@ -74,7 +77,8 @@ pub async fn run(dir: &Path, shutdown: watch::Receiver<bool>) -> anyhow::Result<
                 triggers: tx.clone(),
                 nudges: vec![deploy_nudge, updates_nudge],
             }),
-        ),
+        )
+        .with_signing_keys(signing_keys),
         commands_rx,
         shutdown.clone(),
     ));

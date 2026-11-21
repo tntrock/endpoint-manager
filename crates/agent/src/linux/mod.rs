@@ -25,13 +25,16 @@ pub fn agent_dir() -> PathBuf {
 /// 只啟動報到迴圈與指令 worker（不派送軟體、不套用更新原則）。
 pub async fn run(dir: &Path, shutdown: watch::Receiver<bool>) -> anyhow::Result<()> {
     let (commands_tx, commands_rx) = watch::channel(None);
+    // 只在啟動時讀：設定改變要重新啟動服務（configure 會重新啟動）
+    let signing_keys = crate::config::AgentConfig::load(dir)?.signing_keys;
     let agent = Agent::new(dir, collect::LinuxCollector)?.with_commands(commands_tx);
     let (tx, rx) = mpsc::channel(16);
     tokio::spawn(run_command_worker(
         CommandWorker::new(
             dir,
             std::sync::Arc::new(commands::LinuxHost { triggers: tx }),
-        ),
+        )
+        .with_signing_keys(signing_keys),
         commands_rx,
         shutdown.clone(),
     ));

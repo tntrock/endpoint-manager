@@ -75,6 +75,7 @@ pub async fn pending_for(pool: &PgPool, device: Uuid) -> Result<Vec<Command>, sq
                             .as_deref()
                             .and_then(ScriptLanguage::parse)
                             .unwrap_or_default(),
+                        signature: None,
                     }),
                     _ => None,
                 },

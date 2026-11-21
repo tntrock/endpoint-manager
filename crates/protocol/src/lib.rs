@@ -5,6 +5,7 @@ pub mod command;
 pub mod deploy;
 pub mod matcher;
 pub mod regpath;
+pub mod signing;
 pub mod update;
 
 use std::collections::BTreeMap;
@@ -147,6 +148,9 @@ pub struct CheckinRequest {
     /// 舊版 Agent 沒有；缺少視為 windows，None 時不序列化
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub os_family: Option<OsFamily>,
+    /// Agent 本機設定的信任簽章公鑰（Base64）。伺服器只用來顯示與預先檢查
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub signing_keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -588,6 +592,7 @@ mod tests {
             section_hashes: BTreeMap::new(),
             section_errors: BTreeMap::new(),
             os_family,
+            signing_keys: vec![],
         }
     }
 

@@ -58,6 +58,7 @@ chrono.workspace = true
 rcgen.workspace = true
 rustls.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+ring = "0.17"
 
 [target.'cfg(windows)'.dev-dependencies]
 winreg = "0.56"

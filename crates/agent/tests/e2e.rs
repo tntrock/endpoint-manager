@@ -63,6 +63,7 @@ async fn env(pool: PgPool, token_uses: i32) -> Env {
     AgentConfig {
         server_url: format!("https://127.0.0.1:{port}"),
         enroll_token: Some(token),
+        signing_keys: vec![],
     }
     .save(dir.path())
     .unwrap();
@@ -91,6 +92,7 @@ async fn client_maps_status_codes(pool: PgPool) {
 
     let checkin = CheckinRequest {
         os_family: None,
+        signing_keys: vec![],
         schema_version: SCHEMA_VERSION,
         agent_version: "t".into(),
         boot_time: chrono::Utc::now(),
@@ -700,6 +702,7 @@ mod deploy {
         let r = c
             .checkin(&CheckinRequest {
                 os_family: None,
+                signing_keys: vec![],
                 schema_version: SCHEMA_VERSION,
                 agent_version: "t".into(),
                 boot_time: chrono::Utc::now(),
@@ -826,6 +829,7 @@ mod deploy {
     async fn assignments(c: &ServerClient) -> Vec<protocol::deploy::Assignment> {
         c.checkin(&CheckinRequest {
             os_family: None,
+            signing_keys: vec![],
             schema_version: SCHEMA_VERSION,
             agent_version: "t".into(),
             boot_time: chrono::Utc::now(),
@@ -894,6 +898,69 @@ mod deploy {
         let (st, msg, attempts) = status(&e, d).await.unwrap();
         assert_eq!((st.as_str(), attempts), ("failed", 1));
         assert!(msg.contains("偵測不到"), "{msg}");
+    }
+
+    /// 設定了信任公鑰的 worker；`sign` 決定套件帶什麼簽章。回傳（狀態、訊息、執行次數）
+    async fn enforced_pass(
+        pool: PgPool,
+        sign: impl Fn(&ring::signature::Ed25519KeyPair, &mut protocol::deploy::PackageSpec),
+    ) -> (String, String, usize) {
+        use protocol::signing::encode_public_key;
+        use ring::signature::{Ed25519KeyPair, KeyPair};
+        let e = env(pool, 1).await;
+        let (_a, worker, runner, mut w, d) = setup(&e, 0, true).await;
+        let pkcs8 = Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new()).unwrap();
+        let k = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+        let raw: [u8; 32] = k.public_key().as_ref().try_into().unwrap();
+        let mut worker = worker.with_signing_keys(vec![encode_public_key(&raw)]);
+        sign(&k, &mut w.assignments[0].package);
+        worker.pass(&w).await;
+        let (st, msg, _) = status(&e, d).await.unwrap();
+        (st, msg, runner.runs.load(Ordering::SeqCst))
+    }
+
+    fn signature_for(
+        k: &ring::signature::Ed25519KeyPair,
+        spec: &protocol::deploy::PackageSpec,
+    ) -> String {
+        use protocol::signing::{Payload, format_signature, key_id};
+        use ring::signature::KeyPair;
+        let raw: [u8; 32] = k.public_key().as_ref().try_into().unwrap();
+        format_signature(
+            &key_id(&raw),
+            k.sign(&Payload::package(spec).signed_bytes()).as_ref(),
+        )
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn enforced_worker_refuses_unsigned_package(pool: PgPool) {
+        let (st, msg, runs) = enforced_pass(pool, |_, _| {}).await;
+        assert_eq!(st, "failed");
+        assert_eq!(msg, "這台電腦要求簽章：沒有簽章，未執行");
+        assert_eq!(runs, 0);
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn enforced_worker_refuses_signature_over_other_args(pool: PgPool) {
+        let (st, msg, runs) = enforced_pass(pool, |k, pkg| {
+            let mut other = pkg.clone();
+            other.install_args = "/S /D=C:\\x".into();
+            pkg.signature = Some(signature_for(k, &other));
+        })
+        .await;
+        assert_eq!(st, "failed");
+        assert!(msg.contains("簽章驗證失敗"), "{msg}");
+        assert_eq!(runs, 0);
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn enforced_worker_installs_signed_package(pool: PgPool) {
+        let (st, _, runs) = enforced_pass(pool, |k, pkg| {
+            pkg.signature = Some(signature_for(k, pkg));
+        })
+        .await;
+        assert_eq!(st, "succeeded");
+        assert_eq!(runs, 1);
     }
 
     #[sqlx::test(migrations = false)]
