@@ -12,7 +12,7 @@ use base64::engine::general_purpose::STANDARD as B64;
 use chacha20poly1305::aead::{Aead, KeyInit, Payload as AeadPayload};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 use protocol::signing::{Payload, SigningRequest, encode_public_key, format_signature, key_id};
-use ring::rand::{SecureRandom, SystemRandom};
+use ring::rand::SystemRandom;
 use ring::signature::{Ed25519KeyPair, KeyPair};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -46,12 +46,13 @@ pub struct Kdf {
     pub salt: String,
 }
 
-fn random<const N: usize>() -> anyhow::Result<[u8; N]> {
-    let mut b = [0u8; N];
-    SystemRandom::new()
-        .fill(&mut b)
-        .map_err(|_| anyhow::anyhow!("系統亂數來源無法使用"))?;
-    Ok(b)
+fn random<const N: usize>() -> anyhow::Result<[u8; N]>
+where
+    [u8; N]: ring::rand::RandomlyConstructable,
+{
+    ring::rand::generate::<[u8; N]>(&SystemRandom::new())
+        .map(|r| r.expose())
+        .map_err(|_| anyhow::anyhow!("系統亂數來源無法使用"))
 }
 
 fn derive(passphrase: &str, kdf: &Kdf) -> anyhow::Result<Key> {
@@ -59,7 +60,8 @@ fn derive(passphrase: &str, kdf: &Kdf) -> anyhow::Result<Key> {
     let salt = B64.decode(&kdf.salt).context("金鑰檔的 salt 格式錯誤")?;
     let params = argon2::Params::new(kdf.m_cost, kdf.t_cost, kdf.p_cost, Some(32))
         .map_err(|e| anyhow::anyhow!("金鑰檔的推導參數錯誤：{e}"))?;
-    let mut out = [0u8; 32];
+    // 輸出緩衝區會被 Argon2 整個覆寫；以亂數起始，程式裡不出現固定的金鑰位元組
+    let mut out = random::<32>()?;
     argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params)
         .hash_password_into(passphrase.as_bytes(), &salt, &mut out)
         .map_err(|e| anyhow::anyhow!("金鑰推導失敗：{e}"))?;
