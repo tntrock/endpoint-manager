@@ -33,6 +33,48 @@ pub fn os_filter(os: &str) -> &'static str {
     }
 }
 
+/// 虛擬化平台的顯示名稱（`systemd-detect-virt` 的名稱）
+fn vm_name(v: &str) -> &str {
+    match v {
+        "kvm" => "KVM",
+        "qemu" => "QEMU",
+        "vmware" => "VMware",
+        "microsoft" => "Hyper-V",
+        "oracle" => "VirtualBox",
+        "xen" => "Xen",
+        "parallels" => "Parallels",
+        "amazon" => "AWS",
+        "google" => "Google Cloud",
+        "bochs" => "Bochs",
+        other => other,
+    }
+}
+
+/// 執行環境的顯示文字；舊版 Agent 沒回報、或不認得的種類回 None
+pub fn runs_in_label(kind: Option<&str>, detail: Option<&str>) -> Option<String> {
+    let detail = detail.filter(|d| !d.is_empty());
+    Some(match (kind?, detail) {
+        ("host", Some("none")) => "實體機".into(),
+        ("host", Some(v)) => format!("虛擬機（{}）", vm_name(v)),
+        ("container", Some(c)) => format!("容器（{c}）"),
+        ("container", None) => "容器".into(),
+        ("wsl", Some(v)) => format!("WSL {v}"),
+        ("wsl", None) => "WSL".into(),
+        _ => return None,
+    })
+}
+
+/// 執行環境篩選值：physical、vm、container、wsl，其他一律當成全部
+fn env_filter(env: &str) -> &'static str {
+    match env {
+        "physical" => "physical",
+        "vm" => "vm",
+        "container" => "container",
+        "wsl" => "wsl",
+        _ => "",
+    }
+}
+
 /// Linux 裝置沒有資料的分頁
 const WINDOWS_ONLY_TABS: &[&str] = &[
     "compliance",
@@ -144,6 +186,9 @@ pub struct ListQuery {
     /// 作業系統：空白＝全部、windows、linux
     #[serde(default)]
     os: String,
+    /// 執行環境：空白＝全部、physical、vm、container、wsl
+    #[serde(default)]
+    env: String,
     #[serde(default)]
     page: i64,
     /// 排序（`web::sort`）
@@ -159,6 +204,8 @@ pub struct DeviceRow {
     pub os: String,
     pub user: String,
     pub linux: bool,
+    /// 容器或 WSL 的標籤文字
+    pub guest: Option<String>,
     pub ip: String,
     pub last_seen: String,
     pub badge: &'static str,
@@ -182,6 +229,7 @@ struct DevicesPage {
     version: String,
     statuses: Vec<SelectOption>,
     oses: Vec<SelectOption>,
+    envs: Vec<SelectOption>,
     groups: Vec<SelectOption>,
     rows: Vec<DeviceRow>,
     page: i64,
@@ -201,15 +249,18 @@ type ListRow = (
     Option<time::OffsetDateTime>,
     String,
     String,
+    Option<String>,
+    Option<String>,
 );
 
 fn page_url(q: &ListQuery, sort: &str, page: i64) -> String {
     format!(
-        "/devices?q={}&status={}&group={}&os={}&software={}&version={}&sort={}&page={page}",
+        "/devices?q={}&status={}&group={}&os={}&env={}&software={}&version={}&sort={}&page={page}",
         enc(&q.q),
         enc(&q.status),
         enc(&q.group),
         enc(&q.os),
+        enc(&q.env),
         enc(&q.software),
         enc(&q.version),
         enc(sort)
@@ -251,10 +302,14 @@ async fn list_page(
     let mut rows: Vec<ListRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT d.id, d.hostname, g.name, coalesce(d.domain, ''), coalesce(d.os_caption, ''), \
                 coalesce(d.logged_on_user, ''), coalesce(d.last_ip, ''), d.last_seen_at, d.status, \
-                d.os_family \
+                d.os_family, d.runs_in, d.runs_in_detail \
          FROM devices d LEFT JOIN device_groups g ON g.id = d.group_id \
          WHERE ($1::bool OR d.group_id = ANY($2::bigint[])) \
            AND ($12 = '' OR d.os_family = $12) \
+           AND (CASE $13 WHEN '' THEN true \
+                WHEN 'physical' THEN d.runs_in = 'host' AND d.runs_in_detail = 'none' \
+                WHEN 'vm' THEN d.runs_in = 'host' AND d.runs_in_detail <> 'none' \
+                ELSE d.runs_in = $13 END) IS TRUE \
            AND ($3 = '' OR d.hostname ILIKE $4 OR d.logged_on_user ILIKE $4 OR d.last_ip ILIKE $4) \
            AND (CASE WHEN $5 = '' THEN d.status <> 'retired' WHEN $5 = 'all' THEN true \
                      WHEN $5 = 'stale' THEN d.status NOT IN ('retired', 'pending_approval') \
@@ -279,6 +334,7 @@ async fn list_page(
     .bind(PAGE_SIZE + 1)
     .bind(page * PAGE_SIZE)
     .bind(os_filter(&q.os))
+    .bind(env_filter(&q.env))
     .fetch_all(&st.pool)
     .await?;
     let has_next = rows.len() as i64 > PAGE_SIZE;
@@ -286,7 +342,20 @@ async fn list_page(
     let rows = rows
         .into_iter()
         .map(
-            |(id, hostname, group, domain, os, user, ip, last_seen, status, os_family)| {
+            |(
+                id,
+                hostname,
+                group,
+                domain,
+                os,
+                user,
+                ip,
+                last_seen,
+                status,
+                os_family,
+                runs_in,
+                runs_in_detail,
+            )| {
                 let (badge, badge_label) =
                     status_label(&status, last_seen.is_some_and(|t| t > cutoff));
                 DeviceRow {
@@ -301,6 +370,11 @@ async fn list_page(
                     badge,
                     badge_label,
                     linux: os_family == "linux",
+                    // 清單只標出容器與 WSL：實體機與虛擬機占大多數，全標反而看不出重點
+                    guest: runs_in
+                        .as_deref()
+                        .filter(|k| matches!(*k, "container" | "wsl"))
+                        .and_then(|k| runs_in_label(Some(k), runs_in_detail.as_deref())),
                 }
             },
         )
@@ -332,9 +406,24 @@ async fn list_page(
         selected: os_filter(&q.os) == v,
     })
     .collect();
+    let envs = [
+        ("", "所有執行環境"),
+        ("physical", "實體機"),
+        ("vm", "虛擬機"),
+        ("container", "容器"),
+        ("wsl", "WSL"),
+    ]
+    .into_iter()
+    .map(|(v, l)| SelectOption {
+        value: v.into(),
+        label: l.into(),
+        selected: env_filter(&q.env) == v,
+    })
+    .collect();
     let headers = sort::headers(&LIST_COLS, sort, |p| page_url(&q, p, 0));
     Ok(render(&DevicesPage {
         oses,
+        envs,
         groups: group_options(st, s, &q.group, true).await?,
         move_groups: if s.all_devices() {
             group_options(st, s, "", false).await?
@@ -506,6 +595,8 @@ pub struct DeviceView {
     pub badge_label: &'static str,
     pub can_retire: bool,
     pub linux: bool,
+    /// 執行環境（實體機、虛擬機（KVM）、容器、WSL）；不知道時是空字串
+    pub runs_in: String,
     /// 最後回報的相對時間
     pub seen_ago: String,
 }
@@ -608,10 +699,11 @@ pub async fn detail(
         None => Default::default(),
     };
     let (site, cache) = super::sites::site_of(&st, ip.as_deref()).await?;
-    let keys: Vec<String> = sqlx::query_scalar("SELECT signing_keys FROM devices WHERE id = $1")
-        .bind(id)
-        .fetch_one(&st.pool)
-        .await?;
+    let (keys, runs_in, runs_in_detail): (Vec<String>, Option<String>, Option<String>) =
+        sqlx::query_as("SELECT signing_keys, runs_in, runs_in_detail FROM devices WHERE id = $1")
+            .bind(id)
+            .fetch_one(&st.pool)
+            .await?;
     let current_group = group_id
         .map(|g| g.to_string())
         .unwrap_or_else(|| "none".into());
@@ -633,6 +725,7 @@ pub async fn detail(
             boot: boot.clone(),
             agent: agent.clone(),
             errors: &errors,
+            runs_in: runs_in.as_deref(),
         },
     )
     .await?;
@@ -670,6 +763,8 @@ pub async fn detail(
             badge_label,
             can_retire: status != "retired",
             linux,
+            runs_in: runs_in_label(runs_in.as_deref(), runs_in_detail.as_deref())
+                .unwrap_or_default(),
         },
         tabs: tabs_for(&os_family),
     }))
@@ -1089,5 +1184,44 @@ pub async fn bulk(
             }
         }
         _ => Ok(show("不支援的操作。".into(), StatusCode::BAD_REQUEST).await),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runs_in_labels() {
+        let l = |k: Option<&str>, d: Option<&str>| runs_in_label(k, d);
+        assert_eq!(l(Some("host"), Some("none")).as_deref(), Some("實體機"));
+        for (v, name) in [
+            ("kvm", "KVM"),
+            ("qemu", "QEMU"),
+            ("vmware", "VMware"),
+            ("microsoft", "Hyper-V"),
+            ("oracle", "VirtualBox"),
+            ("xen", "Xen"),
+            ("parallels", "Parallels"),
+            ("amazon", "AWS"),
+            ("google", "Google Cloud"),
+            ("bochs", "Bochs"),
+            ("acrn", "acrn"),
+        ] {
+            assert_eq!(l(Some("host"), Some(v)), Some(format!("虛擬機（{name}）")));
+        }
+        assert_eq!(l(Some("host"), None), None);
+        assert_eq!(l(Some("host"), Some("")), None);
+        assert_eq!(
+            l(Some("container"), Some("lxc")).as_deref(),
+            Some("容器（lxc）")
+        );
+        assert_eq!(l(Some("container"), None).as_deref(), Some("容器"));
+        assert_eq!(l(Some("wsl"), Some("1")).as_deref(), Some("WSL 1"));
+        assert_eq!(l(Some("wsl"), None).as_deref(), Some("WSL"));
+        assert_eq!(l(Some("future"), Some("x")), None);
+        assert_eq!(l(None, None), None);
+        assert_eq!(env_filter("vm"), "vm");
+        assert_eq!(env_filter("x'; --"), "");
     }
 }

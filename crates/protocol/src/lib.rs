@@ -214,6 +214,69 @@ pub struct BasicInfo {
     /// 月更新小版號（登錄檔 UBR）；舊版 Agent 沒有。None 時不序列化，hash 與舊版一致。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub os_ubr: Option<u32>,
+    /// Agent 在哪裡執行；舊版 Agent 沒有。None 時不序列化，hash 與舊版一致。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runs_in: Option<RunsIn>,
+}
+
+/// Agent 的執行環境
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct RunsIn {
+    /// [`RunsIn::HOST`]、[`RunsIn::CONTAINER`]、[`RunsIn::WSL`]；用字串，新種類不會讓舊版伺服器解析失敗
+    pub kind: String,
+    /// host：虛擬化平台（`systemd-detect-virt --vm` 的名稱，`none` 是實體機）；
+    /// container：容器種類（docker、podman、lxc…）；wsl：版本（1、2）。None 表示判斷不出來
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+impl RunsIn {
+    pub const HOST: &'static str = "host";
+    pub const CONTAINER: &'static str = "container";
+    pub const WSL: &'static str = "wsl";
+
+    pub fn new(kind: &str, detail: Option<&str>) -> RunsIn {
+        RunsIn {
+            kind: kind.to_string(),
+            detail: detail.map(str::to_string),
+        }
+    }
+
+    /// 容器或 WSL：硬體識別碼屬於所在的主機，不能拿來比對裝置
+    pub fn is_guest(&self) -> bool {
+        self.kind == RunsIn::CONTAINER || self.kind == RunsIn::WSL
+    }
+}
+
+/// 由 DMI／WMI 的製造商與型號判斷虛擬化平台，名稱與 `systemd-detect-virt --vm` 相同。
+/// 看不出是虛擬機時回 `none`（實體機）。
+pub fn vm_from_vendor(manufacturer: &str, model: &str) -> &'static str {
+    let m = manufacturer.to_ascii_lowercase();
+    let p = model.to_ascii_lowercase();
+    let has = |s: &str| m.contains(s) || p.contains(s);
+    if has("vmware") {
+        "vmware"
+    } else if has("virtualbox") || m.contains("innotek") {
+        "oracle"
+    } else if m.contains("microsoft") && p.contains("virtual") {
+        "microsoft"
+    } else if has("qemu") {
+        "qemu"
+    } else if has("kvm") || p.contains("standard pc") {
+        "kvm"
+    } else if has("xen") {
+        "xen"
+    } else if has("parallels") {
+        "parallels"
+    } else if m.contains("amazon ec2") {
+        "amazon"
+    } else if m.contains("google") && p.contains("compute engine") {
+        "google"
+    } else if has("bochs") {
+        "bochs"
+    } else {
+        "none"
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -694,7 +757,52 @@ mod tests {
             os_caption: "Windows 11".into(),
             os_build: "22631".into(),
             os_ubr: ubr,
+            runs_in: None,
         })
+    }
+
+    #[test]
+    fn runs_in_is_optional_and_hashed() {
+        let mut b = match basic(None) {
+            InventoryPayload::Basic(b) => b,
+            _ => unreachable!(),
+        };
+        b.runs_in = Some(RunsIn::new(RunsIn::CONTAINER, Some("docker")));
+        let p = InventoryPayload::Basic(b);
+        let v = serde_json::to_value(&p).unwrap();
+        assert_eq!(v["data"]["runs_in"]["kind"], "container");
+        assert_ne!(p.canonical_hash(), basic(None).canonical_hash());
+        let back: InventoryPayload = serde_json::from_value(v).unwrap();
+        assert_eq!(back, p);
+        let host = RunsIn::new(RunsIn::HOST, None);
+        assert!(!host.is_guest());
+        assert!(RunsIn::new(RunsIn::WSL, Some("2")).is_guest());
+        assert!(serde_json::to_value(&host).unwrap().get("detail").is_none());
+    }
+
+    #[test]
+    fn vm_vendor_table() {
+        for (mf, model, want) in [
+            ("VMware, Inc.", "VMware7,1", "vmware"),
+            ("innotek GmbH", "VirtualBox", "oracle"),
+            ("Microsoft Corporation", "Virtual Machine", "microsoft"),
+            ("Microsoft Corporation", "Surface Laptop 5", "none"),
+            ("QEMU", "Standard PC (Q35 + ICH9, 2009)", "qemu"),
+            ("Red Hat", "KVM", "kvm"),
+            ("", "Standard PC (i440FX + PIIX, 1996)", "kvm"),
+            ("Xen", "HVM domU", "xen"),
+            (
+                "Parallels Software International Inc.",
+                "Parallels Virtual Platform",
+                "parallels",
+            ),
+            ("Amazon EC2", "m5.large", "amazon"),
+            ("Google", "Google Compute Engine", "google"),
+            ("Bochs", "Bochs", "bochs"),
+            ("Dell Inc.", "OptiPlex 7090", "none"),
+        ] {
+            assert_eq!(vm_from_vendor(mf, model), want, "{mf} / {model}");
+        }
     }
 
     /// 舊版 Agent 沒有 os_ubr：None 時不能出現在序列化結果，hash 才會和舊版一致

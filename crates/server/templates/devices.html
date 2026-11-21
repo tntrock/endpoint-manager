@@ -11,6 +11,9 @@
   <select name="group" aria-label="群組">
     {% for o in groups %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}
   </select>
+  <select name="env" aria-label="執行環境">
+    {% for o in envs %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}
+  </select>
   <select name="os" aria-label="作業系統">
     {% for o in oses %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}
   </select>
@@ -58,7 +61,7 @@
   {% for d in rows %}
   <tr>
     {% if nav.manage %}<td class="pick"><input type="checkbox" name="ids" value="{{ d.id }}" aria-label="選取 {{ d.hostname }}"></td>{% endif %}
-    <td><a href="/devices/{{ d.id }}">{{ d.hostname }}</a></td>
+    <td><a href="/devices/{{ d.id }}">{{ d.hostname }}</a>{% if let Some(g) = d.guest %} <span class="tag info">{{ g }}</span>{% endif %}</td>
     <td>{{ d.group }}</td><td>{{ d.domain }}</td><td>{{ d.os }}{% if d.linux %} <span class="tag info">Linux</span>{% endif %}</td><td>{{ d.user }}</td><td><span class="num">{{ d.ip }}</span></td>
     <td><span class="num">{{ d.last_seen }}</span></td>
     <td><span class="tag {{ d.badge }}">{{ d.badge_label }}</span></td>

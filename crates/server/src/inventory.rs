@@ -176,6 +176,8 @@ type BasicRow = (
     Option<String>,
     Option<String>,
     Option<i32>,
+    Option<String>,
+    Option<String>,
 );
 type HardwareRow = (Option<String>, Option<String>, Option<String>, i64, String);
 type SoftwareRow = (
@@ -282,9 +284,10 @@ pub async fn load_payload(
             }
         }
         Section::Basic => {
-            let (hostname, domain, is_domain_joined, os_caption, os_build, os_ubr): BasicRow =
+            let (hostname, domain, is_domain_joined, os_caption, os_build, os_ubr, runs_in, detail): BasicRow =
                 sqlx::query_as(
-                    "SELECT hostname, domain, is_domain_joined, os_caption, os_build, os_ubr \
+                    "SELECT hostname, domain, is_domain_joined, os_caption, os_build, os_ubr, \
+                            runs_in, runs_in_detail \
                      FROM devices WHERE id = $1",
                 )
                 .bind(device_id)
@@ -297,6 +300,8 @@ pub async fn load_payload(
                 os_caption: os_caption.unwrap_or_default(),
                 os_build: os_build.unwrap_or_default(),
                 os_ubr: os_ubr.and_then(|u| u32::try_from(u).ok()),
+                // 原樣存、原樣還原（包括不認得的種類），hash 才會一致
+                runs_in: runs_in.map(|kind| protocol::RunsIn { kind, detail }),
             })
         }
         Section::Hardware => {
@@ -457,7 +462,8 @@ async fn write_payload(
         InventoryPayload::Basic(b) => {
             sqlx::query(
                 "UPDATE devices SET hostname = $2, domain = $3, is_domain_joined = $4, \
-                 os_caption = $5, os_build = $6, os_ubr = $7 WHERE id = $1",
+                 os_caption = $5, os_build = $6, os_ubr = $7, runs_in = $8, runs_in_detail = $9 \
+                 WHERE id = $1",
             )
             .bind(device_id)
             .bind(&b.hostname)
@@ -466,6 +472,8 @@ async fn write_payload(
             .bind(&b.os_caption)
             .bind(&b.os_build)
             .bind(b.os_ubr.and_then(|u| i32::try_from(u).ok()))
+            .bind(b.runs_in.as_ref().map(|r| &r.kind))
+            .bind(b.runs_in.as_ref().and_then(|r| r.detail.as_ref()))
             .execute(&mut *conn)
             .await?;
         }

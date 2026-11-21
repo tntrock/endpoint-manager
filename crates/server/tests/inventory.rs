@@ -130,6 +130,7 @@ async fn basic_section_updates_device_columns(pool: PgPool) {
         os_caption: "Windows 11 Pro".into(),
         os_build: "26100".into(),
         os_ubr: None,
+        runs_in: None,
     });
     assert_eq!(put(&s, &a, "basic", &upload(p)).await, 204);
     let (h, joined): (String, bool) =
@@ -217,6 +218,7 @@ async fn nul_in_every_section_is_400(pool: PgPool) {
             os_caption: "W".into(),
             os_build: "1".into(),
             os_ubr: None,
+            runs_in: None,
         }),
         InventoryPayload::Hardware(protocol::HardwareInfo {
             manufacturer: Some(nul.clone()),
@@ -268,6 +270,7 @@ async fn basic_ubr_roundtrip(pool: PgPool) {
         os_caption: "Windows 11".into(),
         os_build: "22631".into(),
         os_ubr: Some(4317),
+        runs_in: None,
     });
     assert_eq!(put(&s, &a, "basic", &upload(p.clone())).await, 204);
     let ubr: Option<i32> = sqlx::query_scalar("SELECT os_ubr FROM devices WHERE id = $1")
@@ -287,6 +290,36 @@ async fn basic_ubr_roundtrip(pool: PgPool) {
         p.canonical_hash(),
         "讀回的內容與上傳一致"
     );
+}
+
+#[sqlx::test(migrations = false)]
+async fn basic_runs_in_roundtrip(pool: PgPool) {
+    let (s, a) = setup(pool).await;
+    // 包括伺服器不認得的種類：原樣存、原樣讀回，hash 才會一致
+    for runs_in in [
+        Some(protocol::RunsIn::new("container", Some("docker"))),
+        Some(protocol::RunsIn::new("host", None)),
+        Some(protocol::RunsIn::new("future-kind", Some("x"))),
+        None,
+    ] {
+        let p = InventoryPayload::Basic(protocol::BasicInfo {
+            hostname: "PC1".into(),
+            domain: None,
+            is_domain_joined: false,
+            os_caption: "Ubuntu 24.04".into(),
+            os_build: "6.8.0".into(),
+            os_ubr: None,
+            runs_in: runs_in.clone(),
+        });
+        assert_eq!(put(&s, &a, "basic", &upload(p.clone())).await, 204);
+        let mut c = s.pool.acquire().await.unwrap();
+        let back =
+            endpoint_server::inventory::load_payload(&mut c, a.device_id, protocol::Section::Basic)
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(back, p, "{runs_in:?}");
+    }
 }
 
 fn sec(public: bool) -> InventoryPayload {

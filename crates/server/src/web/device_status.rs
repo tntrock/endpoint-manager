@@ -35,6 +35,8 @@ pub struct Facts<'a> {
     pub boot: String,
     pub agent: String,
     pub errors: &'a [(String, String)],
+    /// 執行環境（devices.runs_in）
+    pub runs_in: Option<&'a str>,
 }
 
 /// 相對時間：剛剛、N 分鐘前、N 小時前、N 天前
@@ -107,6 +109,15 @@ pub async fn build(st: &AppState, f: &Facts<'_>) -> Result<(Vec<Card>, Vec<Issue
             tab: None,
         }),
         _ => {}
+    }
+    if f.runs_in == Some(protocol::RunsIn::CONTAINER) {
+        issues.push(Issue {
+            severity: "low",
+            title: "Agent 在容器內執行".into(),
+            detail: "容器重建後 Agent 會重新註冊成新裝置（除非狀態目錄是持久卷）；建議改裝在主機上"
+                .into(),
+            tab: None,
+        });
     }
 
     if f.linux {
