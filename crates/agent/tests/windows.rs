@@ -233,6 +233,7 @@ fn collector_reports_this_machine() {
             }
             InventoryPayload::Registry(_) => unreachable!("registry 不經 collect"),
             InventoryPayload::Accounts(_) => unreachable!("Windows 不收集帳號"),
+            InventoryPayload::Containers(_) => unreachable!("Windows 不收集容器"),
         }
     }
 }

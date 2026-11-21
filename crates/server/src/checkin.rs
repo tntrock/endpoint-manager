@@ -146,6 +146,10 @@ pub async fn checkin(
         update_policy,
         commands,
         package_source,
+        supported_sections: Section::ALL
+            .iter()
+            .map(|s| s.as_str().to_string())
+            .collect(),
     }))
 }
 

@@ -31,6 +31,8 @@ fn interval(s: Section, iv: &CollectionIntervals) -> Duration {
         Section::Registry => iv.registry_secs,
         // 只有 Linux Agent 收集帳號區段
         Section::Accounts => iv.security_secs,
+        // 容器的變化頻率跟服務差不多（規格 §4）
+        Section::Containers => iv.services_secs,
     };
     Duration::from_secs(secs.into())
 }

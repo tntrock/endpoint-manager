@@ -1,0 +1,32 @@
+{% macro rows(list) %}
+<table>
+  <tr><th>名稱</th><th>映像</th><th>狀態</th><th>健康</th><th>時間</th><th>連接埠</th></tr>
+  {% for c in list %}<tr>
+    <td>{{ c.name }}{% for w in c.warnings %} <span class="tag bad">{{ w }}</span>{% endfor %}<span class="faint">{{ c.id }}{% if !c.owner.is_empty() %}・使用者 {{ c.owner }}{% endif %}</span></td>
+    <td><code>{{ c.image }}</code></td>
+    <td><span class="tag {{ c.state_tone }}">{{ c.state }}</span></td>
+    <td>{% if !c.health.is_empty() %}<span class="tag {{ c.health_tone }}">{{ c.health }}</span>{% endif %}</td>
+    <td><span class="num">{{ c.at }}</span></td>
+    <td>{% for p in c.ports %}<span class="num">{{ p }}</span><br>{% endfor %}</td>
+  </tr>{% endfor %}
+</table>
+{% endmacro %}
+{% if !loaded %}<p class="muted">尚無容器資料（Agent 還沒上傳這個區段）。</p>{% else %}
+{% if runtimes.is_empty() %}<p class="muted">這台沒有偵測到 Docker 或 Podman。</p>{% else %}
+<h2>執行環境</h2>
+<table>
+  <tr><th>種類</th><th>版本</th><th>狀態</th></tr>
+  {% for r in runtimes %}<tr><td>{{ r.kind }}</td><td>{{ r.version }}</td><td>{% if r.error.is_empty() %}<span class="tag ok">正常</span>{% else %}<span class="tag bad">讀取失敗</span> <span class="faint">{{ r.error }}</span>{% endif %}</td></tr>{% endfor %}
+</table>
+{% if truncated %}<p class="warn">容器太多，只列出前 500 個（執行中的優先）。</p>{% endif %}
+<h2>執行中（{{ running.len() }}）</h2>
+{% if running.is_empty() %}<p class="muted">沒有執行中的容器。</p>{% else %}{% call rows(running) %}{% endcall %}{% endif %}
+{% if !stopped.is_empty() %}
+<details>
+<summary><h2>已停止（{{ stopped.len() }}，7 天內）</h2></summary>
+{% call rows(stopped) %}{% endcall %}
+</details>
+{% endif %}
+<p class="muted">不收集容器的環境變數與啟動參數。「時間」對執行中的容器是啟動時間，對已停止的是結束時間。</p>
+{% endif %}
+{% endif %}

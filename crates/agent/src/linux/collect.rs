@@ -38,6 +38,7 @@ impl Collector for LinuxCollector {
                 (_, Some(note)) => bail!(note),
             },
             Section::Accounts => InventoryPayload::Accounts(super::accounts::collect()),
+            Section::Containers => InventoryPayload::Containers(super::containers::collect()),
             Section::Patches | Section::Security | Section::Registry => {
                 bail!("Linux 不收集這個區段")
             }

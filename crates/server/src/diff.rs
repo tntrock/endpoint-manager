@@ -147,6 +147,20 @@ pub fn items_of(p: &InventoryPayload) -> BTreeMap<String, String> {
                 ));
             }
         }
+        InventoryPayload::Containers(c) => {
+            // 只記容器的新增、移除與映像改變；狀態（執行中、停止）不記，排程工作會一直起停
+            for x in &c.containers {
+                pairs.push((
+                    format!(
+                        "{}|{}|{}",
+                        x.name,
+                        x.runtime,
+                        x.owner.as_deref().unwrap_or("")
+                    ),
+                    x.image.clone(),
+                ));
+            }
+        }
         InventoryPayload::Accounts(a) => {
             for u in &a.users {
                 let locked = u.locked.map(|l| l.to_string()).unwrap_or_default();

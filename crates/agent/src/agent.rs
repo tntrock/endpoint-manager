@@ -35,11 +35,22 @@ pub enum Cycle {
 }
 
 /// 伺服器確認支援前只收集第三期以前的區段：舊版伺服器看到不認識的區段會讓整個報到失敗。
-pub fn sections_to_collect(platform: &[Section], supported: bool) -> Vec<Section> {
+/// 之後新增的區段（[`Section::needs_announcement`]）要伺服器在 `supported_sections` 列出才收集。
+pub fn sections_to_collect(
+    platform: &[Section],
+    supported: bool,
+    announced: &[String],
+) -> Vec<Section> {
     platform
         .iter()
         .copied()
-        .filter(|s| supported || Section::LEGACY.contains(s))
+        .filter(|s| {
+            if s.needs_announcement() {
+                announced.iter().any(|a| a == s.as_str())
+            } else {
+                supported || Section::LEGACY.contains(s)
+            }
+        })
         .collect()
 }
 
@@ -80,6 +91,8 @@ pub struct Agent<C: Collector> {
     heartbeat_error: Option<String>,
     /// 伺服器在報到回應中表明支援 security／registry 區段（有 registry_queries_hash）
     server_supports_config: bool,
+    /// 伺服器在報到回應中列出的區段（`supported_sections`）
+    server_sections: Vec<String>,
     /// 伺服器下發的登錄檔查詢清單與它的雜湊
     registry_queries: Vec<RegistryQuery>,
     registry_hash: Option<String>,
@@ -143,6 +156,7 @@ impl<C: Collector> Agent<C> {
             backing_off: false,
             heartbeat_error: None,
             server_supports_config: false,
+            server_sections: vec![],
             registry_queries: vec![],
             registry_hash: None,
             unsupported_error: None,
@@ -187,6 +201,18 @@ impl<C: Collector> Agent<C> {
         }
         self.registry_hash = None;
         self.registry_queries.clear();
+        self.set_server_sections(vec![]);
+    }
+
+    /// 依伺服器列出的區段更新；不再列出的新區段清掉快取，等伺服器再次列出才收集
+    fn set_server_sections(&mut self, announced: Vec<String>) {
+        for s in Section::ALL.into_iter().filter(|s| s.needs_announcement()) {
+            if !announced.iter().any(|a| a == s.as_str()) {
+                self.cache.remove(&s);
+                self.errors.remove(&s);
+            }
+        }
+        self.server_sections = announced;
     }
 
     pub fn trigger(&mut self, s: Section) {
@@ -263,7 +289,11 @@ impl<C: Collector> Agent<C> {
 
     async fn collect_due(&mut self) {
         let now = Instant::now();
-        let allowed = sections_to_collect(self.collector.sections(), self.server_supports_config);
+        let allowed = sections_to_collect(
+            self.collector.sections(),
+            self.server_supports_config,
+            &self.server_sections,
+        );
         let due: Vec<Section> = self
             .schedule
             .due(now, &self.intervals, self.collector.sections())
@@ -358,7 +388,11 @@ impl<C: Collector> Agent<C> {
         };
 
         // 伺服器不支援時，快取裡的新區段（例如伺服器降版前收集的）不回報
-        let allowed = sections_to_collect(self.collector.sections(), self.server_supports_config);
+        let allowed = sections_to_collect(
+            self.collector.sections(),
+            self.server_supports_config,
+            &self.server_sections,
+        );
         let hashes: BTreeMap<Section, String> = self
             .cache
             .iter()
@@ -458,6 +492,7 @@ impl<C: Collector> Agent<C> {
         if resp.registry_queries_hash.is_none() && self.server_supports_config {
             self.drop_config_sections();
         }
+        self.set_server_sections(resp.supported_sections.clone());
         if let Some(h) = &resp.registry_queries_hash {
             self.server_supports_config = true;
             if self.registry_hash.as_ref() != Some(h) {
@@ -678,11 +713,25 @@ mod tests {
 
     #[test]
     fn sections_follow_platform() {
-        assert_eq!(sections_to_collect(&Section::LINUX, true), Section::LINUX);
-        assert!(!sections_to_collect(&Section::LINUX, false).contains(&Section::Accounts));
+        let all: Vec<String> = Section::ALL
+            .iter()
+            .map(|s| s.as_str().to_string())
+            .collect();
         assert_eq!(
-            sections_to_collect(&Section::WINDOWS, false),
+            sections_to_collect(&Section::LINUX, true, &all),
+            Section::LINUX
+        );
+        // 伺服器沒列出 containers（0.11.0 以前）：不收集
+        let linux = sections_to_collect(&Section::LINUX, true, &[]);
+        assert!(linux.contains(&Section::Accounts) && !linux.contains(&Section::Containers));
+        assert!(!sections_to_collect(&Section::LINUX, false, &[]).contains(&Section::Accounts));
+        assert_eq!(
+            sections_to_collect(&Section::WINDOWS, false, &[]),
             Section::LEGACY
+        );
+        assert!(
+            sections_to_collect(&Section::LINUX, false, &["containers".into()])
+                .contains(&Section::Containers)
         );
     }
 

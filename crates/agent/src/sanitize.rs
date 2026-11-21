@@ -118,6 +118,35 @@ pub fn sanitize(p: &mut InventoryPayload) {
             }
             a.sudoers_unparsed.iter_mut().for_each(fix);
         }
+        InventoryPayload::Containers(c) => {
+            c.containers.truncate(protocol::MAX_CONTAINERS);
+            for r in &mut c.runtimes {
+                fix(&mut r.kind);
+                fix_opt(&mut r.version);
+                fix_opt(&mut r.error);
+            }
+            for x in &mut c.containers {
+                for s in [
+                    &mut x.runtime,
+                    &mut x.id,
+                    &mut x.name,
+                    &mut x.image,
+                    &mut x.state,
+                ] {
+                    fix(s);
+                }
+                for o in [
+                    &mut x.image_id,
+                    &mut x.health,
+                    &mut x.restart_policy,
+                    &mut x.owner,
+                ] {
+                    fix_opt(o);
+                }
+                x.ports.iter_mut().for_each(fix);
+                x.host_mounts.iter_mut().for_each(fix);
+            }
+        }
     }
 }
 

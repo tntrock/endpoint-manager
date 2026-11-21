@@ -32,10 +32,11 @@ pub enum Section {
     Security,
     Registry,
     Accounts,
+    Containers,
 }
 
 impl Section {
-    pub const ALL: [Section; 8] = [
+    pub const ALL: [Section; 9] = [
         Section::Basic,
         Section::Hardware,
         Section::Software,
@@ -44,6 +45,7 @@ impl Section {
         Section::Security,
         Section::Registry,
         Section::Accounts,
+        Section::Containers,
     ];
 
     /// Windows Agent 回報的區段
@@ -58,12 +60,13 @@ impl Section {
     ];
 
     /// Linux Agent 回報的區段
-    pub const LINUX: [Section; 5] = [
+    pub const LINUX: [Section; 6] = [
         Section::Basic,
         Section::Hardware,
         Section::Software,
         Section::Services,
         Section::Accounts,
+        Section::Containers,
     ];
 
     /// 第三期以前就有的區段：新版 Agent 在確認伺服器支援前只回報這些
@@ -86,6 +89,7 @@ impl Section {
             Section::Security => "security",
             Section::Registry => "registry",
             Section::Accounts => "accounts",
+            Section::Containers => "containers",
         }
     }
 
@@ -202,6 +206,24 @@ pub struct CheckinResponse {
     /// 這台該向哪台分點快取下載套件；None 表示直接向中央下載
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package_source: Option<branch::PackageSource>,
+    /// 伺服器認得的區段名稱。用字串而不是 `Section`：舊版 Agent 看到不認得的值也不會解析失敗。
+    /// 第三期以後新增的區段（containers 起），Agent 只在這裡列出時才回報。
+    #[serde(default)]
+    pub supported_sections: Vec<String>,
+}
+
+impl CheckinResponse {
+    /// 伺服器是否認得這個區段
+    pub fn supports(&self, s: Section) -> bool {
+        self.supported_sections.iter().any(|x| x == s.as_str())
+    }
+}
+
+impl Section {
+    /// 需要伺服器在 [`CheckinResponse::supported_sections`] 明確列出才回報的區段
+    pub fn needs_announcement(self) -> bool {
+        matches!(self, Section::Containers)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -479,6 +501,78 @@ pub struct AccountsInfo {
     pub sudoers_unparsed: Vec<String>,
 }
 
+/// 每台最多回報的容器數（執行中的優先）
+pub const MAX_CONTAINERS: usize = 500;
+
+/// 主機上的容器執行環境與容器（Linux）
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct ContainersInfo {
+    pub runtimes: Vec<RuntimeInfo>,
+    pub containers: Vec<ContainerItem>,
+    /// 超過 [`MAX_CONTAINERS`] 被截斷
+    #[serde(default)]
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct RuntimeInfo {
+    /// docker | podman（之後加入 containerd、lxc、incus）
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// 指令存在但讀取失敗（例如 daemon 沒有啟動）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// 一個容器。不含環境變數、啟動參數與標籤（常含密碼）。
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct ContainerItem {
+    pub runtime: String,
+    /// 前 12 碼
+    pub id: String,
+    pub name: String,
+    /// 原樣，例如 `nginx:1.27`、`registry.example.com/app@sha256:…`
+    pub image: String,
+    /// 映像 ID（`sha256:…`）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_id: Option<String>,
+    /// running | paused | restarting | exited | created | dead…（執行環境的原始值，小寫）
+    pub state: String,
+    /// healthy | unhealthy | starting
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health: Option<String>,
+    #[serde(with = "timefmt::rfc3339_option", default)]
+    pub created_at: Option<time::OffsetDateTime>,
+    #[serde(with = "timefmt::rfc3339_option", default)]
+    pub started_at: Option<time::OffsetDateTime>,
+    #[serde(with = "timefmt::rfc3339_option", default)]
+    pub finished_at: Option<time::OffsetDateTime>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restart_policy: Option<String>,
+    /// 讀不到時 None
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub privileged: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_network: Option<bool>,
+    /// `0.0.0.0:8080->80/tcp`
+    #[serde(default)]
+    pub ports: Vec<String>,
+    /// bind mount 的主機路徑
+    #[serde(default)]
+    pub host_mounts: Vec<String>,
+    /// rootless Podman 的使用者
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+}
+
+impl ContainerItem {
+    /// 執行中（含暫停與重新啟動中）
+    pub fn is_running(&self) -> bool {
+        matches!(self.state.as_str(), "running" | "paused" | "restarting")
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "section", content = "data", rename_all = "lowercase")]
 pub enum InventoryPayload {
@@ -490,6 +584,7 @@ pub enum InventoryPayload {
     Security(SecurityInfo),
     Registry(Vec<RegistryValue>),
     Accounts(AccountsInfo),
+    Containers(ContainersInfo),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -531,6 +626,7 @@ impl InventoryPayload {
             InventoryPayload::Security(_) => Section::Security,
             InventoryPayload::Registry(_) => Section::Registry,
             InventoryPayload::Accounts(_) => Section::Accounts,
+            InventoryPayload::Containers(_) => Section::Containers,
         }
     }
 
@@ -555,6 +651,14 @@ impl InventoryPayload {
                 a.users.sort();
                 a.privileged.sort();
                 a.sudoers_unparsed.sort();
+            }
+            InventoryPayload::Containers(c) => {
+                c.runtimes.sort();
+                c.containers.sort();
+                for x in &mut c.containers {
+                    x.ports.sort();
+                    x.host_mounts.sort();
+                }
             }
         }
     }
@@ -583,6 +687,18 @@ impl InventoryPayload {
             }
             InventoryPayload::Accounts(a) => {
                 a.users.len() + a.privileged.len() + a.sudoers_unparsed.len()
+            }
+            InventoryPayload::Containers(c) => {
+                if c.containers.len() > MAX_CONTAINERS {
+                    return Err(ValidationError::TooManyItems {
+                        count: c.containers.len(),
+                    });
+                }
+                c.runtimes.len()
+                    + c.containers
+                        .iter()
+                        .map(|x| 1 + x.ports.len() + x.host_mounts.len())
+                        .sum::<usize>()
             }
         };
         if count > MAX_ITEMS {
@@ -677,7 +793,8 @@ mod tests {
         assert_eq!(Section::parse("accounts"), Some(Section::Accounts));
         assert!(!Section::WINDOWS.contains(&Section::Accounts));
         assert!(!Section::LINUX.contains(&Section::Registry));
-        assert_eq!(Section::ALL.len(), 8);
+        assert_eq!(Section::ALL.len(), 9);
+        assert!(!Section::WINDOWS.contains(&Section::Containers));
     }
 
     fn accounts(rev: bool) -> InventoryPayload {
@@ -840,6 +957,68 @@ mod tests {
             ),
             (3600, 3600)
         );
+        // 0.11.0 以前的伺服器沒有 supported_sections：不支援任何需要宣告的區段
+        assert!(r.supported_sections.is_empty() && !r.supports(Section::Containers));
+        let mut r = r;
+        r.supported_sections = vec!["containers".into(), "future".into()];
+        assert!(r.supports(Section::Containers));
+        assert!(
+            Section::Containers.needs_announcement() && !Section::Accounts.needs_announcement()
+        );
+        assert_eq!(Section::parse("containers"), Some(Section::Containers));
+    }
+
+    fn container(name: &str) -> ContainerItem {
+        ContainerItem {
+            runtime: "docker".into(),
+            id: "0123456789ab".into(),
+            name: name.into(),
+            image: "nginx".into(),
+            image_id: None,
+            state: "running".into(),
+            health: None,
+            created_at: None,
+            started_at: None,
+            finished_at: None,
+            restart_policy: None,
+            privileged: None,
+            host_network: None,
+            ports: vec!["b".into(), "a".into()],
+            host_mounts: vec![],
+            owner: None,
+        }
+    }
+
+    #[test]
+    fn containers_normalize_and_limits() {
+        let p = |v: Vec<ContainerItem>| {
+            InventoryPayload::Containers(ContainersInfo {
+                runtimes: vec![],
+                containers: v,
+                truncated: false,
+            })
+        };
+        // 順序不同、連接埠順序不同，hash 相同
+        let a = p(vec![container("x"), container("y")]);
+        let mut y = container("y");
+        y.ports.reverse();
+        let b = p(vec![y, container("x")]);
+        assert_eq!(a.canonical_hash(), b.canonical_hash());
+        assert_eq!(a.section(), Section::Containers);
+        assert_eq!(a.validate(), Ok(()));
+        let too_many = p((0..=MAX_CONTAINERS)
+            .map(|i| container(&i.to_string()))
+            .collect());
+        assert!(matches!(
+            too_many.validate(),
+            Err(ValidationError::TooManyItems { .. })
+        ));
+        let mut stopped = container("s");
+        stopped.state = "exited".into();
+        assert!(container("r").is_running() && !stopped.is_running());
+        // 沒有選填欄位時不序列化
+        let v = serde_json::to_value(container("x")).unwrap();
+        assert!(v.get("health").is_none() && v.get("owner").is_none(), "{v}");
     }
 
     #[test]

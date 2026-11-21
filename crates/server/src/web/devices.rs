@@ -84,16 +84,20 @@ const WINDOWS_ONLY_TABS: &[&str] = &[
     "patches",
 ];
 
-fn tabs_for(os_family: &str) -> Vec<(&'static str, &'static str)> {
+/// `containers`：這台有偵測到容器執行環境（才顯示「容器」分頁）
+fn tabs_for(os_family: &str, containers: bool) -> Vec<(&'static str, &'static str)> {
     if os_family == "linux" {
-        vec![
+        let mut tabs = vec![
             ("timeline", "時間軸"),
             ("commands", "遠端指令"),
             ("software", "軟體"),
             ("services", "服務"),
-            ("accounts", "帳號與權限"),
-            ("changes", "變更歷史"),
-        ]
+        ];
+        if containers {
+            tabs.push(("containers", "容器"));
+        }
+        tabs.extend([("accounts", "帳號與權限"), ("changes", "變更歷史")]);
+        tabs
     } else {
         vec![
             ("timeline", "時間軸"),
@@ -114,7 +118,7 @@ fn tabs_for(os_family: &str) -> Vec<(&'static str, &'static str)> {
 fn tab_applies(os_family: &str, tab: &str) -> bool {
     match os_family {
         "linux" => !WINDOWS_ONLY_TABS.contains(&tab),
-        _ => tab != "accounts",
+        _ => tab != "accounts" && tab != "containers",
     }
 }
 
@@ -766,7 +770,10 @@ pub async fn detail(
             runs_in: runs_in_label(runs_in.as_deref(), runs_in_detail.as_deref())
                 .unwrap_or_default(),
         },
-        tabs: tabs_for(&os_family),
+        tabs: tabs_for(
+            &os_family,
+            linux && super::containers::has_runtimes(&st, id).await?,
+        ),
     }))
 }
 
@@ -792,6 +799,9 @@ pub async fn tab(
     }
     if tab == "accounts" {
         return accounts_tab(&st, &s, id).await;
+    }
+    if tab == "containers" {
+        return super::containers::device_tab(&st, id).await;
     }
     if tab == "compliance" {
         return super::compliance::device_tab(&st, &s, id).await;
