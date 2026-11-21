@@ -213,7 +213,7 @@ mod tests {
         let u = otpauth_uri("Endpoint Manager", "alice", "MZXW6YTBOI");
         assert!(
             u.starts_with("otpauth://totp/Endpoint%20Manager%3Aalice?secret=MZXW6YTBOI&issuer=Endpoint%20Manager"),
-            "{u}"
+            "otpauth URI prefix"
         );
         assert!(qr_svg(&u).contains("<svg"));
     }
