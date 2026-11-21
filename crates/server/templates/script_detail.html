@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_macros.html" as m %}
 {% block content %}
 <div class="page-head">
   <div><div class="crumb"><a href="/scripts">腳本</a> ／ {{ name }}</div><h1>{{ name }}</h1></div>
@@ -22,6 +23,7 @@
   <tr><th>核准</th><td>{{ approved }}</td></tr>
   <tr><th>被指令使用</th><td>{{ used }} 次{% if used > 0 %}<span class="faint">已被指令使用，只能停用。</span>{% endif %}</td></tr>
 </table>
+{% call m::signature_box(sig, nav.csrf, status == "approved", "腳本核准後才能上傳簽章。") %}{% endcall %}
 <h2>內容</h2>
 <pre>{{ content }}</pre>
 {% endblock %}

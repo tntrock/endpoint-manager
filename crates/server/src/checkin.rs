@@ -9,6 +9,8 @@ use protocol::{
     CheckinRequest, CheckinResponse, OsFamily, SCHEMA_VERSION, Section, validate_strings,
 };
 
+const MAX_SIGNING_KEYS: usize = 16;
+
 use crate::AppState;
 use crate::db::load_settings;
 use crate::error::AppError;
@@ -67,11 +69,31 @@ pub async fn checkin(
     let settings = load_settings(&st.pool).await?;
     let rules = st.rules.get_throttled(&st.pool).await?;
     // 只有使用中的裝置會收到派送、更新原則與遠端指令
-    let (group_id, status, stored_os): (Option<i64>, String, String) =
-        sqlx::query_as("SELECT group_id, status, os_family FROM devices WHERE id = $1")
+    let (group_id, status, stored_os, stored_keys): (Option<i64>, String, String, Vec<String>) =
+        sqlx::query_as(
+            "SELECT group_id, status, os_family, signing_keys FROM devices WHERE id = $1",
+        )
+        .bind(device.device_id)
+        .fetch_one(&st.pool)
+        .await?;
+    // Agent 回報的信任公鑰：只保留格式正確的，最多 16 把；有變才寫入。
+    // 伺服器只拿來顯示與預先檢查簽章，Agent 的判斷不受影響
+    let mut keys: Vec<String> = req
+        .signing_keys
+        .iter()
+        .filter_map(|k| protocol::signing::parse_public_keys([k.as_str()]).ok())
+        .flatten()
+        .take(MAX_SIGNING_KEYS)
+        .collect();
+    keys.sort();
+    keys.dedup();
+    if keys != stored_keys {
+        sqlx::query("UPDATE devices SET signing_keys = $2 WHERE id = $1")
             .bind(device.device_id)
-            .fetch_one(&st.pool)
+            .bind(&keys)
+            .execute(&st.pool)
             .await?;
+    }
     // Agent 回報的作業系統類型與記錄不同才寫入；沒帶（舊版 Agent）就維持原值
     let mut is_linux = stored_os == OsFamily::Linux.as_str();
     if let Some(os) = req.os_family

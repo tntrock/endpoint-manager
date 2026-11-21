@@ -93,6 +93,7 @@ struct DeployRow {
     detect_name: String,
     detect_publisher: Option<String>,
     detect_min_version: Option<String>,
+    signature: Option<String>,
 }
 
 pub async fn load(pool: &PgPool) -> Result<DeploySet, sqlx::Error> {
@@ -104,7 +105,7 @@ pub async fn load(pool: &PgPool) -> Result<DeploySet, sqlx::Error> {
         "SELECT d.id, d.revision, d.action, d.stage, d.paused_from, d.pilot_group_id, \
                 p.id AS package_id, p.kind, p.sha256, p.size, p.file_name, p.install_args, p.uninstall_args, \
                 p.msi_product_code, p.success_codes, p.detect_name, p.detect_publisher, \
-                p.detect_min_version \
+                p.detect_min_version, p.signature \
          FROM deployments d JOIN packages p ON p.id = d.package_id \
          WHERE d.stage <> 'stopped' ORDER BY d.id",
     )
@@ -174,7 +175,7 @@ pub async fn load(pool: &PgPool) -> Result<DeploySet, sqlx::Error> {
                         publisher: r.detect_publisher,
                         min_version: r.detect_min_version,
                     },
-                    signature: None,
+                    signature: r.signature,
                 },
             }
         })

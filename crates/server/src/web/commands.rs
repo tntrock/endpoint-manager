@@ -218,19 +218,29 @@ async fn approved_scripts(
     if !s.all_devices() {
         return Ok(vec![]);
     }
-    let rows: Vec<(i64, String, String)> = sqlx::query_as(
-        "SELECT id, name, language FROM scripts \
+    let rows: Vec<(i64, String, String, bool)> = sqlx::query_as(
+        "SELECT id, name, language, signature IS NOT NULL FROM scripts \
          WHERE status = 'approved' AND ($1::text IS NULL OR language = $1) \
          ORDER BY lower(name)",
     )
     .bind(os_family.map(language_for_os))
     .fetch_all(&st.pool)
     .await?;
+    // 有端點要求簽章時，標出未簽章的腳本（那些端點不會執行）
+    let enforcing = crate::signing::enforcing_devices(&st.pool).await?;
     Ok(rows
         .into_iter()
-        .map(|(id, name, language)| SelectOption {
+        .map(|(id, name, language, signed)| SelectOption {
             value: id.to_string(),
-            label: format!("{name}（{}）", language_label(&language)),
+            label: format!(
+                "{name}（{}{}）",
+                language_label(&language),
+                if !signed && enforcing > 0 {
+                    "，未簽章"
+                } else {
+                    ""
+                }
+            ),
             selected: false,
         })
         .collect())

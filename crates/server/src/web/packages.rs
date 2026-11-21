@@ -3,7 +3,7 @@
 use askama::Template;
 use axum::Json;
 use axum::body::Body;
-use axum::extract::{Path, RawForm, State};
+use axum::extract::{Path, Query, RawForm, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
 use chrono::{DateTime, Utc};
@@ -240,6 +240,7 @@ struct FormPage {
     detect_publisher: String,
     detect_min_version: String,
     error: Option<String>,
+    sig: super::signing::SignatureView,
 }
 
 type PackageDbRow = (
@@ -257,19 +258,31 @@ type PackageDbRow = (
     Option<String>,
     Option<String>,
     i64,
+    Option<String>,
 );
 
-async fn load_form(st: &AppState, s: &Session, id: i64) -> Result<Option<FormPage>, sqlx::Error> {
+async fn load_form(
+    st: &AppState,
+    s: &Session,
+    id: i64,
+    q: &super::signing::SigQuery,
+) -> Result<Option<FormPage>, sqlx::Error> {
     let row: Option<PackageDbRow> = sqlx::query_as(
         "SELECT name, version, kind, file_name, size, sha256, msi_product_code, install_args, \
                 uninstall_args, success_codes, detect_name, detect_publisher, detect_min_version, \
-                (SELECT count(*) FROM deployments d WHERE d.package_id = p.id) \
+                (SELECT count(*) FROM deployments d WHERE d.package_id = p.id), signature \
          FROM packages p WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(&st.pool)
     .await?;
-    Ok(row.map(|r| FormPage {
+    let Some(r) = row else {
+        return Ok(None);
+    };
+    let sig =
+        super::signing::SignatureView::load(st, format!("/packages/{id}"), r.14.as_deref(), q)
+            .await?;
+    Ok(Some(FormPage {
         nav: Nav::new(s, "deployments"),
         id,
         name: r.0,
@@ -292,6 +305,7 @@ async fn load_form(st: &AppState, s: &Session, id: i64) -> Result<Option<FormPag
         detect_min_version: r.12.unwrap_or_default(),
         used: r.13,
         error: None,
+        sig,
     }))
 }
 
@@ -299,9 +313,10 @@ pub async fn edit_form(
     State(st): State<AppState>,
     AdminSession(s): AdminSession,
     Path(id): Path<i64>,
+    Query(q): Query<super::signing::SigQuery>,
 ) -> Result<Response, Response> {
     platform(&s)?;
-    let page = load_form(&st, &s, id).await.map_err(db_error)?;
+    let page = load_form(&st, &s, id, &q).await.map_err(db_error)?;
     page.map(|p| render(&p)).ok_or_else(not_found)
 }
 
@@ -356,7 +371,7 @@ pub async fn update(
     let (csrf, mut input, codes_raw, codes) = parse(&raw);
     check_csrf(&s, &csrf)?;
     platform(&s)?;
-    let mut page = load_form(&st, &s, id)
+    let mut page = load_form(&st, &s, id, &Default::default())
         .await
         .map_err(db_error)?
         .ok_or_else(not_found)?;

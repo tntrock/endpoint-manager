@@ -29,7 +29,7 @@ pub struct RunInput {
 }
 
 /// 腳本快照：(id, sha256, 內容, 逾時, 語言)
-type ScriptSnapshot = (i64, String, String, i32, ScriptLanguage);
+type ScriptSnapshot = (i64, String, String, i32, ScriptLanguage, Option<String>);
 
 /// 回傳 (run id, 台數, 因作業系統不符而略過的台數)
 pub async fn create_run(
@@ -83,15 +83,17 @@ pub async fn create_run(
             Option<String>,
             Vec<String>,
             String,
+            Option<String>,
         );
         let row: Option<Row> = sqlx::query_as(
-            "SELECT status, sha256, content, timeout_minutes, approved_by, editors, language \
+            "SELECT status, sha256, content, timeout_minutes, approved_by, editors, language, \
+                    signature \
              FROM scripts WHERE id = $1 FOR SHARE",
         )
         .bind(id)
         .fetch_optional(&mut *tx)
         .await?;
-        let (status, sha, content, timeout, approved_by, editors, language) =
+        let (status, sha, content, timeout, approved_by, editors, language, signature) =
             row.ok_or_else(|| CmdError::NotFound("腳本不存在".into()))?;
         check!(status == "approved", Conflict, "腳本尚未核准或已停用");
         // 雙人核准下，自己核准的（切換模式前）不能執行
@@ -101,7 +103,7 @@ pub async fn create_run(
             "腳本需要另一位平台管理員核准（已開啟雙人核准）"
         );
         let language = ScriptLanguage::parse(&language).unwrap_or_default();
-        Some((id, sha, content, timeout, language))
+        Some((id, sha, content, timeout, language, signature))
     } else {
         None
     };
@@ -162,8 +164,8 @@ pub async fn create_run(
     let run_id: i64 = sqlx::query_scalar(
         "INSERT INTO command_runs (action, delay_minutes, script_id, script_sha256, \
            script_content, script_timeout_minutes, target_label, created_by, expires_at, \
-           script_language) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id",
+           script_language, script_signature) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id",
     )
     .bind(action.as_str())
     .bind(delay)
@@ -175,6 +177,7 @@ pub async fn create_run(
     .bind(&actor.username)
     .bind(expires_at)
     .bind(script.as_ref().map(|s| s.4.as_str()))
+    .bind(script.as_ref().and_then(|s| s.5.clone()))
     .fetch_one(&mut *tx)
     .await?;
     let mut skipped = 0i64;

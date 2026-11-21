@@ -251,6 +251,7 @@ type DetailRow = (
     Option<DateTime<Utc>>,
     Vec<String>,
     String,
+    Option<String>,
 );
 
 #[derive(Template)]
@@ -274,12 +275,14 @@ struct DetailPage {
     can_approve: bool,
     /// 等待核准，但目前使用者是修改者之一
     needs_other: bool,
+    sig: super::signing::SignatureView,
 }
 
 async fn load(st: &AppState, id: i64) -> Result<Option<DetailRow>, sqlx::Error> {
     sqlx::query_as(
         "SELECT name, description, content, sha256, timeout_minutes, status, created_by, \
-                created_at, updated_by, updated_at, approved_by, approved_at, editors, language \
+                created_at, updated_by, updated_at, approved_by, approved_at, editors, language, \
+                signature \
          FROM scripts WHERE id = $1",
     )
     .bind(id)
@@ -291,6 +294,7 @@ pub async fn detail(
     State(st): State<AppState>,
     AdminSession(s): AdminSession,
     Path(id): Path<i64>,
+    Query(q): Query<super::signing::SigQuery>,
 ) -> Result<Response, Response> {
     platform(&s)?;
     let Some(r) = load(&st, id).await.map_err(db_error)? else {
@@ -301,6 +305,10 @@ pub async fn detail(
     let (created_by, created_at, updated_by, updated_at, approved_by, approved_at, editors) =
         (r.6, r.7, r.8, r.9, r.10, r.11, r.12);
     let language = language_label(&r.13);
+    let sig =
+        super::signing::SignatureView::load(&st, format!("/scripts/{id}"), r.14.as_deref(), &q)
+            .await
+            .map_err(db_error)?;
     let used: i64 = sqlx::query_scalar("SELECT count(*) FROM command_runs WHERE script_id = $1")
         .bind(id)
         .fetch_one(&st.pool)
@@ -333,6 +341,7 @@ pub async fn detail(
         used,
         can_approve: awaiting && !mine,
         needs_other: awaiting && mine,
+        sig,
     }))
 }
 
