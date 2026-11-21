@@ -13,6 +13,7 @@
 {% if needs_other %}<div class="notice">需由另一位平台管理員核准（你修改過這個版本）。</div>{% endif %}
 <table>
   <tr><th>狀態</th><td>{{ status_label }}</td></tr>
+  <tr><th>語言</th><td>{{ language }}</td></tr>
   <tr><th>說明</th><td>{{ description }}</td></tr>
   <tr><th>SHA-256</th><td><code class="sha">{{ sha256 }}</code></td></tr>
   <tr><th>逾時</th><td>{{ timeout_minutes }} 分鐘</td></tr>

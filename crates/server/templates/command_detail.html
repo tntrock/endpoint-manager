@@ -9,7 +9,8 @@
 <table>
   <tr><th>對象</th><td>{{ run.target }}</td></tr>
   {% if let Some(d) = delay %}<tr><th>延遲</th><td>{{ d }} 分鐘</td></tr>{% endif %}
-  {% if let Some(sc) = script %}<tr><th>腳本</th><td>{{ sc.0 }}（<code>{{ sc.1 }}</code>）</td></tr>{% endif %}
+  {% if let Some(sc) = script %}<tr><th>腳本</th><td>{{ sc.0 }}（{{ sc.2 }}，<code>{{ sc.1 }}</code>）</td></tr>{% endif %}
+  {% if skipped_os > 0 %}<tr><th>略過</th><td>{{ skipped_os }} 台作業系統不符的裝置</td></tr>{% endif %}
   <tr><th>建立</th><td>{{ run.created_by }}（{{ run.created }}）</td></tr>
   <tr><th>過期</th><td>{{ run.expires }}</td></tr>
   <tr><th>狀態</th><td>{% if canceled %}<span class="tag off">已取消</span>{% else %}等待中 {{ run.counts.waiting }} 台{% endif %}</td></tr>
