@@ -60,9 +60,31 @@ pub const SESSION_HOURS: i32 = 8;
 pub const MAX_FAILED_LOGINS: i32 = 5;
 pub const LOCK_MINUTES: i32 = 15;
 
+/// 等待輸入驗證碼的有效時間與錯誤次數上限
+pub const MFA_CHALLENGE_MINUTES: i32 = 5;
+pub const MFA_CHALLENGE_TRIES: i32 = 5;
+pub const MFA_COOKIE: &str = "em_mfa";
+
 pub enum LoginOutcome {
-    Ok { session_token: String },
+    Ok {
+        session_token: String,
+    },
+    /// 密碼正確，還要輸入驗證碼
+    MfaRequired {
+        challenge_token: String,
+    },
     Failed,
+}
+
+/// 驗證碼步驟的結果
+pub enum MfaOutcome {
+    Ok {
+        session_token: String,
+    },
+    /// 錯了，可以再試
+    Retry,
+    /// 挑戰已失效（過期、錯太多次、帳號被鎖定或停用），要重新輸入密碼
+    Restart,
 }
 
 #[derive(Debug, Clone)]
@@ -73,6 +95,8 @@ pub struct Session {
     pub token_hash: String,
     pub role: Role,
     pub groups: Vec<i64>,
+    /// 系統要求 MFA、帳號還沒設定：只能到 /mfa 設定或登出
+    pub setup_only: bool,
 }
 
 impl Session {
@@ -143,14 +167,14 @@ pub async fn login(pool: &PgPool, username: &str, password: &str) -> anyhow::Res
     let username: String = username.chars().take(MAX_USERNAME_LEN).collect();
     let mut tx = pool.begin().await?;
     // FOR UPDATE：同一帳號的登入依序處理，平行請求無法繞過失敗次數上限
-    let row: Option<(i64, String, Option<DateTime<Utc>>)> = sqlx::query_as(
-        "SELECT id, password_hash, locked_until FROM admins \
+    let row: Option<(i64, String, Option<DateTime<Utc>>, bool)> = sqlx::query_as(
+        "SELECT id, password_hash, locked_until, mfa_secret IS NOT NULL FROM admins \
          WHERE username = $1 AND disabled_at IS NULL FOR UPDATE",
     )
     .bind(&username)
     .fetch_optional(&mut *tx)
     .await?;
-    let Some((admin_id, hash, locked_until)) = row else {
+    let Some((admin_id, hash, locked_until, has_mfa)) = row else {
         verify_blocking(password, dummy_hash()).await;
         crate::audit::record(
             &mut tx,
@@ -182,52 +206,212 @@ pub async fn login(pool: &PgPool, username: &str, password: &str) -> anyhow::Res
         tx.commit().await?;
         return Ok(LoginOutcome::Failed);
     }
+    sqlx::query("DELETE FROM mfa_challenges WHERE expires_at < now()")
+        .execute(&mut *tx)
+        .await?;
+    if has_mfa {
+        // 失敗次數留到驗證碼也正確才歸零：猜驗證碼的錯誤繼續累計
+        let token = new_token();
+        sqlx::query(
+            "INSERT INTO mfa_challenges (token_hash, admin_id, expires_at) \
+             VALUES ($1, $2, now() + make_interval(mins => $3))",
+        )
+        .bind(sha256_hex(&token))
+        .bind(admin_id)
+        .bind(MFA_CHALLENGE_MINUTES)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        return Ok(LoginOutcome::MfaRequired {
+            challenge_token: token,
+        });
+    }
     sqlx::query("UPDATE admins SET failed_logins = 0, locked_until = NULL WHERE id = $1")
         .bind(admin_id)
         .execute(&mut *tx)
         .await?;
-    let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
-    sqlx::query(
-        "INSERT INTO sessions (token_hash, admin_id, csrf_token, expires_at) \
-         VALUES ($1, $2, $3, now() + make_interval(hours => $4))",
+    let setup_only = crate::mfa::required(pool).await?;
+    let token = create_session(&mut tx, admin_id, setup_only).await?;
+    crate::audit::record(
+        &mut tx,
+        &username,
+        "login",
+        None,
+        if setup_only {
+            serde_json::json!({ "mfa": "setup_required" })
+        } else {
+            serde_json::json!({})
+        },
     )
-    .bind(sha256_hex(&token))
-    .bind(admin_id)
-    .bind(Uuid::new_v4().simple().to_string())
-    .bind(SESSION_HOURS)
-    .execute(&mut *tx)
     .await?;
-    sqlx::query("DELETE FROM sessions WHERE expires_at < now()")
-        .execute(&mut *tx)
-        .await?;
-    crate::audit::record(&mut tx, &username, "login", None, serde_json::json!({})).await?;
     tx.commit().await?;
     Ok(LoginOutcome::Ok {
         session_token: token,
     })
 }
 
+fn new_token() -> String {
+    format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
+}
+
+async fn create_session(
+    conn: &mut sqlx::PgConnection,
+    admin_id: i64,
+    setup_only: bool,
+) -> Result<String, sqlx::Error> {
+    let token = new_token();
+    sqlx::query(
+        "INSERT INTO sessions (token_hash, admin_id, csrf_token, expires_at, setup_only) \
+         VALUES ($1, $2, $3, now() + make_interval(hours => $4), $5)",
+    )
+    .bind(sha256_hex(&token))
+    .bind(admin_id)
+    .bind(Uuid::new_v4().simple().to_string())
+    .bind(SESSION_HOURS)
+    .bind(setup_only)
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query("DELETE FROM sessions WHERE expires_at < now()")
+        .execute(&mut *conn)
+        .await?;
+    Ok(token)
+}
+
+type ChallengeRow = (
+    i64,
+    i32,
+    String,
+    Option<String>,
+    Option<i64>,
+    Option<DateTime<Utc>>,
+);
+
+/// 登入第二步：以挑戰 token 與驗證碼（或復原碼）換工作階段
+pub async fn login_mfa(pool: &PgPool, challenge: &str, code: &str) -> anyhow::Result<MfaOutcome> {
+    let challenge_hash = sha256_hex(challenge);
+    let mut tx = pool.begin().await?;
+    let row: Option<ChallengeRow> = sqlx::query_as(
+        "SELECT c.admin_id, c.failures, a.username, a.mfa_secret, a.mfa_last_step, a.locked_until \
+         FROM mfa_challenges c JOIN admins a ON a.id = c.admin_id \
+         WHERE c.token_hash = $1 AND c.expires_at > now() AND a.disabled_at IS NULL \
+         FOR UPDATE OF a, c",
+    )
+    .bind(&challenge_hash)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((admin_id, failures, username, secret, last_step, locked_until)) = row else {
+        return Ok(MfaOutcome::Restart);
+    };
+    // 期間被鎖定，或 MFA 被重設
+    let (Some(secret), false) = (secret, locked_until.is_some_and(|t| t > Utc::now())) else {
+        drop_challenge(&mut tx, &challenge_hash).await?;
+        crate::audit::record(
+            &mut tx,
+            &username,
+            "login_failed",
+            None,
+            serde_json::json!({ "reason": "locked" }),
+        )
+        .await?;
+        tx.commit().await?;
+        return Ok(MfaOutcome::Restart);
+    };
+    match crate::mfa::check_code(&mut tx, admin_id, &secret, last_step, code).await? {
+        Some(method) => {
+            drop_challenge(&mut tx, &challenge_hash).await?;
+            sqlx::query("UPDATE admins SET failed_logins = 0, locked_until = NULL WHERE id = $1")
+                .bind(admin_id)
+                .execute(&mut *tx)
+                .await?;
+            let token = create_session(&mut tx, admin_id, false).await?;
+            crate::audit::record(
+                &mut tx,
+                &username,
+                "login",
+                None,
+                serde_json::json!({ "mfa": method.as_str() }),
+            )
+            .await?;
+            tx.commit().await?;
+            Ok(MfaOutcome::Ok {
+                session_token: token,
+            })
+        }
+        None => {
+            let locked = record_failure(&mut tx, admin_id).await?;
+            let restart = locked || failures + 1 >= MFA_CHALLENGE_TRIES;
+            if restart {
+                drop_challenge(&mut tx, &challenge_hash).await?;
+            } else {
+                sqlx::query(
+                    "UPDATE mfa_challenges SET failures = failures + 1 WHERE token_hash = $1",
+                )
+                .bind(&challenge_hash)
+                .execute(&mut *tx)
+                .await?;
+            }
+            crate::audit::record(
+                &mut tx,
+                &username,
+                "login_failed",
+                None,
+                serde_json::json!({ "reason": "mfa" }),
+            )
+            .await?;
+            tx.commit().await?;
+            Ok(if restart {
+                MfaOutcome::Restart
+            } else {
+                MfaOutcome::Retry
+            })
+        }
+    }
+}
+
+async fn drop_challenge(conn: &mut sqlx::PgConnection, hash: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM mfa_challenges WHERE token_hash = $1")
+        .bind(hash)
+        .execute(conn)
+        .await
+        .map(|_| ())
+}
+
+pub fn mfa_cookie(token: &str) -> String {
+    format!(
+        "{MFA_COOKIE}={token}; Path=/login; HttpOnly; Secure; SameSite=Strict; Max-Age={}",
+        MFA_CHALLENGE_MINUTES * 60
+    )
+}
+
+pub fn clear_mfa_cookie() -> String {
+    format!("{MFA_COOKIE}=; Path=/login; HttpOnly; Secure; SameSite=Strict; Max-Age=0")
+}
+
 pub async fn lookup_session(pool: &PgPool, token: &str) -> Result<Option<Session>, sqlx::Error> {
     let hash = sha256_hex(token);
-    let row: Option<(i64, String, String, String, Vec<i64>)> = sqlx::query_as(
+    let row: Option<(i64, String, String, String, Vec<i64>, bool)> = sqlx::query_as(
         "SELECT a.id, a.username, s.csrf_token, a.role, \
-                ARRAY(SELECT group_id FROM admin_groups g WHERE g.admin_id = a.id ORDER BY group_id) \
+                ARRAY(SELECT group_id FROM admin_groups g WHERE g.admin_id = a.id ORDER BY group_id), \
+                s.setup_only \
          FROM sessions s JOIN admins a ON a.id = s.admin_id \
          WHERE s.token_hash = $1 AND s.expires_at > now() AND a.disabled_at IS NULL",
     )
     .bind(&hash)
     .fetch_optional(pool)
     .await?;
-    Ok(row.and_then(|(admin_id, username, csrf, role, groups)| {
-        Some(Session {
-            admin_id,
-            username,
-            csrf,
-            token_hash: hash.clone(),
-            role: Role::parse(&role)?,
-            groups,
-        })
-    }))
+    Ok(
+        row.and_then(|(admin_id, username, csrf, role, groups, setup_only)| {
+            Some(Session {
+                admin_id,
+                username,
+                csrf,
+                token_hash: hash.clone(),
+                role: Role::parse(&role)?,
+                groups,
+                setup_only,
+            })
+        }),
+    )
 }
 
 pub async fn logout(pool: &PgPool, s: &Session) -> Result<(), sqlx::Error> {
@@ -261,14 +445,22 @@ pub fn clear_cookie() -> &'static str {
 }
 
 fn cookie_value(parts: &Parts, name: &str) -> Option<String> {
-    parts
-        .headers
+    cookie_from(&parts.headers, name)
+}
+
+pub fn cookie_from(headers: &axum::http::HeaderMap, name: &str) -> Option<String> {
+    headers
         .get_all(header::COOKIE)
         .iter()
         .filter_map(|v| v.to_str().ok())
         .flat_map(|s| s.split(';'))
         .map(str::trim)
         .find_map(|kv| kv.strip_prefix(name)?.strip_prefix('=').map(str::to_string))
+}
+
+/// 只能設定 MFA 的工作階段可以用的頁面
+fn setup_allowed(path: &str) -> bool {
+    path == "/mfa" || path.starts_with("/mfa/") || path == "/logout"
 }
 
 /// 已登入的管理員；未登入時轉到登入頁。
@@ -284,6 +476,9 @@ impl FromRequestParts<crate::AppState> for AdminSession {
         let to_login = || Redirect::to("/login").into_response();
         let token = cookie_value(parts, SESSION_COOKIE).ok_or_else(to_login)?;
         match lookup_session(&state.pool, &token).await {
+            Ok(Some(s)) if s.setup_only && !setup_allowed(parts.uri.path()) => {
+                Err(Redirect::to("/mfa").into_response())
+            }
             Ok(Some(s)) => Ok(AdminSession(s)),
             Ok(None) => Err(to_login()),
             Err(e) => Err(crate::error::AppError::from(e).into_response()),
@@ -377,7 +572,7 @@ mod tests {
     async fn ok(pool: &PgPool, pw: &str) -> Option<String> {
         match login(pool, "alice", pw).await.unwrap() {
             LoginOutcome::Ok { session_token } => Some(session_token),
-            LoginOutcome::Failed => None,
+            LoginOutcome::Failed | LoginOutcome::MfaRequired { .. } => None,
         }
     }
 

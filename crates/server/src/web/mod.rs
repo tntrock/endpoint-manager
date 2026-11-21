@@ -14,6 +14,7 @@ pub mod deployments;
 pub mod devices;
 pub mod groups;
 pub mod login;
+pub mod mfa;
 pub mod notify;
 pub mod packages;
 pub mod password;
@@ -125,6 +126,11 @@ pub fn web_router(state: AppState) -> Router {
         .route("/", get(dashboard::page))
         .route("/ui/status", get(dashboard::status))
         .route("/login", get(login::form).post(login::submit))
+        .route("/login/mfa", get(login::mfa_form).post(login::mfa_submit))
+        .route("/mfa", get(mfa::form))
+        .route("/mfa/enable", post(mfa::enable))
+        .route("/mfa/disable", post(mfa::disable))
+        .route("/mfa/recovery", post(mfa::recovery))
         .route("/logout", post(login::logout))
         .route("/devices", get(devices::list))
         .route("/software", get(software::search))
@@ -213,6 +219,8 @@ pub fn web_router(state: AppState) -> Router {
         .route("/accounts/{id}/enable", post(accounts::enable))
         .route("/accounts/{id}/unlock", post(accounts::unlock))
         .route("/accounts/{id}/password", post(accounts::reset_password))
+        .route("/accounts/{id}/mfa-reset", post(accounts::reset_mfa))
+        .route("/accounts/mfa-required", post(accounts::set_mfa_required))
         .route("/password", get(password::form).post(password::submit))
         .route("/audit", get(audit::page))
         .route("/devices/approve-all", post(devices::approve_all))

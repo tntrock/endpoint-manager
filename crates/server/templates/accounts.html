@@ -1,6 +1,12 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="page-head"><div><h1>帳號</h1><div class="sub">管理網頁的登入帳號與權限</div></div></div>
+<form class="card actions" method="post" action="/accounts/mfa-required">
+  <input type="hidden" name="csrf" value="{{ nav.csrf }}">
+  <label><input type="checkbox" name="on" value="1" {% if mfa_required %}checked{% endif %}> 所有帳號都必須使用兩步驟驗證</label>
+  <button class="btn sm">儲存</button>
+  <span class="help">開啟後，還沒設定的帳號下次登入時必須先完成設定才能使用管理網頁。開啟前請先設定好自己的。</span>
+</form>
 <fieldset><legend>建立帳號</legend>
 <form method="post" action="/accounts">
   <input type="hidden" name="csrf" value="{{ nav.csrf }}">
@@ -14,10 +20,10 @@
 </form>
 </fieldset>
 <table>
-  <tr><th>帳號</th><th>角色</th><th>群組</th><th>狀態</th><th>建立時間</th></tr>
+  <tr><th>帳號</th><th>角色</th><th>群組</th><th>狀態</th><th>兩步驟驗證</th><th>建立時間</th></tr>
   {% for a in rows %}
   <tr><td><a href="/accounts/{{ a.id }}">{{ a.username }}</a></td><td>{{ a.role }}</td><td>{{ a.groups }}</td>
-    <td><span class="tag {{ a.state_class }}">{{ a.state }}</span></td><td><span class="num">{{ a.created_at }}</span></td></tr>
+    <td><span class="tag {{ a.state_class }}">{{ a.state }}</span></td><td>{% if a.mfa %}<span class="tag ok">已啟用</span>{% else %}<span class="tag">未啟用</span>{% endif %}</td><td><span class="num">{{ a.created_at }}</span></td></tr>
   {% endfor %}
 </table>
 {% endblock %}
