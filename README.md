@@ -7,7 +7,7 @@
 [![Release](https://img.shields.io/github/v/release/tntrock/endpoint-manager)](https://github.com/tntrock/endpoint-manager/releases/latest)
 [![License: GPL-3.0](https://img.shields.io/github/license/tntrock/endpoint-manager)](LICENSE)
 
-企業 Windows 端點管理工具：資產盤點、合規檢查、軟體派送、Windows Update 控制、遠端指令，並可在分點放快取主機節省 WAN 頻寬。
+企業端點管理工具（Windows 與 Linux）：資產盤點、合規檢查、軟體派送、Windows Update 控制、遠端指令，並可在分點放快取主機節省 WAN 頻寬。合規、派送與 Windows Update 只適用 Windows。
 
 授權：GPL-3.0-only
 
@@ -55,7 +55,7 @@ flowchart LR
 |---|---|---|
 | `endpoint-server` | 總部的 Linux（Docker Compose）或 Windows 主機 | 中央伺服器。同一個程式提供兩個 HTTPS 服務：給 Agent 與快取的 **Agent API**，以及給 IT 人員的**管理網頁**。資料全部存在 PostgreSQL；派送套件存在本機目錄。 |
 | PostgreSQL 17 | 與伺服器同機或獨立主機 | 唯一的資料庫。只有 `endpoint-server` 會連線。 |
-| `endpoint-agent` | 每台受管的 Windows 電腦（Windows 服務，以 SYSTEM 執行） | 定期向中央報到、上傳盤點、取得要執行的派送／更新原則／遠端指令並回報結果。 |
+| `endpoint-agent` | 每台受管的電腦：Windows（Windows 服務，以 SYSTEM 執行）或 x86_64 Linux（systemd 服務，以 root 執行） | 定期向中央報到、上傳盤點、取得要執行的派送／更新原則／遠端指令並回報結果。Linux 只有盤點與遠端指令。 |
 | `endpoint-cache` | 分點的一台 Windows 或 Linux 主機（選用） | 向中央預先下載派送套件，提供給同據點的端點。端點仍直接向中央報到，只有**套件下載**改走快取。 |
 
 設計重點：
@@ -71,7 +71,7 @@ flowchart LR
 | # | 來源 | 目的 | 連接埠 | 協定 | 用途 | 必要 |
 |---|---|---|---|---|---|---|
 | 1 | IT 管理員的瀏覽器 | 中央伺服器 | **TCP 443**（`EM_WEB_LISTEN`） | HTTPS | 管理網頁 | 必要 |
-| 2 | 所有 Windows 端點 | 中央伺服器 | **TCP 8443**（`EM_AGENT_LISTEN`） | HTTPS，註冊後為 mTLS | 註冊、報到、盤點、取得派送／原則／指令、回報結果、下載套件、憑證更新 | 必要 |
+| 2 | 所有端點 | 中央伺服器 | **TCP 8443**（`EM_AGENT_LISTEN`） | HTTPS，註冊後為 mTLS | 註冊、報到、盤點、取得派送／原則／指令、回報結果、下載套件、憑證更新 | 必要 |
 | 3 | 中央伺服器 | PostgreSQL | **TCP 5432** | PostgreSQL | 資料庫 | 必要 |
 | 4 | 分點端點 | 該據點的快取 | **TCP 8443**（快取 `config.json` 的 `listen`） | HTTPS（mTLS） | 下載派送套件 | 有快取時 |
 | 5 | 快取主機 | 中央伺服器 | **TCP 8443** | HTTPS（mTLS） | 快取註冊、報到、確認端點是否被指派、預先下載套件 | 有快取時 |
@@ -141,7 +141,7 @@ docker run --rm -v "$PWD/pki:/pki" endpoint-manager-server ca-init /pki em.examp
 
 **把 `deploy/pki/root.key` 移到離線儲存媒體後從伺服器刪除。**
 
-從 GitHub Release 下載 `endpoint-agent-<版本>.msi`（通用範本）放到 `deploy/agent/endpoint-agent.msi`，然後：
+從 GitHub Release 下載 `endpoint-agent-<版本>.msi`（通用範本）放到 `deploy/agent/endpoint-agent.msi`。要管理 Linux 時，再把 `endpoint-agent_<版本>_amd64.deb`、`endpoint-agent-<版本>-1.x86_64.rpm` 改名為 `deploy/agent/endpoint-agent.deb`、`endpoint-agent.rpm`（用不到的可以不放）。然後：
 
 ```bash
 docker compose up -d
@@ -160,7 +160,7 @@ Volume：
 - `pgdata`：資料庫。
 - `packages`：派送套件。
 - `./pki`：唯讀掛載的憑證。
-- `./agent`：唯讀掛載的 MSI 範本。
+- `./agent`：唯讀掛載的 MSI 範本與 Linux 安裝包。
 
 備份時至少備份 `pgdata`、`packages` 與 `pki`（`root.key` 除外，另行離線保存）。
 
@@ -176,6 +176,7 @@ Volume：
 | `EM_WEB_LISTEN` | `0.0.0.0:443` | 管理網頁的監聽位址 |
 | `EM_AGENT_PUBLIC_URL` | （空） | 管理網頁產生安裝檔時預填的伺服器網址，例如 `https://em.example.com:8443` |
 | `EM_AGENT_MSI` | （空） | 通用範本 MSI 的路徑；沒設時「建立並下載安裝檔」不會出現 |
+| `EM_AGENT_DEB`、`EM_AGENT_RPM` | （空） | Linux agent 的 deb／rpm 路徑，原樣提供下載；沒設時註冊金鑰頁不顯示對應的下載按鈕 |
 | `EM_PACKAGE_DIR` | `packages` | 派送套件的存放目錄 |
 | `EM_DOWNLOAD_CONCURRENCY` | 50 | 同時下載套件的上限，超過時回 503，Agent 稍後再試 |
 | `EM_ENROLL_PER_IP_PER_MINUTE` | 60 | 每個來源 IP 每分鐘的註冊次數上限 |
@@ -184,6 +185,8 @@ Volume：
 | `EM_WEBHOOK_SECRET` | （空） | 合規通知 Webhook 的 HMAC 簽章密鑰 |
 
 ### 3. 安裝 Agent
+
+#### Windows
 
 管理網頁 →「註冊金鑰」→ 填好名稱、次數、群組、有效天數與伺服器網址 →「**建立並下載安裝檔**」。下載的 `endpoint-agent.msi` 已包好伺服器網址、註冊金鑰與根憑證：
 
@@ -225,6 +228,46 @@ Agent 的檔案（`C:\ProgramData\EndpointManager`，可用 `EM_AGENT_DIR` 覆�
 | `endpoint-agent service` | 由 Windows 服務啟動 |
 | `endpoint-agent run` | 主控台模式（開發／除錯），Ctrl+C 結束 |
 | `endpoint-agent configure`／`unconfigure` | 由 MSI 在安裝／解除安裝時呼叫，一般不需手動執行 |
+
+#### Linux
+
+支援 x86_64、以 systemd 管理服務的發行版（Debian／Ubuntu 系列、RHEL／Rocky／Alma／Fedora 系列等）。執行檔是 musl 靜態連結，不依賴發行版的函式庫。
+
+安裝包（GitHub Release 或 CI 的 `agent-linux` 產物）：
+
+| 檔案 | 用途 |
+|---|---|
+| `endpoint-agent_<版本>_amd64.deb` | Debian／Ubuntu |
+| `endpoint-agent-<版本>-1.x86_64.rpm` | RHEL 系列 |
+| `endpoint-agent-<版本>-x86_64-linux.tar.gz` | 其他發行版、手動安裝 |
+
+管理網頁 →「註冊金鑰」→ 填好名稱、次數、群組、有效天數與伺服器網址 →「**建立**」。頁面會出現「Linux 安裝」區塊：
+
+1. deb／rpm 的下載按鈕（伺服器設定了 `EM_AGENT_DEB`／`EM_AGENT_RPM` 才有）。在自己的電腦下載後用 `scp` 複製到 Linux 電腦，所以 Linux 電腦不需要對外網路。
+2. 安裝指令：`sudo apt install ./<檔名>.deb` 或 `sudo dnf install ./<檔名>.rpm`。安裝後服務已啟用，但還沒註冊前不會啟動。
+3. 已填好伺服器網址、金鑰與根憑證的 `sudo endpoint-agent configure …` 指令，有複製按鈕。執行後會自動啟動服務，電腦隨即註冊並出現在後台。
+
+這行指令含金鑰，會留在 shell 歷程。網頁上的指令開頭有一個空白，bash 預設（`HISTCONTROL=ignorespace`）不會記錄；**註冊完成後請在網頁作廢這把金鑰**。
+
+金鑰只顯示這一次。沒有網頁時，`--root-ca` 的值是 `root.pem` 去掉頭尾兩行後接成的一行 base64：
+
+```bash
+sudo endpoint-agent configure --server-url https://em.example.com:8443 --token <金鑰> \
+  --root-ca "$(grep -v -- ----- root.pem | tr -d '\n')"
+```
+
+- **升級**：安裝新版的 deb／rpm，設定與註冊身分沿用，服務自動重新啟動。**升級順序：先升級伺服器，再升級 Agent。**
+- **移除**：`sudo apt remove endpoint-agent` 或 `sudo dnf remove endpoint-agent`。會停止服務並刪除資料目錄（含裝置憑證）；之後重新安裝，需在網頁核准重新註冊。
+- **tar.gz**：把 `endpoint-agent` 放到 `/usr/bin`、`endpoint-agent.service` 放到 `/etc/systemd/system/`，執行 `systemctl daemon-reload && systemctl enable endpoint-agent`，再執行上面的 `configure`。
+- **沒有 systemd**（例如 Alpine 的 OpenRC）：以 root 執行 `configure` 後，自行用該系統的服務管理常駐 `endpoint-agent run`。
+
+Agent 的檔案（`/var/lib/endpoint-manager`，權限 0700、只有 root 能存取）與 Windows 版相同：`config.json`、`root.pem`、`state.json`、`commands.json`。
+
+Linux 電腦與 Windows 的差異：
+
+- 盤點：基本資訊、硬體、軟體（dpkg／rpm）、服務（systemd）、帳號與權限（可登入的帳號、誰有 root 權限，包括 sudoers 與非 root 的 UID 0）。不回報任何密碼雜湊。
+- 遠端指令：重新收集、重新開機、關機、sh 腳本。PowerShell 腳本只派給 Windows，sh 腳本只派給 Linux；對群組下指令時會略過作業系統不符的電腦。
+- 不參與合規、軟體派送與 Windows Update 原則，也不會被算進這些頁面的統計。
 
 ### 4. 分點快取（選用）
 
@@ -410,6 +453,7 @@ docker run -d --restart unless-stopped -p 8443:8443 -v endpoint-cache-data:/data
   - 重新開機、關機：延遲 0–60 分鐘，會通知登入的使用者。
 - **腳本**（只限平台管理員）：
   - PowerShell 腳本以 **SYSTEM** 用 Windows PowerShell 5.1 執行。
+  - sh 腳本在 Linux 以 **root** 用 `/bin/sh` 執行；第一行是 `#!` 時改用該直譯器。環境變數只有固定的 `PATH`、`LANG=C.UTF-8` 與 `HOME=/root`。
   - 收回結束碼與最後 64 KiB 的輸出；逾時（1–120 分鐘）時結束整個程序樹。
   - 預設需要**另一位平台管理員核准**，核准的是特定 SHA-256 的版本。
   - Agent 執行前會再驗證一次 SHA-256。
@@ -450,9 +494,10 @@ curl --ssl-no-revoke --cacert pki/root.pem https://localhost:8443/healthz
 |---|---|
 | `crates/protocol` | Agent、快取與伺服器共用的資料格式 |
 | `crates/server` | 中央伺服器：Agent API、管理網頁（askama 範本、`static/` 下的 CSS／JS）、背景工作 |
-| `crates/agent` | Windows Agent |
+| `crates/agent` | Agent（Windows 與 Linux） |
 | `crates/cache` | 分點快取 |
 | `installer/` | Agent 的 WiX 安裝檔 |
+| `packaging/linux/` | Linux Agent 的 systemd unit、deb 維護腳本與打包腳本（`build.sh`） |
 | `deploy/` | Dockerfile、Docker Compose、systemd unit |
 | `tools/loadsim` | 負載測試工具，見 [docs/loadtest.md](docs/loadtest.md) |
 | `docs/superpowers/specs/` | 設計文件 |

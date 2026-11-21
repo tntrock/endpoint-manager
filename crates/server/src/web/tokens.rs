@@ -30,15 +30,53 @@ pub struct TokenRow {
     pub state: &'static str,
 }
 
+/// 剛建立金鑰時的 Linux 安裝說明（含明碼，只顯示這一次）
+pub struct LinuxInstall {
+    /// 伺服器上有安裝包時的檔名（下載後照這個名字安裝）
+    pub deb: Option<String>,
+    pub rpm: Option<String>,
+    /// 網址不正確時沒有指令，改顯示 `url_error`
+    pub configure: Option<String>,
+    pub url_error: Option<String>,
+}
+
 #[derive(Template)]
 #[template(path = "tokens.html")]
 struct TokensPage {
     nav: Nav,
     new_token: Option<String>,
+    linux: Option<LinuxInstall>,
     groups: Vec<SelectOption>,
     rows: Vec<TokenRow>,
     installer: bool,
     public_url: String,
+}
+
+/// 設定的安裝包存在時回傳檔名。檔案可能在伺服器啟動後才放進來，每次都重新檢查。
+/// 檔名會放進下載標頭與 shell 指令，只留安全的字元
+async fn package_name(path: Option<&std::path::Path>) -> Option<String> {
+    let p = path?;
+    tokio::fs::metadata(p).await.ok().filter(|m| m.is_file())?;
+    let name = p.file_name()?.to_string_lossy();
+    Some(
+        name.chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || "._-+~".contains(c) {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect(),
+    )
+}
+
+/// Linux 的註冊指令。網址可能是 IPv6（含 `[` `]`），三個值都加單引號
+fn configure_command(server_url: &str, token: &str, root_pem: &str) -> String {
+    format!(
+        "sudo endpoint-agent configure --server-url '{server_url}' --token '{token}' --root-ca '{}'",
+        crate::installer::root_b64(root_pem)
+    )
 }
 
 type Row = (
@@ -53,10 +91,11 @@ type Row = (
     DateTime<Utc>,
 );
 
+/// `created`：剛建立的金鑰明碼，與 Linux 註冊指令要用的伺服器網址（或網址的錯誤）
 async fn page_for(
     st: &AppState,
     s: &Session,
-    new_token: Option<String>,
+    created: Option<(String, Result<String, String>)>,
 ) -> Result<Response, Response> {
     if !s.can_manage() {
         return Err(forbidden());
@@ -104,9 +143,22 @@ async fn page_for(
             },
         )
         .collect();
+    let linux = match &created {
+        Some((token, url)) => Some(LinuxInstall {
+            deb: package_name(st.agent_deb.as_deref()).await,
+            rpm: package_name(st.agent_rpm.as_deref()).await,
+            configure: url
+                .as_ref()
+                .ok()
+                .map(|u| configure_command(u, token, st.ca.root_pem())),
+            url_error: url.as_ref().err().cloned(),
+        }),
+        None => None,
+    };
     Ok(render(&TokensPage {
         nav: Nav::new(s, "tokens"),
-        new_token,
+        new_token: created.map(|(t, _)| t),
+        linux,
         groups: group_options(st, s, "", false).await.map_err(db_error)?,
         rows,
         // 檔案可能在伺服器啟動後才放進來，每次顯示時檢查
@@ -208,7 +260,12 @@ pub async fn create(
     } else {
         None
     };
-    // 金鑰與稽核記錄同一個交易：不會有沒留下記錄的金鑰
+    // Linux 註冊指令用的網址。只建立金鑰時不因網址擋下（以前不檢查），錯誤顯示在 Linux 區塊
+    let linux_url = match (&installer, f.server_url.trim()) {
+        (Some((u, _)), _) => Ok(u.clone()),
+        (None, "") => Ok(st.agent_public_url.clone()),
+        (None, u) => crate::installer::normalize_server_url(u, &st.server_names),
+    };
     let mut tx = st.pool.begin().await.map_err(db_error)?;
     let (id, token) = create_token_in(
         &mut tx,
@@ -260,7 +317,61 @@ pub async fn create(
         )
             .into_response());
     }
-    page_for(&st, &s, Some(token)).await
+    page_for(&st, &s, Some((token, linux_url))).await
+}
+
+pub async fn linux_deb(
+    State(st): State<AppState>,
+    AdminSession(s): AdminSession,
+) -> Result<Response, Response> {
+    let path = st.agent_deb.clone();
+    linux_package(
+        &s,
+        path,
+        "EM_AGENT_DEB",
+        "application/vnd.debian.binary-package",
+    )
+    .await
+}
+
+pub async fn linux_rpm(
+    State(st): State<AppState>,
+    AdminSession(s): AdminSession,
+) -> Result<Response, Response> {
+    let path = st.agent_rpm.clone();
+    linux_package(&s, path, "EM_AGENT_RPM", "application/x-rpm").await
+}
+
+/// Linux 安裝包原樣下載，不含金鑰（金鑰在註冊指令裡）。權限同下載 MSI
+async fn linux_package(
+    s: &Session,
+    path: Option<std::path::PathBuf>,
+    var: &str,
+    mime: &'static str,
+) -> Result<Response, Response> {
+    if !s.can_manage() {
+        return Err(forbidden());
+    }
+    let unavailable = |m: String| (StatusCode::SERVICE_UNAVAILABLE, m).into_response();
+    let path = path.ok_or_else(|| unavailable(format!("伺服器未設定 Linux 安裝包（{var}）")))?;
+    let name = package_name(Some(&path))
+        .await
+        .ok_or_else(|| unavailable("讀不到 Linux 安裝包".into()))?;
+    let bytes = tokio::fs::read(&path).await.map_err(|e| {
+        tracing::error!(error = %e, path = %path.display(), "cannot read Linux agent package");
+        unavailable("讀不到 Linux 安裝包".into())
+    })?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, mime.to_string()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{name}\""),
+            ),
+        ],
+        bytes,
+    )
+        .into_response())
 }
 
 pub async fn revoke(

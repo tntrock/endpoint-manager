@@ -56,6 +56,9 @@ pub struct AppState {
     pub display_offset: chrono::FixedOffset,
     /// 通用範本 MSI；None 表示不提供下載安裝檔
     pub agent_msi: Option<std::path::PathBuf>,
+    /// Linux agent 安裝包（原樣提供下載）；None 表示不提供
+    pub agent_deb: Option<std::path::PathBuf>,
+    pub agent_rpm: Option<std::path::PathBuf>,
     pub agent_public_url: String,
     /// 伺服器憑證的名稱（下載安裝檔時檢查網址）
     pub server_names: Arc<Vec<String>>,
@@ -91,6 +94,8 @@ impl AppState {
             )),
             display_offset: chrono::FixedOffset::east_opt(8 * 3600).expect("valid offset"),
             agent_msi: None,
+            agent_deb: None,
+            agent_rpm: None,
             agent_public_url: String::new(),
             server_names: Arc::new(vec![]),
             rules: Arc::new(compliance::RuleCache::default()),
@@ -118,6 +123,16 @@ impl AppState {
         self.agent_msi = msi;
         self.agent_public_url = public_url;
         self.server_names = Arc::new(server_names);
+        self
+    }
+
+    pub fn with_linux_packages(
+        mut self,
+        deb: Option<std::path::PathBuf>,
+        rpm: Option<std::path::PathBuf>,
+    ) -> Self {
+        self.agent_deb = deb;
+        self.agent_rpm = rpm;
         self
     }
 
@@ -193,10 +208,23 @@ pub async fn serve(cfg: config::Config) -> anyhow::Result<()> {
         .with_display_offset(cfg.display_utc_offset)
         .with_enroll_limit(cfg.enroll_per_ip_per_minute)
         .with_installer(cfg.agent_msi.clone(), public_url, server_names)
+        .with_linux_packages(cfg.agent_deb.clone(), cfg.agent_rpm.clone())
         .with_notify(notify::NotifySecrets {
             webhook_secret: cfg.webhook_secret.clone(),
         })
         .with_packages(cfg.package_dir.clone(), cfg.download_concurrency);
+    // 安裝檔可以晚點才放上去（網頁每次顯示時會再檢查），這裡只先提醒
+    for (var, path) in [
+        ("EM_AGENT_MSI", &cfg.agent_msi),
+        ("EM_AGENT_DEB", &cfg.agent_deb),
+        ("EM_AGENT_RPM", &cfg.agent_rpm),
+    ] {
+        if let Some(p) = path
+            && !std::fs::metadata(p).is_ok_and(|m| m.is_file())
+        {
+            tracing::warn!(var, path = %p.display(), "agent installer file not found");
+        }
+    }
     let tls_cfg = tls::server_config(&cfg.ca_dir)?;
 
     let hb = state.heartbeat.clone();

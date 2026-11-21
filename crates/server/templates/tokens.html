@@ -8,6 +8,30 @@
   <p><code id="new-token">{{ t }}</code></p>
 </div>
 {% endif %}
+{% if let Some(l) = linux %}
+<fieldset id="linux-install"><legend>Linux 安裝</legend>
+  <ol>
+    <li>下載安裝包，複製到 Linux 電腦（例如 <code>scp</code>）：
+      {% if l.deb.is_none() && l.rpm.is_none() %}<span class="muted">伺服器未提供安裝包；請設定 <code>EM_AGENT_DEB</code>／<code>EM_AGENT_RPM</code>，或從 GitHub Release 下載。</span>{% endif %}
+      {% if l.deb.is_some() %}<a class="btn sm" href="/tokens/agent.deb">下載 deb</a>{% endif %}
+      {% if l.rpm.is_some() %}<a class="btn sm" href="/tokens/agent.rpm">下載 rpm</a>{% endif %}
+    </li>
+    <li>安裝：
+      {% if let Some(n) = l.deb %}<pre>sudo apt install ./{{ n }}</pre>{% endif %}
+      {% if let Some(n) = l.rpm %}<pre>sudo dnf install ./{{ n }}</pre>{% endif %}
+      {% if l.deb.is_none() && l.rpm.is_none() %}<pre>sudo apt install ./endpoint-agent_&lt;版本&gt;_amd64.deb   # 或 sudo dnf install ./endpoint-agent-&lt;版本&gt;-1.x86_64.rpm</pre>{% endif %}
+    </li>
+    <li>註冊（會自動啟動服務）：
+      {% if let Some(c) = l.configure %}
+      <pre id="linux-configure"> {{ c }}</pre>
+      <button type="button" class="btn sm" data-copy="linux-configure" hidden>複製指令</button>
+      {% endif %}
+      {% if let Some(e) = l.url_error %}<p class="notice error">伺服器網址不正確，無法產生註冊指令：{{ e }}</p>{% endif %}
+    </li>
+  </ol>
+  <p class="muted">指令含金鑰，會留在 shell 歷程。開頭的空白讓 bash（<code>HISTCONTROL=ignorespace</code>）不記錄；註冊完成後請作廢金鑰。</p>
+</fieldset>
+{% endif %}
 <fieldset><legend>建立金鑰</legend>
 <form method="post" action="/tokens">
   <input type="hidden" name="csrf" value="{{ nav.csrf }}">
@@ -18,11 +42,12 @@
     <label class="field">有效天數 <input name="valid_days" type="number" min="1" placeholder="不限"></label>
     <div class="field"><button class="btn primary">建立</button></div>
   </div>
-  {% if installer %}
   <div class="row">
     <label class="field">伺服器網址 <input name="server_url" value="{{ public_url }}" placeholder="https://em.example.com:8443" size="40"></label>
-    <div class="field"><button class="btn" name="download" value="1">建立並下載安裝檔</button></div>
+    {% if installer %}<div class="field"><button class="btn" name="download" value="1">建立並下載安裝檔</button></div>{% endif %}
   </div>
+  <p class="muted">按「建立」後會顯示 Linux 的安裝與註冊指令，指令使用這個網址。</p>
+  {% if installer %}
   <p class="muted">安裝檔內含這把金鑰，可直接用 GPO 或 <code>msiexec /i endpoint-agent.msi /qn</code> 安裝；有效天數必填（最多 90 天），派送完成後請作廢。</p>
   {% endif %}
 </form>
@@ -43,6 +68,7 @@
 <ul>
 <li>Agent 第一次安裝時用金鑰註冊，電腦會歸到金鑰指定的群組。註冊成功後 Agent 改用自己的憑證，之後作廢金鑰不影響已註冊的電腦。</li>
 <li>可使用次數用完或過期的金鑰會自動失效。</li>
+<li>Linux 電腦：建立金鑰後頁面會顯示安裝包下載（伺服器設定了 <code>EM_AGENT_DEB</code>／<code>EM_AGENT_RPM</code> 時）與已填好金鑰和根憑證的 <code>endpoint-agent configure</code> 指令。</li>
 {% if installer %}<li>「建立並下載安裝檔」產生的 MSI 內含金鑰。Windows 會把裝過的 MSI 快取在每台電腦的 <code>C:\Windows\Installer</code>（一般使用者讀得到），所以有效天數必填（最多 90 天），<b>派送完成後請作廢這把金鑰</b>。</li>{% endif %}
 </ul>
 {% endcall %}

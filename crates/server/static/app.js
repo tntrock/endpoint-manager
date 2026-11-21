@@ -45,6 +45,20 @@
       });
     });
 
+    // 複製按鈕：data-copy 指向要複製的元素 id（原樣複製，包含開頭的空白）
+    document.querySelectorAll('[data-copy]').forEach(function (b) {
+      var src = document.getElementById(b.dataset.copy);
+      if (!src || !navigator.clipboard) return;
+      b.hidden = false;
+      var label = b.textContent;
+      b.addEventListener('click', function () {
+        navigator.clipboard.writeText(src.textContent).then(function () {
+          b.textContent = '已複製';
+          setTimeout(function () { b.textContent = label; }, 2000);
+        });
+      });
+    });
+
     var scrim = document.querySelector('.scrim');
     if (scrim) scrim.addEventListener('click', function () { setMenu(false); });
 
