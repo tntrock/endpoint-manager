@@ -29,6 +29,15 @@ impl HeartbeatBuffer {
         Self::default()
     }
 
+    /// 尚未寫入資料庫的筆數
+    pub fn len(&self) -> usize {
+        self.inner.lock().expect("heartbeat lock").len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn record(&self, id: Uuid, hot: HotFields) {
         self.inner.lock().expect("heartbeat lock").insert(id, hot);
     }

@@ -33,6 +33,7 @@ services:
       EM_AGENT_RPM: /agent/endpoint-agent.rpm
       EM_AGENT_PUBLIC_URL: ${EM_AGENT_PUBLIC_URL:-}
       EM_WEBHOOK_SECRET: ${EM_WEBHOOK_SECRET:-}
+      EM_METRICS_TOKEN: ${EM_METRICS_TOKEN:-}
       EM_PACKAGE_DIR: /packages
       EM_DOWNLOAD_CONCURRENCY: ${EM_DOWNLOAD_CONCURRENCY:-50}
     volumes:

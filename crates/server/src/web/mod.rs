@@ -234,6 +234,8 @@ pub fn web_router(state: AppState) -> Router {
         .route("/accounts/mfa-required", post(accounts::set_mfa_required))
         .route("/password", get(password::form).post(password::submit))
         .route("/audit", get(audit::page))
+        .route("/audit/retention", post(audit::retention))
+        .route("/metrics", get(crate::metrics::handler))
         .route("/devices/approve-all", post(devices::approve_all))
         .route("/devices/{id}/approve", post(devices::approve))
         .route("/devices/{id}/reject", post(devices::reject))
@@ -302,6 +304,10 @@ pub fn web_router(state: AppState) -> Router {
             "/static/icons.svg",
             get(|| async { asset(include_str!("../../static/icons.svg"), "image/svg+xml") }),
         )
+        .route_layer(middleware::from_fn_with_state(
+            (state.metrics.clone(), "web"),
+            crate::metrics::track,
+        ))
         .layer(middleware::from_fn(security_headers))
         .with_state(state)
 }

@@ -20,11 +20,13 @@ pub mod heartbeat;
 pub mod identity;
 pub mod installer;
 pub mod inventory;
+pub mod metrics;
 pub mod mfa;
 pub mod notify;
 pub mod partitions;
 pub mod ratelimit;
 pub mod renew;
+pub mod retention;
 pub mod signing;
 pub mod tls;
 pub mod tokens;
@@ -79,6 +81,8 @@ pub struct AppState {
     pub updates: Arc<updates::assign::UpdatePolicyCache>,
     /// 據點與快取（報到時下發 package_source）
     pub branch: Arc<branch::assign::BranchCache>,
+    /// 監控指標（`/metrics`）
+    pub metrics: Arc<metrics::Metrics>,
 }
 
 impl AppState {
@@ -108,6 +112,7 @@ impl AppState {
             downloads: Arc::new(tokio::sync::Semaphore::new(DOWNLOAD_CONCURRENCY)),
             updates: Arc::new(updates::assign::UpdatePolicyCache::default()),
             branch: Arc::new(branch::assign::BranchCache::default()),
+            metrics: Arc::new(metrics::Metrics::default()),
         }
     }
 
@@ -136,6 +141,11 @@ impl AppState {
     ) -> Self {
         self.agent_deb = deb;
         self.agent_rpm = rpm;
+        self
+    }
+
+    pub fn with_metrics_token(mut self, token: Option<&str>) -> Self {
+        self.metrics = Arc::new(metrics::Metrics::new(token));
         self
     }
 
@@ -187,6 +197,10 @@ pub fn agent_router(state: AppState) -> Router {
         .route("/v1/deployments/{id}/result", post(deploy::api::result))
         .route("/v1/update-status", put(updates::api::status))
         .route("/v1/commands/{id}/result", post(commands::api::result))
+        .route_layer(axum::middleware::from_fn_with_state(
+            (state.metrics.clone(), "agent"),
+            metrics::track,
+        ))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
 }
@@ -215,6 +229,7 @@ pub async fn serve(cfg: config::Config) -> anyhow::Result<()> {
         .with_notify(notify::NotifySecrets {
             webhook_secret: cfg.webhook_secret.clone(),
         })
+        .with_metrics_token(cfg.metrics_token.as_deref())
         .with_packages(cfg.package_dir.clone(), cfg.download_concurrency);
     // 安裝檔可以晚點才放上去（網頁每次顯示時會再檢查），這裡只先提醒
     for (var, path) in [
@@ -255,6 +270,7 @@ pub async fn serve(cfg: config::Config) -> anyhow::Result<()> {
     compliance::worker::spawn(pool.clone());
     commands::worker::spawn(pool.clone());
     notify::worker::spawn(pool.clone(), state.notify.clone());
+    retention::spawn(pool.clone(), state.metrics.clone());
 
     let listener = tokio::net::TcpListener::bind(cfg.agent_listen).await?;
     tracing::info!(addr = %cfg.agent_listen, "agent API listening");
