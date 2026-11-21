@@ -653,7 +653,7 @@ async fn list_and_detail_sort(pool: PgPool) {
     let big = admin::create_policy(
         &s.pool,
         &PolicyInput {
-            name: "乙原則".into(),
+            name: "policy-b".into(),
             settings: PolicySettings::default(),
             groups: vec![s.group_id("台北").await],
         },
@@ -664,7 +664,7 @@ async fn list_and_detail_sort(pool: PgPool) {
     admin::create_policy(
         &s.pool,
         &PolicyInput {
-            name: "甲原則".into(),
+            name: "policy-a".into(),
             settings: PolicySettings::default(),
             groups: vec![s.group_id("高雄").await],
         },
@@ -678,16 +678,16 @@ async fn list_and_detail_sort(pool: PgPool) {
     let c = s.admin_client().await;
     // 清單：預設依名稱，可依台數遞減；表頭標示目前方向
     let (_, html) = s.page(&c, "/updates").await;
-    assert_eq!(order(&html, &["甲原則", "乙原則"]), [0, 1]);
+    assert_eq!(order(&html, &["policy-a", "policy-b"]), [0, 1]);
     assert!(html.contains(r#"href="/updates?sort=-targeted""#), "{html}");
     let (_, html) = s.page(&c, "/updates?sort=-targeted").await;
-    assert_eq!(order(&html, &["乙原則", "甲原則"]), [0, 1]);
+    assert_eq!(order(&html, &["policy-b", "policy-a"]), [0, 1]);
     assert!(html.contains(r#"aria-sort="descending""#), "{html}");
     let (_, html) = s.page(&c, "/updates?sort=pending").await;
-    assert_eq!(order(&html, &["甲原則", "乙原則"]), [0, 1]);
+    assert_eq!(order(&html, &["policy-a", "policy-b"]), [0, 1]);
     let (st, html) = s.page(&c, "/updates?sort=bogus;--").await;
     assert_eq!(st, 200);
-    assert_eq!(order(&html, &["甲原則", "乙原則"]), [0, 1]);
+    assert_eq!(order(&html, &["policy-a", "policy-b"]), [0, 1]);
 
     // 詳情：狀態依錯誤、尚未回報、已套用；主機名稱遞減；篩選與翻頁保留排序
     let loc = format!("/updates/{big}");
