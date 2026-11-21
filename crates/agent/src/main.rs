@@ -14,6 +14,7 @@ fn main() -> anyhow::Result<()> {
                 install::flag(&args, "--server-url").as_deref(),
                 install::flag(&args, "--token").as_deref(),
                 install::flag(&args, "--root-ca").as_deref(),
+                endpoint_agent::config::signing_keys_arg(&args).as_deref(),
             )
             .and_then(|()| install::set_recovery());
             // MSI 只會顯示 1603；把原因寫進事件檢視器，IT 才查得到（例如資料目錄被占用）
@@ -31,7 +32,7 @@ fn main() -> anyhow::Result<()> {
             endpoint_agent::windows::install::unconfigure(&endpoint_agent::windows::agent_dir())
         }
         _ => anyhow::bail!(
-            "usage: endpoint-agent run | service | configure [--server-url URL] [--token TOKEN] [--root-ca BASE64] | unconfigure"
+            "usage: endpoint-agent run | service | configure [--server-url URL] [--token TOKEN] [--root-ca BASE64] [--signing-key PUBKEY]... | unconfigure"
         ),
     }
 }
@@ -53,10 +54,11 @@ fn main() -> anyhow::Result<()> {
             flag(&args, "--server-url").as_deref(),
             flag(&args, "--token").as_deref(),
             flag(&args, "--root-ca").as_deref(),
+            endpoint_agent::config::signing_keys_arg(&args).as_deref(),
         ),
         Some("unconfigure") => install::unconfigure(&agent_dir()),
         _ => anyhow::bail!(
-            "usage: endpoint-agent run | configure [--server-url URL] [--token TOKEN] [--root-ca BASE64] | unconfigure"
+            "usage: endpoint-agent run | configure [--server-url URL] [--token TOKEN] [--root-ca BASE64] [--signing-key PUBKEY]... | unconfigure"
         ),
     }
 }

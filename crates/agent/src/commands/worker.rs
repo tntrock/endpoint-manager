@@ -60,6 +60,8 @@ pub struct CommandWorker<H: CommandHost> {
     dir: PathBuf,
     host: Arc<H>,
     state: CommandsState,
+    /// 信任的簽章公鑰；非空時只執行有效簽章的腳本
+    signing_keys: Vec<String>,
 }
 
 fn ok(output: impl Into<String>) -> CommandResult {
@@ -92,7 +94,14 @@ impl<H: CommandHost> CommandWorker<H> {
             dir: dir.to_path_buf(),
             host,
             state: CommandsState::load(dir),
+            signing_keys: vec![],
         }
+    }
+
+    /// 設定信任的簽章公鑰（config.json 的 signing_keys）
+    pub fn with_signing_keys(mut self, keys: Vec<String>) -> Self {
+        self.signing_keys = keys;
+        self
     }
 
     pub fn state(&self) -> &CommandsState {
@@ -229,6 +238,11 @@ impl<H: CommandHost> CommandWorker<H> {
         let Some(spec) = c.script.as_ref().filter(|s| verify_script(s)) else {
             return failed("腳本雜湊不符，未執行");
         };
+        if !self.signing_keys.is_empty()
+            && let Err(e) = protocol::signing::verify_script(&self.signing_keys, spec)
+        {
+            return failed(format!("這台電腦要求簽章：{e}，未執行"));
+        }
         let dir = self.dir.join("scripts");
         let lang = self.host.language();
         let path = dir.join(script_file_name(lang, c.id));
@@ -290,15 +304,22 @@ pub async fn run_command_worker<H: CommandHost>(
 }
 
 #[cfg(test)]
-mod tests {
+mod tests_support {
     use super::*;
     use protocol::command::{ScriptLanguage, ScriptSpec};
     use std::sync::Mutex;
 
     /// language() 可指定的假 host；run_script 記下檔名與內容
-    struct LangHost {
-        lang: ScriptLanguage,
-        ran: Mutex<Vec<(String, String)>>,
+    pub struct LangHost {
+        pub lang: ScriptLanguage,
+        pub ran: Mutex<Vec<(String, String)>>,
+    }
+
+    pub fn lang_host(lang: ScriptLanguage) -> Arc<LangHost> {
+        Arc::new(LangHost {
+            lang,
+            ran: Mutex::new(vec![]),
+        })
     }
 
     impl CommandHost for LangHost {
@@ -323,7 +344,7 @@ mod tests {
         }
     }
 
-    fn script_cmd(lang: ScriptLanguage) -> Command {
+    pub fn script_cmd(lang: ScriptLanguage) -> Command {
         use sha2::Digest;
         Command {
             id: 7,
@@ -334,9 +355,18 @@ mod tests {
                 content: "echo hi".into(),
                 timeout_minutes: 1,
                 language: lang,
+                signature: None,
             }),
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tests_support::*;
+    use super::*;
+    use protocol::command::ScriptLanguage;
+    use std::sync::Mutex;
 
     #[tokio::test]
     async fn foreign_language_script_fails_without_writing_a_file() {
@@ -367,5 +397,72 @@ mod tests {
             *host.ran.lock().unwrap(),
             vec![("7.sh".to_string(), "echo hi".to_string())]
         );
+    }
+}
+
+#[cfg(test)]
+mod signing_tests {
+    use super::tests_support::*;
+    use super::*;
+    use protocol::command::ScriptLanguage;
+    use protocol::signing::{Payload, encode_public_key, format_signature, key_id};
+    use ring::rand::SystemRandom;
+    use ring::signature::{Ed25519KeyPair, KeyPair};
+
+    fn keypair() -> (Ed25519KeyPair, String) {
+        let pkcs8 = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
+        let k = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+        let pk = encode_public_key(k.public_key().as_ref().try_into().unwrap());
+        (k, pk)
+    }
+
+    fn signed(k: &Ed25519KeyPair, mut c: Command) -> Command {
+        let spec = c.script.as_mut().unwrap();
+        let raw: [u8; 32] = k.public_key().as_ref().try_into().unwrap();
+        spec.signature = Some(format_signature(
+            &key_id(&raw),
+            k.sign(&Payload::script(spec).signed_bytes()).as_ref(),
+        ));
+        c
+    }
+
+    #[tokio::test]
+    async fn enforced_worker_runs_only_validly_signed_scripts() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = lang_host(ScriptLanguage::Sh);
+        let (k, pk) = keypair();
+        let mut w = CommandWorker::new(dir.path(), host.clone()).with_signing_keys(vec![pk]);
+
+        let r = w.script(&script_cmd(ScriptLanguage::Sh)).await;
+        assert_eq!(r.status, CommandStatus::Failed);
+        assert_eq!(r.output, "這台電腦要求簽章：沒有簽章，未執行");
+
+        // 簽章後改逾時：驗證失敗
+        let mut tampered = signed(&k, script_cmd(ScriptLanguage::Sh));
+        tampered.script.as_mut().unwrap().timeout_minutes = 99;
+        let r = w.script(&tampered).await;
+        assert_eq!(r.status, CommandStatus::Failed);
+        assert!(r.output.contains("簽章驗證失敗"), "{}", r.output);
+
+        // 不信任的金鑰
+        let (other, _) = keypair();
+        let r = w
+            .script(&signed(&other, script_cmd(ScriptLanguage::Sh)))
+            .await;
+        assert!(r.output.contains("不在信任清單內"), "{}", r.output);
+        assert!(host.ran.lock().unwrap().is_empty(), "以上都沒有執行");
+
+        let r = w.script(&signed(&k, script_cmd(ScriptLanguage::Sh))).await;
+        assert_eq!(r.status, CommandStatus::Succeeded, "{r:?}");
+        assert_eq!(host.ran.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn without_keys_unsigned_scripts_still_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = lang_host(ScriptLanguage::Sh);
+        let mut w = CommandWorker::new(dir.path(), host.clone());
+        let r = w.script(&script_cmd(ScriptLanguage::Sh)).await;
+        assert_eq!(r.status, CommandStatus::Succeeded, "{r:?}");
     }
 }

@@ -19,6 +19,8 @@ $svcName = "EndpointManagerAgent"
 $data = "C:\ProgramData\EndpointManager"
 $evtKey = "HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application\$svcName"
 $badRoot = "ROOT_CA=bm90YWNlcnQ="
+# 32 bytes 的 0x01：格式正確的 Ed25519 公鑰
+$signKey = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="
 
 function Check($cond, $msg) {
     if (-not $cond) { throw "FAIL: $msg" }
@@ -60,7 +62,8 @@ Check (-not (Select-String -Path install.log -Pattern $Token -SimpleMatch -Quiet
 
 # 同版本、另一次下載的安裝檔：取代原本的安裝（改網址），資料目錄保留
 Set-Content "$data\keep.txt" "x"
-Check ((Msiexec "/i `"$Msi2`" /qn /l*v same-version.log") -eq 0) "same-version install of another download"
+Check ((Msiexec "/i `"$Msi2`" /qn /l*v same-version.log SIGNING_KEYS=$signKey") -eq 0) "same-version install of another download"
+Check (((Config).signing_keys -join ",") -eq $signKey) "SIGNING_KEYS from msiexec"
 Check ((Config).server_url -eq "https://localhost:10") "server_url replaced"
 Check ((Config).enroll_token -eq $Token2) "token replaced (not enrolled yet)"
 Check (Test-Path "$data\keep.txt") "same-version upgrade keeps data dir"
@@ -71,6 +74,11 @@ Check ((Get-Service $svcName).Status -eq "Running") "service running after same-
 Check ((Msiexec "/i `"$UpgradeMsi`" /qn /l*v failed-upgrade.log $badRoot") -eq 1603) "bad ROOT_CA fails upgrade"
 Check (Test-Path "$data\keep.txt") "failed upgrade keeps existing data dir"
 Check ((Config).server_url -eq "https://localhost:10") "failed upgrade keeps config"
+Check (((Config).signing_keys -join ",") -eq $signKey) "failed upgrade keeps signing keys"
+
+# 公鑰格式錯誤：安裝失敗，不會默默變成不強制簽章
+Check ((Msiexec "/i `"$UpgradeMsi`" /qn /l*v bad-signing-keys.log SIGNING_KEYS=notakey") -eq 1603) "bad SIGNING_KEYS fails upgrade"
+Check (((Config).signing_keys -join ",") -eq $signKey) "bad SIGNING_KEYS keeps signing keys"
 Check ((Installed) -eq 1) "old product still registered"
 Check ((Get-Service $svcName).Status -eq "Running") "old version restored and running"
 
@@ -78,6 +86,7 @@ Check ((Get-Service $svcName).Status -eq "Running") "old version restored and ru
 Check ((Msiexec "/i `"$UpgradeMsi`" /qn /l*v upgrade.log") -eq 0) "upgrade"
 Check (Test-Path "$data\keep.txt") "upgrade keeps data dir"
 Check ((Config).enroll_token -eq $Token2) "upgrade keeps token"
+Check (((Config).signing_keys -join ",") -eq $signKey) "upgrade without SIGNING_KEYS keeps signing keys"
 Check ((Installed) -eq 1) "only one product registered after upgrade"
 Check ((Get-Service $svcName).Status -eq "Running") "service running after upgrade"
 

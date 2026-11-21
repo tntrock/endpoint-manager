@@ -7,6 +7,7 @@ use sqlx::PgPool;
 fn checkin() -> CheckinRequest {
     CheckinRequest {
         os_family: None,
+        signing_keys: vec![],
         schema_version: SCHEMA_VERSION,
         agent_version: "0.1.0".into(),
         boot_time: chrono::Utc::now(),

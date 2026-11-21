@@ -295,6 +295,7 @@ fn configure_hardens_dir_and_writes_files() {
             &data,
             Some("https://em.example.com:8443"),
             Some("tok"),
+            None,
             None
         )
         .is_err()
@@ -305,6 +306,7 @@ fn configure_hardens_dir_and_writes_files() {
         Some("https://em.example.com:8443"),
         Some("tok"),
         Some(&b64),
+        None,
     )
     .unwrap();
     assert!(
@@ -316,7 +318,7 @@ fn configure_hardens_dir_and_writes_files() {
     assert_eq!(c.enroll_token.as_deref(), Some("tok"));
 
     // 重跑（升級）不帶參數：全部沿用
-    configure(&data, None, None, None).unwrap();
+    configure(&data, None, None, None, None).unwrap();
     assert_eq!(AgentConfig::load(&data).unwrap(), c);
 
     unconfigure(&data).unwrap();

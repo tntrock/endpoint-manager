@@ -238,6 +238,7 @@ mod tests {
                 publisher: Some("Igor*".into()),
                 min_version: Some("23.01".into()),
             },
+            signature: None,
         }
     }
 

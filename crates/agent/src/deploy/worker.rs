@@ -247,6 +247,8 @@ pub struct Worker<C: Collector, R: Runner> {
     cache_paused_until: Option<DateTime<Utc>>,
     /// 這次執行實際下載的來源（回報時帶上）
     source: Option<DownloadSource>,
+    /// 信任的簽章公鑰；非空時只執行有效簽章的套件
+    signing_keys: Vec<String>,
 }
 
 fn truncate(msg: String) -> String {
@@ -279,7 +281,14 @@ impl<C: Collector, R: Runner> Worker<C, R> {
             state: DeployState::load(dir),
             cache_paused_until: None,
             source: None,
+            signing_keys: vec![],
         }
+    }
+
+    /// 設定信任的簽章公鑰（config.json 的 signing_keys）
+    pub fn with_signing_keys(mut self, keys: Vec<String>) -> Self {
+        self.signing_keys = keys;
+        self
     }
 
     async fn software(&self) -> Option<Vec<SoftwareItem>> {
@@ -581,6 +590,14 @@ impl<C: Collector, R: Runner> Worker<C, R> {
         };
         if !protocol::is_sha256(&spec.sha256) {
             self.fail_before_run(client, a, now, "套件雜湊格式錯誤".into())
+                .await;
+            return None;
+        }
+        // 安裝與移除都驗證：移除也是在這台電腦執行程式
+        if !self.signing_keys.is_empty()
+            && let Err(e) = protocol::signing::verify_package(&self.signing_keys, spec)
+        {
+            self.fail_before_run(client, a, now, format!("這台電腦要求簽章：{e}，未執行"))
                 .await;
             return None;
         }

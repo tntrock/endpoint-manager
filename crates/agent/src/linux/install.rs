@@ -37,9 +37,10 @@ pub fn configure(
     server_url: Option<&str>,
     token: Option<&str>,
     root_ca: Option<&str>,
+    signing_keys: Option<&str>,
 ) -> anyhow::Result<()> {
     prepare_data_dir(data)?;
-    apply_install_config(data, server_url, token, root_ca)?;
+    apply_install_config(data, server_url, token, root_ca, signing_keys)?;
     // 沒有 systemd（容器、WSL）或啟動失敗都不讓安裝失敗
     match run_capture("systemctl", &["restart", "endpoint-agent"], CMD_TIMEOUT) {
         Ok(_) => {}
@@ -79,6 +80,7 @@ mod tests {
             Some("https://em.corp.local:8443"),
             Some("tok"),
             Some(&b64),
+            None,
         )
         .unwrap();
         let mode = std::fs::metadata(&data).unwrap().permissions().mode();

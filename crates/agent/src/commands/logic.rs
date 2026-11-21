@@ -192,6 +192,7 @@ mod tests {
             content: content.clone(),
             language: Default::default(),
             timeout_minutes: 30,
+            signature: None,
         };
         assert!(verify_script(&spec));
         assert!(verify_script(&ScriptSpec {

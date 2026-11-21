@@ -57,6 +57,9 @@ pub struct PackageSpec {
     #[serde(default)]
     pub success_codes: Vec<i32>,
     pub detect: Detect,
+    /// 簽章（`金鑰 ID:Base64`）。舊版伺服器沒有；Agent 設定了信任公鑰時必須有效
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -148,6 +151,7 @@ mod tests {
                     publisher: None,
                     min_version: Some("1.0".into()),
                 },
+                signature: None,
             },
         }
     }

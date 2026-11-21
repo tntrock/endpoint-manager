@@ -174,6 +174,7 @@ pub async fn load(pool: &PgPool) -> Result<DeploySet, sqlx::Error> {
                         publisher: r.detect_publisher,
                         min_version: r.detect_min_version,
                     },
+                    signature: None,
                 },
             }
         })
@@ -231,6 +232,7 @@ mod tests {
                     publisher: None,
                     min_version: None,
                 },
+                signature: None,
             },
         }
     }

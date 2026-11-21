@@ -83,6 +83,9 @@ pub struct ScriptSpec {
     /// 舊版伺服器沒有：預設 PowerShell
     #[serde(default)]
     pub language: ScriptLanguage,
+    /// 簽章（`金鑰 ID:Base64`）。舊版伺服器沒有；Agent 設定了信任公鑰時必須有效
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
