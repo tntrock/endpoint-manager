@@ -141,13 +141,17 @@ unsafe fn user_modals<T: Copy>(level: u32) -> anyhow::Result<T> {
     use windows_sys::Win32::NetworkManagement::NetManagement::{
         NetApiBufferFree, NetUserModalsGet,
     };
-    let mut buf: *mut u8 = std::ptr::null_mut();
-    // SAFETY: 成功時 buf 指向 NetApi 配置、內容為 level 結構的緩衝區；失敗時不配置
-    let rc = unsafe { NetUserModalsGet(std::ptr::null(), level, &mut buf) };
-    // 失敗時 API 沒有配置緩衝區，不需要（也不能）釋放
+    let mut out = std::mem::MaybeUninit::<*mut u8>::uninit();
+    // SAFETY: 成功時 API 把 NetApi 配置、內容為 level 結構的緩衝區位址寫入 out；
+    // 失敗時不配置，也不保證寫入 out
+    let rc = unsafe { NetUserModalsGet(std::ptr::null(), level, out.as_mut_ptr()) };
+    // 失敗時 out 沒有有效值，不讀也不釋放
+    anyhow::ensure!(rc == 0, "NetUserModalsGet({level}) failed: {rc}");
+    // SAFETY: rc == 0 時 API 已寫入 out
+    let buf = unsafe { out.assume_init() };
     anyhow::ensure!(
-        rc == 0 && !buf.is_null(),
-        "NetUserModalsGet({level}) failed: {rc}"
+        !buf.is_null(),
+        "NetUserModalsGet({level}) returned no buffer"
     );
     // SAFETY: buf 非 null，指向 T（呼叫端保證）；NetApi 緩衝區的對齊足夠，仍用 unaligned 讀以免依賴
     let value = unsafe { std::ptr::read_unaligned(buf as *const T) };
