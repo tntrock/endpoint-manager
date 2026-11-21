@@ -10,6 +10,9 @@
   <select name="group" aria-label="群組">
     {% for o in groups %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}
   </select>
+  <select name="os" aria-label="作業系統">
+    {% for o in oses %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}
+  </select>
   {% if !software.is_empty() %}
   <input type="hidden" name="software" value="{{ software }}">
   <input type="hidden" name="version" value="{{ version }}">
@@ -22,7 +25,7 @@
   {% for d in rows %}
   <tr>
     <td><a href="/devices/{{ d.id }}">{{ d.hostname }}</a></td>
-    <td>{{ d.group }}</td><td>{{ d.domain }}</td><td>{{ d.os }}</td><td>{{ d.user }}</td><td><span class="num">{{ d.ip }}</span></td>
+    <td>{{ d.group }}</td><td>{{ d.domain }}</td><td>{{ d.os }}{% if d.linux %} <span class="tag info">Linux</span>{% endif %}</td><td>{{ d.user }}</td><td><span class="num">{{ d.ip }}</span></td>
     <td><span class="num">{{ d.last_seen }}</span></td>
     <td><span class="tag {{ d.badge }}">{{ d.badge_label }}</span></td>
   </tr>

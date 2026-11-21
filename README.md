@@ -342,6 +342,16 @@ docker run -d --restart unless-stopped -p 8443:8443 -v endpoint-cache-data:/data
 
 同一台電腦重灌後重新註冊，會列在總覽的「待核准」，需要管理員核准後才會接手原裝置的記錄。
 
+Windows 與 Linux 裝置在同一份清單：
+
+- **裝置列表**可以依作業系統篩選，Linux 裝置在作業系統欄位旁有標籤。
+- **Linux 裝置頁**只顯示有資料的分頁：遠端指令、軟體、服務、帳號與權限、變更歷史。合規、安全設定、派送、更新、修補只適用 Windows。
+- **帳號與權限**分頁列出：
+  - 管理權限名單：UID 0、sudo／wheel／admin 群組成員、sudoers 授權。root 以外的 UID 0 帳號會用紅色標示並排在最前面。
+  - 可登入的帳號。
+  - 看不懂的 sudoers 行，請人工確認。
+- **軟體頁**預設只統計 Windows，可以切換成 Linux 或全部。Linux 的套件數量很多，混在一起會讓 Windows 的結果難以閱讀。
+
 ### 合規
 
 「合規」頁（`/compliance`）以已收集的盤點資料檢查每台電腦。

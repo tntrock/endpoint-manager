@@ -651,14 +651,14 @@ async fn software_search_is_scoped(pool: PgPool) {
     let c = s.admin_client().await;
     let (_, html) = s.page(&c, "/software?q=chrome").await;
     assert!(
-        html.contains("/devices?software=Google%20Chrome&#38;version=121\">2<"),
+        html.contains("/devices?software=Google%20Chrome&#38;version=121&#38;os=windows\">2<"),
         "{html}"
     );
 
     let gary = s.login_as("gary", Role::GroupAdmin, &["台北總部"]).await;
     let (_, html) = s.page(&gary, "/software?q=chrome").await;
     assert!(
-        html.contains("/devices?software=Google%20Chrome&#38;version=121\">1<"),
+        html.contains("/devices?software=Google%20Chrome&#38;version=121&#38;os=windows\">1<"),
         "只算自己群組：{html}"
     );
 }
