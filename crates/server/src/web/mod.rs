@@ -12,6 +12,7 @@ pub mod commands;
 pub mod compliance;
 pub mod dashboard;
 pub mod deployments;
+pub mod device_status;
 pub mod devices;
 pub mod groups;
 pub mod login;
@@ -26,6 +27,7 @@ pub mod scripts;
 pub mod signing;
 pub mod sites;
 pub mod software;
+pub mod timeline;
 pub mod tokens;
 pub mod updates;
 
@@ -261,6 +263,7 @@ pub fn web_router(state: AppState) -> Router {
         .route("/devices/{id}/reject", post(devices::reject))
         .route("/devices/{id}", get(devices::detail))
         .route("/devices/{id}/tab/{tab}", get(devices::tab))
+        .route("/devices/{id}/timeline", get(timeline::more))
         .route("/devices/{id}/retire", post(devices::retire))
         .route("/devices/{id}/group", post(devices::move_group))
         .route(

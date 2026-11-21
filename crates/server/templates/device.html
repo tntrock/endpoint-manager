@@ -1,7 +1,8 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="page-head">
-  <div><div class="crumb"><a href="/devices">裝置</a> ／ {{ d.hostname }}</div><h1>{{ d.hostname }} <span class="tag {{ d.badge }}">{{ d.badge_label }}</span></h1></div>
+  <div><div class="crumb"><a href="/devices">裝置</a> ／ {{ d.hostname }}</div><h1>{{ d.hostname }} <span class="tag {{ d.badge }}">{{ d.badge_label }}</span></h1>
+    <div class="sub device-sub"><span>{{ d.group }}</span><span>{% if d.linux %}Linux{% else %}Windows{% endif %}{% if !d.os.is_empty() %}・{{ d.os }}{% endif %}</span>{% if !d.ip.is_empty() %}<span class="num">{{ d.ip }}</span>{% endif %}<span>最後回報 {{ d.seen_ago }}</span></div></div>
   <div class="actions">
     {% if nav.platform %}
     <form method="post" action="/devices/{{ d.id }}/group">
@@ -18,6 +19,22 @@
     {% endif %}
   </div>
 </div>
+<div class="cards status-cards">
+  {% for c in cards %}
+  {% if let Some(t) = c.tab %}<a class="card stat {{ c.tone }}" href="#tab" hx-get="/devices/{{ d.id }}/tab/{{ t }}" hx-target="#tab">{% else %}<div class="card stat {{ c.tone }}">{% endif %}
+    <div class="kpi-label">{{ c.label }}</div><div class="stat-value">{{ c.value }}</div>{% if !c.sub.is_empty() %}<div class="stat-sub">{{ c.sub }}</div>{% endif %}
+  {% if c.tab.is_some() %}</a>{% else %}</div>{% endif %}
+  {% endfor %}
+</div>
+<section class="card issues">
+  <div class="card-head"><h2>問題</h2>{% if !issues.is_empty() %}<span class="tag">{{ issues.len() }} 項</span>{% endif %}</div>
+  {% if issues.is_empty() %}<p class="ok">沒有發現問題。</p>{% else %}
+  <ul class="todo">
+    {% for i in issues %}<li><span class="sev-dot {{ i.severity }}" aria-hidden="true"></span><div class="todo-main"><span class="t">{{ i.title }}</span>{% if !i.detail.is_empty() %}<span class="d">{{ i.detail }}</span>{% endif %}</div>{% if let Some(t) = i.tab %}<a class="btn sm" href="#tab" hx-get="/devices/{{ d.id }}/tab/{{ t }}" hx-target="#tab">查看</a>{% endif %}</li>{% endfor %}
+  </ul>{% endif %}
+</section>
+<details class="card details" open>
+<summary><h2>基本資料</h2></summary>
 <table>
   <tr><th>裝置 ID</th><td>{{ d.id }}</td><th>群組</th><td>{{ d.group }}</td></tr>
   <tr><th>網域</th><td>{{ d.domain }}</td><th>作業系統</th><td>{{ d.os }}（{{ d.build }}）</td></tr>
@@ -29,14 +46,9 @@
   <tr><th>註冊時間</th><td>{{ d.enrolled }}</td><th>Agent 版本</th><td>{{ d.agent }}</td></tr>
   <tr><th>要求簽章</th><td colspan="3">{% if d.signing.is_empty() %}否{% else %}<span class="tag ok">是</span> 金鑰 {% for k in d.signing %}<code>{{ k }}</code> {% endfor %}<span class="faint">只執行這些金鑰簽章的腳本與套件</span>{% endif %}</td></tr>
 </table>
-{% if !d.errors.is_empty() %}
-<div class="card">
-<h2>收集錯誤</h2>
-<table>{% for e in d.errors %}<tr><th>{{ e.0 }}</th><td class="error">{{ e.1 }}</td></tr>{% endfor %}</table>
-</div>
-{% endif %}
+</details>
 <nav class="tabs" aria-label="裝置資料">
   {% for t in tabs %}<button hx-get="/devices/{{ d.id }}/tab/{{ t.0 }}" hx-target="#tab">{{ t.1 }}</button>{% endfor %}
 </nav>
-<div id="tab" hx-get="/devices/{{ d.id }}/tab/software" hx-trigger="load"></div>
+<div id="tab" hx-get="/devices/{{ d.id }}/tab/timeline" hx-trigger="load"></div>
 {% endblock %}

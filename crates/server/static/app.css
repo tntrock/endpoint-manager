@@ -359,3 +359,44 @@ body.report { background: var(--bg); }
   .report-tools { display: none; }
   .report-page { margin: 0; padding: 0; border: 0; max-width: none; background: #fff; }
 }
+
+/* 裝置頁：狀態卡、問題、時間軸 */
+.device-sub { display: flex; flex-wrap: wrap; gap: 4px 0; }
+.device-sub span + span::before { content: "・"; color: var(--faint); }
+.status-cards { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
+.stat { display: block; color: var(--text); border-left: 3px solid var(--line2); }
+a.stat:hover { text-decoration: none; border-color: var(--accent); }
+.stat.ok { border-left-color: var(--ok); }
+.stat.warn { border-left-color: var(--warn); }
+.stat.bad { border-left-color: var(--bad); }
+.stat.off { border-left-color: var(--faint); }
+.stat-value { font-size: 20px; font-weight: 600; margin-top: 4px; }
+.stat.bad .stat-value { color: var(--bad); }
+.stat.warn .stat-value { color: var(--warn); }
+.stat-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.todo-main { flex: 1; min-width: 0; }
+.todo a.btn { flex: none; color: var(--text); }
+.todo-main .d { overflow-wrap: anywhere; }
+.issues .ok { margin: 0; }
+.card.details > summary { cursor: pointer; list-style: none; }
+.card.details > summary::-webkit-details-marker { display: none; }
+.card.details > summary h2 { display: inline; margin: 0; }
+.card.details > summary::after { content: "▾"; margin-left: 8px; color: var(--muted); }
+.card.details:not([open]) > summary::after { content: "▸"; }
+.card.details[open] > summary { display: block; margin-bottom: 12px; }
+.tl-day { margin: 18px 0 8px; font-family: var(--mono); }
+.tl { list-style: none; margin: 0; padding: 0 0 0 14px; border-left: 2px solid var(--line); }
+.tl-item { position: relative; display: flex; gap: 12px; align-items: baseline; padding: 6px 0 6px 12px; }
+.tl-item::before { content: ""; position: absolute; left: -21px; top: 12px; width: 10px; height: 10px;
+  border-radius: 50%; background: var(--panel); border: 2px solid var(--faint); }
+.tl-item.tl-bad::before { border-color: var(--bad); background: var(--bad-bg); }
+.tl-item.tl-ok::before { border-color: var(--ok); background: var(--ok-bg); }
+.tl-item.tl-info::before { border-color: var(--info); }
+.tl-item.tl-change::before { border-color: var(--accent); }
+.tl-item.tl-admin::before { border-color: var(--warn); }
+.tl-time { flex: none; width: 3.2em; color: var(--muted); font-size: 12px; }
+.tl-body { flex: 1; min-width: 0; }
+.tl-title { font-weight: 500; }
+.tl-detail { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.tl-link { flex: none; font-size: 12px; }
+.tl-more { margin: 14px 0 0; }
