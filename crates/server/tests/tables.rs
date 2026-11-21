@@ -111,7 +111,7 @@ async fn device_list_sorts(pool: PgPool) {
     let (_, html) = s.page(&c, "/devices?sort=-ip&q=HOST").await;
     assert!(html.contains(r#"<input type="hidden" name="sort" value="-ip">"#));
     // 檢視者沒有批次操作
-    let v = s.login_as("vera", Role::Viewer, &[]).await;
+    let v = s.login_as("vera", Role::Viewer, &["檢視群組"]).await;
     let (_, html) = s.page(&v, "/devices").await;
     assert!(!html.contains("bulk-bar") && !html.contains(r#"name="ids""#));
 }
