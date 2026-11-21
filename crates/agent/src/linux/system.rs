@@ -1,10 +1,10 @@
 //! 識別、心跳、basic、hardware 的 Linux 讀取。
 
-use super::exec::{CMD_TIMEOUT, run_capture};
+use super::exec::{CMD_TIMEOUT, is_not_found, run_capture};
 use crate::collector::{Heartbeat, Identity};
 use crate::linux_parse::system as parse;
 use anyhow::Context;
-use protocol::{BasicInfo, Disk, HardwareInfo};
+use protocol::{BasicInfo, Disk, HardwareInfo, RunsIn};
 use std::ffi::CString;
 
 fn read(path: &str) -> anyhow::Result<String> {
@@ -44,11 +44,26 @@ fn mac_addresses() -> Vec<String> {
     out
 }
 
+/// `systemd-detect-virt <旗標>`：沒有這個指令回 None；沒偵測到時它以結束碼 1 輸出 none
+fn detect_virt(flag: &str) -> Option<String> {
+    match run_capture("systemd-detect-virt", &[flag], CMD_TIMEOUT) {
+        Ok(out) => Some(out.trim().to_string()),
+        Err(e) if is_not_found(&e) => None,
+        Err(_) => Some("none".into()),
+    }
+}
+
+pub fn runs_in() -> RunsIn {
+    parse::runs_in(std::path::Path::new("/"), &detect_virt)
+}
+
 pub fn identity() -> anyhow::Result<Identity> {
+    // 容器與 WSL 讀到的 DMI 是所在主機的：拿去比對會被當成主機重新註冊或疑似重複
+    let guest = runs_in().is_guest();
     Ok(Identity {
         hostname: hostname()?,
-        smbios_uuid: dmi("product_uuid"),
-        bios_serial: dmi("product_serial"),
+        smbios_uuid: dmi("product_uuid").filter(|_| !guest),
+        bios_serial: dmi("product_serial").filter(|_| !guest),
         mac_addresses: mac_addresses(),
     })
 }
@@ -82,6 +97,7 @@ pub fn basic() -> BasicInfo {
             .map(|s| s.trim().to_string())
             .unwrap_or_default(),
         os_ubr: None,
+        runs_in: Some(runs_in()),
     }
 }
 

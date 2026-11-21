@@ -1,7 +1,9 @@
 //! WMI 收集。每次呼叫建立新的 WMIConnection（在 blocking 執行緒上初始化 COM）。
 
 use anyhow::Context;
-use protocol::{BasicInfo, Disk, HardwareInfo, InventoryPayload, PatchItem, Section, ServiceItem};
+use protocol::{
+    BasicInfo, Disk, HardwareInfo, InventoryPayload, PatchItem, RunsIn, Section, ServiceItem,
+};
 use serde::Deserialize;
 use wmi::{WMIConnection, WMIOffsetDateTime};
 
@@ -221,6 +223,13 @@ impl Collector for WindowsCollector {
                         .unwrap_or_default(),
                     os_build: os.and_then(|o| o.build_number).unwrap_or_default(),
                     os_ubr: read_ubr(),
+                    runs_in: Some(RunsIn::new(
+                        RunsIn::HOST,
+                        Some(protocol::vm_from_vendor(
+                            cs.manufacturer.as_deref().unwrap_or(""),
+                            cs.model.as_deref().unwrap_or(""),
+                        )),
+                    )),
                 })
             }
             Section::Hardware => {

@@ -1,6 +1,8 @@
 //! `/etc/os-release`、`/proc/*`、`ip`、`who` 輸出的解析。
 
+use protocol::RunsIn;
 use std::net::IpAddr;
+use std::path::Path;
 
 /// 去掉成對的 `"` 或 `'`
 fn unquote(v: &str) -> &str {
@@ -178,6 +180,63 @@ pub fn first_user(who: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// WSL 的核心版本字串：WSL 2 是 `…-microsoft-standard-WSL2`，WSL 1 是 `…-Microsoft`
+fn wsl_version(osrelease: &str) -> Option<&'static str> {
+    let l = osrelease.to_ascii_lowercase();
+    if l.contains("wsl2") || l.contains("microsoft-standard") {
+        Some("2")
+    } else if l.contains("microsoft") || l.contains("wsl") {
+        Some("1")
+    } else {
+        None
+    }
+}
+
+/// 不靠 systemd 判斷容器：`/.dockerenv`、`/run/.containerenv`、PID 1 的 `container=`
+fn container_by_files(root: &Path) -> Option<String> {
+    if root.join(".dockerenv").exists() {
+        return Some("docker".into());
+    }
+    if root.join("run/.containerenv").exists() {
+        return Some("podman".into());
+    }
+    let env = std::fs::read(root.join("proc/1/environ")).ok()?;
+    env.split(|b| *b == 0).find_map(|kv| {
+        let v = std::str::from_utf8(kv).ok()?.strip_prefix("container=")?;
+        (!v.is_empty()).then(|| v.to_string())
+    })
+}
+
+/// Agent 的執行環境。`root` 是根目錄（測試時換成暫存目錄）；`detect_virt(旗標)` 執行
+/// `systemd-detect-virt <旗標>`：沒有這個指令回 None，否則回輸出（沒偵測到是 `none`）。
+pub fn runs_in(root: &Path, detect_virt: &dyn Fn(&str) -> Option<String>) -> RunsIn {
+    let read = |p: &str| std::fs::read_to_string(root.join(p)).ok();
+    if let Some(v) = read("proc/sys/kernel/osrelease")
+        .as_deref()
+        .and_then(wsl_version)
+    {
+        return RunsIn::new(RunsIn::WSL, Some(v));
+    }
+    let container = detect_virt("--container")
+        .filter(|v| v != "none" && !v.is_empty())
+        .or_else(|| container_by_files(root));
+    if let Some(c) = container {
+        return RunsIn::new(RunsIn::CONTAINER, Some(&c));
+    }
+    let vm = detect_virt("--vm").filter(|v| !v.is_empty()).or_else(|| {
+        let vendor = read("sys/class/dmi/id/sys_vendor");
+        let model = read("sys/class/dmi/id/product_name");
+        (vendor.is_some() || model.is_some()).then(|| {
+            protocol::vm_from_vendor(
+                vendor.as_deref().unwrap_or("").trim(),
+                model.as_deref().unwrap_or("").trim(),
+            )
+            .to_string()
+        })
+    });
+    RunsIn::new(RunsIn::HOST, vm.as_deref())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -242,5 +301,72 @@ tmpfs /run tmpfs rw 0 0
         let who = "root     pts/0        2024-10-23 10:00 (1.2.3.4)\nalice    tty2         2024-10-23 10:01\n";
         assert_eq!(first_user(who).as_deref(), Some("alice"));
         assert_eq!(first_user(""), None);
+    }
+
+    fn root_with(files: &[(&str, &[u8])]) -> tempfile::TempDir {
+        let d = tempfile::tempdir().unwrap();
+        for (p, body) in files {
+            let path = d.path().join(p);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, body).unwrap();
+        }
+        d
+    }
+
+    fn kind(r: &RunsIn) -> (&str, Option<&str>) {
+        (r.kind.as_str(), r.detail.as_deref())
+    }
+
+    #[test]
+    fn runs_in_detects_wsl_container_and_vm() {
+        let none = |_: &str| None;
+        // WSL 優先於其他判斷
+        let d = root_with(&[(
+            "proc/sys/kernel/osrelease",
+            b"5.15.153.1-microsoft-standard-WSL2\n",
+        )]);
+        assert_eq!(kind(&runs_in(d.path(), &none)), ("wsl", Some("2")));
+        let d = root_with(&[("proc/sys/kernel/osrelease", b"4.4.0-19041-Microsoft\n")]);
+        assert_eq!(kind(&runs_in(d.path(), &none)), ("wsl", Some("1")));
+
+        // 容器：systemd-detect-virt 優先，沒有時看檔案
+        let d = root_with(&[("proc/sys/kernel/osrelease", b"6.8.0-45-generic\n")]);
+        let virt = |f: &str| Some(if f == "--container" { "lxc" } else { "none" }.to_string());
+        assert_eq!(kind(&runs_in(d.path(), &virt)), ("container", Some("lxc")));
+        let d = root_with(&[(".dockerenv", b"")]);
+        assert_eq!(
+            kind(&runs_in(d.path(), &none)),
+            ("container", Some("docker"))
+        );
+        let d = root_with(&[("run/.containerenv", b"")]);
+        assert_eq!(
+            kind(&runs_in(d.path(), &none)),
+            ("container", Some("podman"))
+        );
+        let d = root_with(&[("proc/1/environ", b"PATH=/bin\0container=oci\0HOME=/")]);
+        assert_eq!(kind(&runs_in(d.path(), &none)), ("container", Some("oci")));
+        // systemd 說 none，但檔案顯示是 docker
+        let d = root_with(&[(".dockerenv", b"")]);
+        let no_virt = |_: &str| Some("none".to_string());
+        assert_eq!(
+            kind(&runs_in(d.path(), &no_virt)),
+            ("container", Some("docker"))
+        );
+
+        // 主機：systemd-detect-virt --vm，沒有時用 DMI
+        let d = root_with(&[]);
+        let kvm = |f: &str| Some(if f == "--vm" { "kvm" } else { "none" }.to_string());
+        assert_eq!(kind(&runs_in(d.path(), &kvm)), ("host", Some("kvm")));
+        assert_eq!(kind(&runs_in(d.path(), &no_virt)), ("host", Some("none")));
+        let d = root_with(&[
+            ("sys/class/dmi/id/sys_vendor", b"VMware, Inc.\n"),
+            ("sys/class/dmi/id/product_name", b"VMware7,1\n"),
+        ]);
+        assert_eq!(kind(&runs_in(d.path(), &none)), ("host", Some("vmware")));
+        let d = root_with(&[("sys/class/dmi/id/sys_vendor", b"Dell Inc.\n")]);
+        assert_eq!(kind(&runs_in(d.path(), &none)), ("host", Some("none")));
+        // 什麼都讀不到
+        let d = root_with(&[("proc/1/environ", b"PATH=/bin\0container=\0")]);
+        assert_eq!(kind(&runs_in(d.path(), &none)), ("host", None));
     }
 }

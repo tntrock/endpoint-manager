@@ -2,7 +2,7 @@
 {% block content %}
 <div class="page-head">
   <div><div class="crumb"><a href="/devices">裝置</a> ／ {{ d.hostname }}</div><h1>{{ d.hostname }} <span class="tag {{ d.badge }}">{{ d.badge_label }}</span></h1>
-    <div class="sub device-sub"><span>{{ d.group }}</span><span>{% if d.linux %}Linux{% else %}Windows{% endif %}{% if !d.os.is_empty() %}・{{ d.os }}{% endif %}</span>{% if !d.ip.is_empty() %}<span class="num">{{ d.ip }}</span>{% endif %}<span>最後回報 {{ d.seen_ago }}</span></div></div>
+    <div class="sub device-sub"><span>{{ d.group }}</span><span>{% if d.linux %}Linux{% else %}Windows{% endif %}{% if !d.os.is_empty() %}・{{ d.os }}{% endif %}</span>{% if !d.runs_in.is_empty() %}<span>{{ d.runs_in }}</span>{% endif %}{% if !d.ip.is_empty() %}<span class="num">{{ d.ip }}</span>{% endif %}<span>最後回報 {{ d.seen_ago }}</span></div></div>
   <div class="actions">
     {% if nav.platform %}
     <form method="post" action="/devices/{{ d.id }}/group">
@@ -42,6 +42,7 @@
   <tr><th>據點（依最後回報的 IP）</th><td>{{ d.site }}</td><th>快取</th><td>{{ d.cache }}</td></tr>
   <tr><th>廠牌／型號</th><td>{{ d.model }}</td><th>CPU</th><td>{{ d.cpu }}</td></tr>
   <tr><th>記憶體</th><td>{{ d.ram }}</td><th>BIOS 序號</th><td>{{ d.serial }}</td></tr>
+  <tr><th>執行環境</th><td colspan="3">{% if d.runs_in.is_empty() %}<span class="faint">Agent 尚未回報</span>{% else %}{{ d.runs_in }}{% endif %}</td></tr>
   <tr><th>最後報到</th><td>{{ d.last_seen }}</td><th>開機時間</th><td>{{ d.boot }}</td></tr>
   <tr><th>註冊時間</th><td>{{ d.enrolled }}</td><th>Agent 版本</th><td>{{ d.agent }}</td></tr>
   <tr><th>要求簽章</th><td colspan="3">{% if d.signing.is_empty() %}否{% else %}<span class="tag ok">是</span> 金鑰 {% for k in d.signing %}<code>{{ k }}</code> {% endfor %}<span class="faint">只執行這些金鑰簽章的腳本與套件</span>{% endif %}</td></tr>

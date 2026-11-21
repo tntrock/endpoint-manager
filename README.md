@@ -273,6 +273,21 @@ Linux 電腦與 Windows 的差異：
 - 遠端指令：重新收集、重新開機、關機、sh 腳本。PowerShell 腳本只派給 Windows，sh 腳本只派給 Linux；對群組下指令時會略過作業系統不符的電腦。
 - 不參與合規、軟體派送與 Windows Update 原則，也不會被算進這些頁面的統計。
 
+#### 容器、WSL 與虛擬機
+
+Agent 會回報自己在哪裡執行，裝置頁與裝置清單會顯示，裝置清單也能依此篩選：
+
+| 顯示 | 判斷方式 |
+|---|---|
+| 實體機／虛擬機（KVM、VMware、Hyper-V…） | Linux：`systemd-detect-virt --vm`，沒有時看 DMI 的製造商與型號；Windows：WMI 的製造商與型號 |
+| 容器（docker、podman、lxc…） | `systemd-detect-virt --container`，或 `/.dockerenv`、`/run/.containerenv`、PID 1 的 `container=` |
+| WSL 1／WSL 2 | 核心版本字串含 `microsoft` |
+
+- **虛擬機**：在虛擬機裡安裝 Agent，管理方式與一般電腦相同。
+- **WSL**：在 WSL 裡安裝 Linux Agent 即可。WSL 2 啟用 systemd 時 Agent 以服務執行；沒有 systemd 時要自己啟動 Agent。
+- **容器**：不建議把 Agent 裝在應用程式容器（Docker、Kubernetes 的 Pod）裡。容器重建時 Agent 的狀態目錄也會消失，除非 `/var/lib/endpoint-manager` 是持久卷，否則每次重建都會註冊成一台新裝置；裝置頁會提示這一點。請改把 Agent 裝在跑容器的主機上。LXC 這類系統容器有完整的作業系統，可以照一般 Linux 安裝。
+- 容器與 WSL 讀到的 BIOS UUID 與序號屬於所在的主機，所以在容器與 WSL 裡的 Agent 註冊時不送這兩個值，不會被誤判成主機的重新註冊或疑似重複。
+
 ### 4. 分點快取（選用）
 
 設定流程：
