@@ -273,3 +273,89 @@ progress { width: 12em; vertical-align: middle; accent-color: var(--accent); }
 /* 兩步驟驗證的 QR code：深色主題下也要白底，App 才掃得到 */
 .qr { display: inline-block; padding: 10px; margin: 8px 0 12px; background: #fff; border-radius: 8px; line-height: 0; }
 .qr svg { width: 200px; height: 200px; }
+
+/* 總覽與主管報告的圖表（伺服器產生的 SVG，顏色由這裡決定） */
+.kpis .kpi { min-height: 128px; }
+.kpis .ring { position: absolute; right: 16px; top: 18px; width: 64px; height: 64px; }
+.ring-track, .ring-fill { fill: none; stroke-width: 7; }
+.ring-track { stroke: var(--line); }
+.ring-fill { stroke: var(--ok); stroke-linecap: round; }
+.ring text { fill: var(--text); font: 13px var(--mono); }
+.spark { position: absolute; right: 16px; bottom: 16px; width: 96px; height: 32px; overflow: visible; }
+.spark polyline, .chart polyline { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.delta { font-size: 12px; margin-top: 6px; }
+.delta.up { color: var(--ok); }
+.delta.down { color: var(--bad); }
+.delta.flat { color: var(--muted); }
+.delta.inverse.up { color: var(--bad); }
+.delta.inverse.down { color: var(--ok); }
+.line-a { stroke: var(--accent); }
+.line-b { stroke: var(--bad); }
+.line-b:not(circle) { stroke-dasharray: 5 4; }
+.line-ok { stroke: var(--ok); }
+.chart { display: block; width: 100%; height: auto; }
+.chart .grid line { stroke: var(--line); }
+.chart .axis text { fill: var(--faint); font: 11px var(--mono); }
+.chart circle.end { fill: var(--panel); stroke-width: 2.5; }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 8px; font-size: 12px; color: var(--muted); }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+.legend i.line-a { background: var(--accent); }
+.legend i.line-b { background: var(--bad); }
+.legend i.seg-1, .meter .seg-1 { background: var(--ok); fill: var(--ok); }
+.legend i.seg-2, .meter .seg-2 { background: var(--warn); fill: var(--warn); }
+.legend i.seg-3, .meter .seg-3 { background: var(--line2); fill: var(--line2); }
+.dash-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 14px; margin-bottom: 14px; }
+.dash-grid .card { margin: 0; }
+.card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 12px; }
+.card-head h2 { margin: 0; }
+.seg { display: inline-flex; border: 1px solid var(--line2); border-radius: 8px; overflow: hidden; font-size: 12px; }
+.seg a, .seg strong { padding: 3px 10px; color: var(--muted); }
+.seg strong { background: var(--accent-bg); color: var(--text); font-weight: 600; }
+.seg a:hover { color: var(--text); text-decoration: none; }
+.todo { list-style: none; margin: 0; padding: 0; }
+.todo li { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-top: 1px solid var(--line); }
+.todo li:first-child { border-top: 0; padding-top: 0; }
+.todo a { flex: 1; min-width: 0; color: var(--text); }
+.todo .t { display: block; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.todo .d { display: block; font-size: 12px; color: var(--muted); }
+.todo .n { font-size: 16px; font-weight: 600; }
+.sev-dot { width: 8px; height: 8px; flex: none; border-radius: 50%; }
+.sev-dot.high { background: var(--bad); box-shadow: 0 0 8px var(--bad); }
+.sev-dot.medium { background: var(--warn); }
+.sev-dot.low { background: var(--info); }
+.site-rows, .bars { display: grid; gap: 10px; }
+.site-row, .bar-row { display: grid; grid-template-columns: minmax(6em, 10em) minmax(0, 1fr) 3.5em; align-items: center; gap: 10px; }
+.site-row b, .bar-row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.bar-row { color: var(--text); }
+.bar-row:hover { text-decoration: none; }
+.bar-row:hover .name { text-decoration: underline; }
+.site-row .num, .bar-row .num { text-align: right; }
+.meter, .bar { width: 100%; height: 8px; border-radius: 4px; }
+.bar .track { fill: var(--line); }
+.bar .fill { fill: var(--info); }
+.bar .fill.high { fill: var(--bad); }
+.bar .fill.medium { fill: var(--warn); }
+@media (max-width: 1099px) {
+  .dash-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* 主管報告：A4 直式、固定淺色 */
+body.report { background: var(--bg); }
+.report-page { max-width: 900px; margin: 24px auto; padding: 32px 40px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 12px; }
+.report-page header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px;
+  border-bottom: 2px solid var(--text); padding-bottom: 12px; margin-bottom: 18px; }
+.report-page h2 { margin: 22px 0 8px; font-size: 15px; break-after: avoid; }
+.report-page section { break-inside: avoid; }
+.report-page .cards { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.report-page .card { background: var(--panel); box-shadow: none; }
+.report-page .kpi { min-height: 0; }
+.report-page table { display: table; width: 100%; }
+.report-meta { font-size: 12px; color: var(--muted); text-align: right; }
+.report-tools { display: flex; justify-content: flex-end; gap: 8px; max-width: 900px; margin: 16px auto 0; }
+@page { size: A4; margin: 14mm; }
+@media print {
+  html, body.report { min-height: 0; background: #fff; }
+  .report-tools { display: none; }
+  .report-page { margin: 0; padding: 0; border: 0; max-width: none; background: #fff; }
+}

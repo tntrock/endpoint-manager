@@ -218,6 +218,8 @@ pub async fn list(
            AND ($12 = '' OR d.os_family = $12) \
            AND ($3 = '' OR d.hostname ILIKE $4 OR d.logged_on_user ILIKE $4 OR d.last_ip ILIKE $4) \
            AND (CASE WHEN $5 = '' THEN d.status <> 'retired' WHEN $5 = 'all' THEN true \
+                     WHEN $5 = 'stale' THEN d.status NOT IN ('retired', 'pending_approval') \
+                          AND (d.last_seen_at IS NULL OR d.last_seen_at < now() - interval '7 days') \
                      ELSE d.status = $5 END) \
            AND (CASE WHEN $6 = '' THEN true WHEN $6 = 'none' THEN d.group_id IS NULL \
                      ELSE d.group_id = $7 END) \
@@ -267,6 +269,7 @@ pub async fn list(
         ("", "使用中"),
         ("pending_approval", "待核准"),
         ("duplicate_suspect", "疑似重複"),
+        ("stale", "離線超過 7 天"),
         ("retired", "已除役"),
         ("all", "全部"),
     ]

@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-Hant" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>端點管理報告 {{ period }}</title>
+<link rel="icon" href="/static/favicon.svg?v={{ version }}" type="image/svg+xml">
+<link rel="stylesheet" href="/static/app.css?v={{ version }}">
+<script src="/static/app.js?v={{ version }}" defer></script>
+</head>
+<body class="report">
+<div class="report-tools">
+  <a class="btn" href="/?days={{ days }}">回總覽</a>
+  <button class="btn primary" type="button" data-print hidden>列印／存成 PDF</button>
+  <noscript><span class="muted">用瀏覽器的列印功能（Ctrl+P）存成 PDF</span></noscript>
+</div>
+<main class="report-page">
+<header>
+  <div><h1>端點管理報告</h1><div class="sub">{{ scope }}</div></div>
+  <div class="report-meta">期間 <span class="num">{{ period }}</span>（{{ days }} 天）<br>產生 <span class="num">{{ generated }}</span>・{{ user }}</div>
+</header>
+
+<section>
+<div class="cards kpis">
+  <div class="card kpi"><div class="kpi-label">裝置總數</div><div class="kpi-value num">{{ o.now.managed }}</div>
+    {% if let Some(d) = o.total_delta %}<div class="delta {{ d.dir }}">{{ d.text }}<span class="muted">　較期初</span></div>{% endif %}</div>
+  <div class="card kpi"><div class="kpi-label">在線率</div><div class="kpi-value num">{{ o.online_pct }}<small>%</small></div>
+    <div class="delta muted">{{ o.now.seen }} / {{ o.now.managed }} 台</div></div>
+  <div class="card kpi"><div class="kpi-label">合規率</div><div class="kpi-value num">{{ o.compliance_pct }}<small>%</small></div>
+    {% if let Some(d) = o.compliance_delta %}<div class="delta {{ d.dir }}">{{ d.text }}<span class="muted">　較期初</span></div>{% endif %}</div>
+  <div class="card kpi"><div class="kpi-label">高風險裝置</div><div class="kpi-value num">{{ o.now.high_risk }}</div>
+    {% if let Some(d) = o.high_delta %}<div class="delta {{ d.dir }} inverse">{{ d.text }}<span class="muted">　較期初</span></div>{% endif %}</div>
+</div>
+</section>
+
+<section>
+<h2>違規趨勢</h2>
+{% include "_trend.html" %}
+</section>
+
+<section>
+<h2>依嚴重度</h2>
+<table>
+  <tr><th>嚴重度</th><th class="num">有違規的規則</th><th class="num">違規裝置</th></tr>
+  {% for r in severities %}<tr><td><span class="sev {{ r.severity }}">{{ r.label }}</span></td><td class="num">{{ r.rules }}</td><td class="num">{{ r.devices }}</td></tr>{% endfor %}
+</table>
+</section>
+
+<section>
+<h2>違規最多的規則</h2>
+{% if rules.is_empty() %}<p class="muted">期間結束時沒有違規。</p>{% else %}
+<table>
+  <tr><th>規則</th><th>嚴重度</th><th class="num">違規裝置</th></tr>
+  {% for r in rules %}<tr><td>{{ r.name }}</td><td><span class="sev {{ r.severity }}">{{ r.severity_label }}</span></td><td class="num">{{ r.count }}</td></tr>{% endfor %}
+</table>{% endif %}
+</section>
+
+{% if !sites.is_empty() %}
+<section>
+<h2>各據點狀態</h2>
+<table>
+  <tr><th>據點</th><th class="num">裝置</th><th class="num">在線且合規</th><th class="num">有違規</th><th class="num">離線</th></tr>
+  {% for st in sites %}<tr><td>{{ st.name }}</td><td class="num">{{ st.total }}</td><td class="num">{{ st.ok }}</td><td class="num">{{ st.bad }}</td><td class="num">{{ st.off }}</td></tr>{% endfor %}
+</table>
+</section>
+{% endif %}
+
+<section>
+<h2>Windows Update</h2>
+<p>等待重新開機 <b class="num">{{ reboot }}</b> 台，其中超過 7 天 <b class="num">{{ reboot_week }}</b> 台。</p>
+{% if !update_states.is_empty() %}
+<table>
+  <tr><th>更新原則狀態</th><th class="num">裝置</th></tr>
+  {% for u in update_states %}<tr><td>{{ u.0 }}</td><td class="num">{{ u.1 }}</td></tr>{% endfor %}
+</table>{% endif %}
+</section>
+
+<section>
+<h2>進行中的派送</h2>
+{% if deploys.is_empty() %}<p class="muted">沒有進行中的派送。</p>{% else %}
+<table>
+  <tr><th>派送</th><th>階段</th><th class="num">成功</th><th class="num">失敗</th></tr>
+  {% for d in deploys %}<tr><td>{{ d.name }}</td><td>{{ d.stage }}</td><td class="num">{{ d.succeeded }}</td><td class="num{% if d.failed > 0 %} error{% endif %}">{{ d.failed }}</td></tr>{% endfor %}
+</table>{% endif %}
+</section>
+</main>
+</body>
+</html>
