@@ -57,6 +57,7 @@ pub fn section_label(section: &str) -> &str {
         "security" => "安全設定",
         "registry" => "登錄檔",
         "accounts" => "帳號",
+        "containers" => "容器",
         other => other,
     }
 }

@@ -265,8 +265,8 @@ impl Collector for WindowsCollector {
                         .collect(),
                 )
             }
-            // 這幾個區段不經 WMI：Security 在上面另外處理，Registry 走 collect_registry，Accounts 只有 Linux
-            Section::Security | Section::Registry | Section::Accounts => {
+            // 這幾個區段不經 WMI：Security 在上面另外處理，Registry 走 collect_registry，Accounts 與 Containers 只有 Linux
+            Section::Security | Section::Registry | Section::Accounts | Section::Containers => {
                 anyhow::bail!("section {} is not collected via WMI", section.as_str())
             }
             Section::Services => {

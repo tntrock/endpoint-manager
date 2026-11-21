@@ -3,6 +3,7 @@
 pub mod accounts;
 pub mod collect;
 pub mod commands;
+pub mod containers;
 pub mod exec;
 pub mod install;
 pub mod packages;

@@ -10,6 +10,7 @@ pub mod caches;
 pub mod chart;
 pub mod commands;
 pub mod compliance;
+pub mod containers;
 pub mod dashboard;
 pub mod deployments;
 pub mod device_status;

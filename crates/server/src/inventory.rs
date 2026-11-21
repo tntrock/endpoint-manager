@@ -283,6 +283,20 @@ pub async fn load_payload(
                 }
             }
         }
+        Section::Containers => {
+            let data: serde_json::Value =
+                sqlx::query_scalar("SELECT data FROM device_containers WHERE device_id = $1")
+                    .bind(device_id)
+                    .fetch_one(&mut *conn)
+                    .await?;
+            match serde_json::from_value(data) {
+                Ok(c) => InventoryPayload::Containers(c),
+                Err(e) => {
+                    tracing::warn!(%device_id, error = %e, "容器區段 jsonb 無法解析，視為無資料");
+                    return Ok(None);
+                }
+            }
+        }
         Section::Basic => {
             let (hostname, domain, is_domain_joined, os_caption, os_build, os_ubr, runs_in, detail): BasicRow =
                 sqlx::query_as(
@@ -412,6 +426,16 @@ async fn write_payload(
             )
             .bind(device_id)
             .bind(json(a))
+            .execute(&mut *conn)
+            .await?;
+        }
+        InventoryPayload::Containers(c) => {
+            sqlx::query(
+                "INSERT INTO device_containers (device_id, data) VALUES ($1, $2::jsonb) \
+                 ON CONFLICT (device_id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()",
+            )
+            .bind(device_id)
+            .bind(json(c))
             .execute(&mut *conn)
             .await?;
         }
