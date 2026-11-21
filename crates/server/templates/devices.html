@@ -2,6 +2,7 @@
 {% import "_macros.html" as m %}
 {% block content %}
 <div class="page-head"><div><h1>裝置</h1>{% if !software.is_empty() %}<div class="sub">安裝了「{{ software }} {{ version }}」</div>{% endif %}</div></div>
+{% if let Some(n) = notice %}<div class="notice ok" role="status">{{ n }}</div>{% endif %}
 <form class="filters" method="get" action="/devices">
   <input name="q" value="{{ q }}" placeholder="電腦名稱／使用者／IP" aria-label="搜尋">
   <select name="status" aria-label="狀態">
@@ -17,13 +18,46 @@
   <input type="hidden" name="software" value="{{ software }}">
   <input type="hidden" name="version" value="{{ version }}">
   {% endif %}
+  <input type="hidden" name="sort" value="{{ sort }}">
   <button class="btn primary">搜尋</button>
 </form>
 {% if rows.is_empty() %}{% call m::empty("沒有符合條件的裝置", "調整搜尋條件，或到「註冊金鑰」建立安裝參數") %}{% endcall %}{% else %}
+<form method="post" action="/devices/bulk" class="bulk-form">
+{% if nav.manage %}
+<input type="hidden" name="csrf" value="{{ nav.csrf }}">
+<input type="hidden" name="back" value="{{ back }}">
+<button type="submit" disabled hidden aria-hidden="true" tabindex="-1"></button>
+<fieldset class="bulk-bar">
+  <legend>批次操作（勾選下方的裝置，<span class="num" data-selected-count>0</span> 台已選）</legend>
+  {% if nav.platform %}
+  <div class="bulk-op">
+    <select name="group" aria-label="目標群組">{% for g in move_groups %}<option value="{{ g.value }}">{{ g.label }}</option>{% endfor %}</select>
+    <button class="btn" name="op" value="move">移到群組</button>
+  </div>
+  {% endif %}
+  <div class="bulk-op">
+    <select name="action" aria-label="指令">
+      <option value="collect">重新收集盤點</option>
+      <option value="apply">立即套用派送與更新原則</option>
+      <option value="reboot">重新開機</option>
+      <option value="shutdown">關機</option>
+      {% if nav.platform %}<option value="script">執行腳本</option>{% endif %}
+    </select>
+    {% if nav.platform %}<select name="script_id" aria-label="腳本"><option value="">（執行腳本時選擇）</option>{% for sc in scripts %}<option value="{{ sc.value }}">{{ sc.label }}</option>{% endfor %}</select>{% endif %}
+    <label>延遲 <input name="delay_minutes" value="10" inputmode="numeric" size="2" aria-label="延遲分鐘"> 分</label>
+    <button class="btn" name="op" value="command">下指令</button>
+  </div>
+  <div class="bulk-op">
+    <label class="checks"><input type="checkbox" name="confirm" value="1"> 確定除役</label>
+    <button class="btn danger" name="op" value="retire">除役</button>
+  </div>
+</fieldset>
+{% endif %}
 <table>
-  <tr><th>電腦名稱</th><th>群組</th><th>網域</th><th>作業系統</th><th>使用者</th><th>IP</th><th>最後報到</th><th>狀態</th></tr>
+  <tr>{% if nav.manage %}<th class="pick"><input type="checkbox" data-select-all aria-label="全選本頁" hidden></th>{% endif %}{% call m::sort_head(headers) %}{% endcall %}</tr>
   {% for d in rows %}
   <tr>
+    {% if nav.manage %}<td class="pick"><input type="checkbox" name="ids" value="{{ d.id }}" aria-label="選取 {{ d.hostname }}"></td>{% endif %}
     <td><a href="/devices/{{ d.id }}">{{ d.hostname }}</a></td>
     <td>{{ d.group }}</td><td>{{ d.domain }}</td><td>{{ d.os }}{% if d.linux %} <span class="tag info">Linux</span>{% endif %}</td><td>{{ d.user }}</td><td><span class="num">{{ d.ip }}</span></td>
     <td><span class="num">{{ d.last_seen }}</span></td>
@@ -31,6 +65,7 @@
   </tr>
   {% endfor %}
 </table>
+</form>
 {% endif %}
 <div class="pager">
   {% if page > 0 %}<a class="btn sm" href="{{ prev_url }}">← 上一頁</a>{% endif %}

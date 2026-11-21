@@ -6,6 +6,7 @@
   {% if nav.platform %}<div class="actions"><a class="btn primary" href="/deployments/new">＋ 建立派送</a></div>{% endif %}
 </div>
 {% call m::deploy_tabs("deployments") %}{% endcall %}
+<nav class="chips" aria-label="依狀態篩選">{% for f in filters %}{% if f.active %}<strong>{{ f.label }}</strong>{% else %}<a href="{{ f.url }}">{{ f.label }}</a>{% endif %}{% endfor %}</nav>
 {% if rows.is_empty() %}{% call m::empty("還沒有派送", "上傳套件後就能建立第一個派送") %}{% endcall %}{% else %}
 <table>
   <tr><th>名稱</th><th>套件</th><th>動作</th><th>狀態</th><th class="num">對象</th><th class="num">等待中</th><th class="num">成功</th><th class="num">待重開機</th><th class="num">已符合</th><th class="num">失敗</th></tr>

@@ -40,7 +40,7 @@ pub(super) fn command_error(e: anyhow::Error) -> Response {
 }
 
 /// 表單可以重新顯示的錯誤（輸入或狀態問題）：(狀態碼, 訊息)
-fn form_error(e: &anyhow::Error) -> Option<(StatusCode, String)> {
+pub(super) fn form_error(e: &anyhow::Error) -> Option<(StatusCode, String)> {
     match cmd_error_kind(e)? {
         CmdError::Invalid(m) => Some((StatusCode::UNPROCESSABLE_ENTITY, m.clone())),
         CmdError::Conflict(m) => Some((StatusCode::CONFLICT, m.clone())),
@@ -161,6 +161,9 @@ struct ListPage {
     scripts: Vec<SelectOption>,
     expires: Vec<(i64, &'static str)>,
     error: Option<String>,
+    /// 篩選：動作下拉選單、只看有失敗的
+    actions: Vec<SelectOption>,
+    failed_only: bool,
     prev: Option<String>,
     next: Option<String>,
 }
@@ -171,6 +174,12 @@ pub struct PageQuery {
     page: i64,
     #[serde(default)]
     status: String,
+    /// 清單篩選：動作
+    #[serde(default)]
+    action: String,
+    /// 清單篩選：只看有失敗的（"1"）
+    #[serde(default)]
+    failed: String,
 }
 
 /// 範圍內的群組
@@ -209,7 +218,7 @@ fn language_for_os(os_family: &str) -> &'static str {
 }
 
 /// 已核准的腳本（只有平台管理員能執行）。`os_family` 有值時只列這個作業系統能執行的
-async fn approved_scripts(
+pub(super) async fn approved_scripts(
     st: &AppState,
     s: &Session,
     os_family: Option<&str>,
@@ -249,25 +258,61 @@ async fn list_page(
     st: &AppState,
     s: &Session,
     page: i64,
+    action: Option<&str>,
+    failed_only: bool,
     error: Option<String>,
 ) -> Result<ListPage, sqlx::Error> {
     let page = page.clamp(0, super::devices::MAX_PAGE);
-    // 先挑出這一頁的指令（範圍內至少有一台），再只對這些指令計數：不必每次彙總整張表
+    // 先挑出這一頁的指令（範圍內至少有一台），再只對這些指令計數：不必每次彙總整張表。
+    // 「有失敗」只看範圍內的裝置
     let rows: Vec<RunDbRow> = sqlx::query_as(sqlx::AssertSqlSafe(runs_sql(
         "AND r.id IN (SELECT p.id FROM command_runs p \
-           WHERE $1::bool OR EXISTS (SELECT 1 FROM command_targets pt \
+           WHERE ($1::bool OR EXISTS (SELECT 1 FROM command_targets pt \
              JOIN devices pv ON pv.id = pt.device_id \
-             WHERE pt.run_id = p.id AND pv.group_id = ANY($2::bigint[])) \
+             WHERE pt.run_id = p.id AND pv.group_id = ANY($2::bigint[]))) \
+             AND ($5::text IS NULL OR p.action = $5) \
+             AND (NOT $6 OR EXISTS (SELECT 1 FROM command_targets ft \
+               JOIN devices fv ON fv.id = ft.device_id \
+               WHERE ft.run_id = p.id AND ft.status = 'failed' \
+                 AND ($1::bool OR fv.group_id = ANY($2::bigint[])))) \
            ORDER BY p.id DESC LIMIT $3 OFFSET $4)",
     )))
     .bind(s.all_devices())
     .bind(&s.groups)
     .bind(RUN_PAGE + 1)
     .bind(page * RUN_PAGE)
+    .bind(action)
+    .bind(failed_only)
     .fetch_all(&st.pool)
     .await?;
     let more = rows.len() as i64 > RUN_PAGE;
+    let url = |page: i64| {
+        let mut u = format!("/commands?page={page}");
+        if let Some(a) = action {
+            u.push_str(&format!("&action={a}"));
+        }
+        if failed_only {
+            u.push_str("&failed=1");
+        }
+        u
+    };
+    let mut actions = vec![SelectOption {
+        value: String::new(),
+        label: "所有動作".into(),
+        selected: action.is_none(),
+    }];
+    actions.extend(
+        ["collect", "apply", "reboot", "shutdown", "script"]
+            .into_iter()
+            .map(|a| SelectOption {
+                value: a.into(),
+                label: action_label(a).into(),
+                selected: action == Some(a),
+            }),
+    );
     Ok(ListPage {
+        actions,
+        failed_only,
         nav: Nav::new(s, "commands"),
         rows: rows
             .into_iter()
@@ -278,8 +323,8 @@ async fn list_page(
         scripts: approved_scripts(st, s, None).await?,
         expires: EXPIRES.to_vec(),
         error,
-        prev: (page > 0).then(|| format!("/commands?page={}", page - 1)),
-        next: more.then(|| format!("/commands?page={}", page + 1)),
+        prev: (page > 0).then(|| url(page - 1)),
+        next: more.then(|| url(page + 1)),
     })
 }
 
@@ -288,7 +333,12 @@ pub async fn list(
     AdminSession(s): AdminSession,
     Query(q): Query<PageQuery>,
 ) -> Result<Response, AppError> {
-    Ok(render(&list_page(&st, &s, q.page, None).await?))
+    use protocol::command::CommandAction;
+    let action = CommandAction::parse(&q.action);
+    let action = (action != CommandAction::Unknown).then_some(action.as_str());
+    Ok(render(
+        &list_page(&st, &s, q.page, action, q.failed == "1", None).await?,
+    ))
 }
 
 struct RunForm {
@@ -354,7 +404,7 @@ pub async fn create(
         None
     };
     if let Some(m) = input_error {
-        let page = list_page(&st, &s, 0, Some(m.into()))
+        let page = list_page(&st, &s, 0, None, false, Some(m.into()))
             .await
             .map_err(db_error)?;
         return Ok((StatusCode::UNPROCESSABLE_ENTITY, render(&page)).into_response());
@@ -371,7 +421,9 @@ pub async fn create(
         Ok((id, ..)) => Ok(Redirect::to(&format!("/commands/{id}")).into_response()),
         Err(e) => match form_error(&e) {
             Some((status, m)) => {
-                let page = list_page(&st, &s, 0, Some(m)).await.map_err(db_error)?;
+                let page = list_page(&st, &s, 0, None, false, Some(m))
+                    .await
+                    .map_err(db_error)?;
                 Ok((status, render(&page)).into_response())
             }
             None => Err(command_error(e)),

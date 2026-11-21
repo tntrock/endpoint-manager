@@ -27,6 +27,7 @@ pub mod scripts;
 pub mod signing;
 pub mod sites;
 pub mod software;
+pub mod sort;
 pub mod timeline;
 pub mod tokens;
 pub mod updates;
@@ -206,6 +207,10 @@ pub fn web_router(state: AppState) -> Router {
         .route("/compliance", get(compliance::overview))
         .route("/compliance/violations", get(compliance::violations))
         .route("/compliance/violations.csv", get(compliance::export_csv))
+        .route(
+            "/compliance/violations/exempt",
+            post(compliance::bulk_exempt),
+        )
         .route("/compliance/notify", get(notify::page).post(notify::save))
         .route("/compliance/notify/test", post(notify::test))
         .route("/compliance/rules", get(rules::list).post(rules::create))
@@ -259,6 +264,7 @@ pub fn web_router(state: AppState) -> Router {
         .route("/audit/retention", post(audit::retention))
         .route("/metrics", get(crate::metrics::handler))
         .route("/devices/approve-all", post(devices::approve_all))
+        .route("/devices/bulk", post(devices::bulk))
         .route("/devices/{id}/approve", post(devices::approve))
         .route("/devices/{id}/reject", post(devices::reject))
         .route("/devices/{id}", get(devices::detail))
