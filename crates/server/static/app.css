@@ -379,12 +379,13 @@ a.stat:hover { text-decoration: none; border-color: var(--accent); }
 .todo a.btn { flex: none; color: var(--text); }
 .todo-main .d { overflow-wrap: anywhere; }
 .issues .ok { margin: 0; }
-.card.details > summary { cursor: pointer; list-style: none; }
-.card.details > summary::-webkit-details-marker { display: none; }
-.card.details > summary h2 { display: inline; margin: 0; }
-.card.details > summary::after { content: "▾"; margin-left: 8px; color: var(--muted); }
-.card.details:not([open]) > summary::after { content: "▸"; }
+.card.details > summary, details.fold > summary { cursor: pointer; list-style: none; }
+.card.details > summary::-webkit-details-marker, details.fold > summary::-webkit-details-marker { display: none; }
+.card.details > summary h2, details.fold > summary h2 { display: inline; margin: 0; }
+.card.details > summary::after, details.fold > summary::after { content: "▾"; margin-left: 8px; color: var(--muted); }
+.card.details:not([open]) > summary::after, details.fold:not([open]) > summary::after { content: "▸"; }
 .card.details[open] > summary { display: block; margin-bottom: 12px; }
+details.fold > summary { margin: 18px 0 8px; }
 .tl-day { margin: 18px 0 8px; font-family: var(--mono); }
 .tl { list-style: none; margin: 0; padding: 0 0 0 14px; border-left: 2px solid var(--line); }
 .tl-item { position: relative; display: flex; gap: 12px; align-items: baseline; padding: 6px 0 6px 12px; }

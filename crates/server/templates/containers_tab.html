@@ -22,7 +22,7 @@
 <h2>執行中（{{ running.len() }}）</h2>
 {% if running.is_empty() %}<p class="muted">沒有執行中的容器。</p>{% else %}{% call rows(running) %}{% endcall %}{% endif %}
 {% if !stopped.is_empty() %}
-<details>
+<details class="fold">
 <summary><h2>已停止（{{ stopped.len() }}，7 天內）</h2></summary>
 {% call rows(stopped) %}{% endcall %}
 </details>
