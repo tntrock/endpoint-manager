@@ -98,6 +98,17 @@ mod tests {
     /// Windows 更新期間 CBS 機碼幾乎不停變動：觸發要有最小間隔，
     /// 否則 Agent 每 10 秒就報到一次，也會塞滿觸發通道擠掉軟體變更。
     #[test]
+    fn linux_only_sections_use_existing_intervals() {
+        let iv = CollectionIntervals {
+            services_secs: 600,
+            security_secs: 900,
+            ..DEFAULT_INTERVALS
+        };
+        assert_eq!(interval(Section::Containers, &iv), Duration::from_secs(600));
+        assert_eq!(interval(Section::Accounts, &iv), Duration::from_secs(900));
+    }
+
+    #[test]
     fn throttle_enforces_minimum_gap() {
         let t = Throttle::new(Duration::from_secs(300));
         let t0 = Instant::now();

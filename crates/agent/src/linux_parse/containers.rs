@@ -271,6 +271,16 @@ mod tests {
         assert_eq!(api.host_network, Some(false));
         assert_eq!(api.ports, ["0.0.0.0:8000->8000/tcp"]);
         assert_eq!(api.owner.as_deref(), Some("alice"));
+        // 欄位缺漏時的預設：名稱用 ID、映像用 Image、狀態未知、沒有連接埠
+        let minimal = r#"[{"Id": "0011223344556677", "Image": "sha256:ff",
+            "NetworkSettings": {"Ports": {"80/tcp": [{"HostIp": "0.0.0.0"}]}}},
+            {"Id": "8899aabbccdd", "NetworkSettings": {}}]"#;
+        let v = parse_inspect("docker", minimal, None).unwrap();
+        assert_eq!(
+            (v[0].name.as_str(), v[0].image.as_str(), v[0].state.as_str()),
+            ("001122334455", "sha256:ff", "unknown")
+        );
+        assert!(v[0].ports.is_empty() && v[1].ports.is_empty() && v[1].image.is_empty());
         assert!(parse_inspect("podman", "{}", None).is_err());
         assert!(parse_inspect("podman", "not json", None).is_err());
         assert!(parse_inspect("podman", "[]", None).unwrap().is_empty());

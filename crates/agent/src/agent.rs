@@ -779,6 +779,39 @@ mod tests {
         assert_eq!(AgentConfig::load(dir.path()).unwrap().enroll_token, None);
     }
 
+    /// 伺服器不再列出 containers（例如降版）：清掉快取與錯誤，不再回報
+    #[test]
+    fn unannounced_sections_are_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("root.pem"), "x").unwrap();
+        AgentConfig {
+            server_url: "https://a:8443".into(),
+            enroll_token: None,
+            signing_keys: vec![],
+        }
+        .save(dir.path())
+        .unwrap();
+        let mut agent = Agent::new(dir.path(), NoCollector).unwrap();
+        let empty = InventoryPayload::Containers(protocol::ContainersInfo {
+            runtimes: vec![],
+            containers: vec![],
+            truncated: false,
+        });
+        agent.set_server_sections(vec!["containers".into()]);
+        agent.cache.insert(Section::Containers, empty.clone());
+        agent.cache.insert(Section::Basic, empty);
+        agent.errors.insert(Section::Containers, "boom".into());
+        agent.server_supports_config = true;
+        agent.drop_config_sections();
+        assert!(agent.server_sections.is_empty());
+        assert!(!agent.cache.contains_key(&Section::Containers));
+        assert!(!agent.errors.contains_key(&Section::Containers));
+        assert!(
+            agent.cache.contains_key(&Section::Basic),
+            "其他區段不受影響"
+        );
+    }
+
     #[test]
     fn skips_sections_rejected_with_same_hash() {
         let hashes = BTreeMap::from([

@@ -127,13 +127,16 @@ async fn upload_tab_and_changes(pool: PgPool) {
 
     let mut web = ctr("web", "nginx:1.27", "running");
     web.privileged = Some(true);
-    web.host_mounts = vec!["/var/run/docker.sock".into()];
+    web.host_mounts = vec!["/".into(), "/var/run/docker.sock".into()];
     web.ports = vec!["0.0.0.0:8080->80/tcp".into()];
     web.health = Some("unhealthy".into());
     let mut job = ctr("nightly-job", "busybox", "exited");
     job.host_network = Some(true);
+    let mut old_job = ctr("old-job", "busybox", "exited");
+    old_job.finished_at = Some(datetime!(2026-11-19 00:00 UTC));
     let p = info(vec![
         web.clone(),
+        old_job,
         job.clone(),
         ctr("api", "app:1.4", "running"),
     ]);
@@ -166,10 +169,11 @@ async fn upload_tab_and_changes(pool: PgPool) {
         "讀取失敗",
         "使用者 alice：cannot connect",
         "執行中（2）",
-        "已停止（1，7 天內）",
+        "已停止（2，7 天內）",
         "nginx:1.27",
         "特權",
         "掛載 docker.sock",
+        "掛載根目錄",
         "主機網路",
         "不健康",
         "0.0.0.0:8080-&#62;80/tcp",
@@ -179,6 +183,11 @@ async fn upload_tab_and_changes(pool: PgPool) {
     // 有警示的執行中容器排在前面
     assert!(
         html.find(">web").unwrap() < html.find(">api").unwrap(),
+        "{html}"
+    );
+    // 已停止的：最近結束的在前
+    assert!(
+        html.find(">nightly-job").unwrap() < html.find(">old-job").unwrap(),
         "{html}"
     );
 
@@ -259,4 +268,20 @@ async fn truncated_and_rejects_too_many(pool: PgPool) {
         .page(&admin, &format!("/devices/{}/tab/containers", a.device_id))
         .await;
     assert!(html.contains("只列出前 500 個"), "{html}");
+
+    // 手動改壞的 jsonb：當成沒有資料，不讓讀取失敗
+    sqlx::query("UPDATE device_containers SET data = '{\"bad\": 1}'::jsonb WHERE device_id = $1")
+        .bind(a.device_id)
+        .execute(&s.pool)
+        .await
+        .unwrap();
+    let mut c = s.pool.acquire().await.unwrap();
+    let back = endpoint_server::inventory::load_payload(&mut c, a.device_id, Section::Containers)
+        .await
+        .unwrap();
+    assert!(back.is_none());
+    let (_, html) = s
+        .page(&admin, &format!("/devices/{}/tab/containers", a.device_id))
+        .await;
+    assert!(html.contains("尚無容器資料"), "{html}");
 }

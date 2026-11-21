@@ -166,6 +166,60 @@ mod tests {
     }
 
     #[test]
+    fn containers_are_cleaned_and_capped() {
+        use protocol::{ContainerItem, ContainersInfo, MAX_CONTAINERS, RuntimeInfo};
+        let item = |i: usize| ContainerItem {
+            runtime: "docker".into(),
+            id: format!("id{i}"),
+            name: format!(" name\0{i} "),
+            image: "x".repeat(MAX_STRING_LEN + 5),
+            image_id: Some("  ".into()),
+            state: "running".into(),
+            health: Some("healthy".into()),
+            created_at: None,
+            started_at: None,
+            finished_at: None,
+            restart_policy: Some("".into()),
+            privileged: None,
+            host_network: None,
+            ports: vec!["p\0".into()],
+            host_mounts: vec![" /srv ".into()],
+            owner: Some("alice".into()),
+        };
+        let mut p = InventoryPayload::Containers(ContainersInfo {
+            runtimes: vec![RuntimeInfo {
+                kind: " docker ".into(),
+                version: Some("".into()),
+                error: Some("e\0rr".into()),
+            }],
+            containers: (0..MAX_CONTAINERS + 2).map(item).collect(),
+            truncated: true,
+        });
+        sanitize(&mut p);
+        assert_eq!(p.validate(), Ok(()));
+        let InventoryPayload::Containers(c) = &p else {
+            unreachable!()
+        };
+        assert_eq!(c.containers.len(), MAX_CONTAINERS);
+        let r = &c.runtimes[0];
+        assert_eq!(
+            (r.kind.as_str(), r.version.as_deref(), r.error.as_deref()),
+            ("docker", None, Some("err"))
+        );
+        let x = &c.containers[0];
+        assert_eq!(x.name, "name0");
+        assert_eq!(x.image.chars().count(), MAX_STRING_LEN);
+        assert_eq!(
+            (x.image_id.as_deref(), x.restart_policy.as_deref()),
+            (None, None)
+        );
+        assert_eq!(
+            (x.ports[0].as_str(), x.host_mounts[0].as_str()),
+            ("p", "/srv")
+        );
+    }
+
+    #[test]
     fn accounts_total_is_capped() {
         use protocol::{AccountsInfo, LocalUser, PrincipalKind, PrivilegeEntry};
         let n = MAX_ITEMS;
