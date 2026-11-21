@@ -446,6 +446,8 @@ pub struct DeviceView {
     pub boot: String,
     pub enrolled: String,
     pub agent: String,
+    /// 要求簽章時的金鑰 ID（空：不要求）
+    pub signing: Vec<String>,
     pub errors: Vec<(String, String)>,
     pub badge: &'static str,
     pub badge_label: &'static str,
@@ -548,6 +550,10 @@ pub async fn detail(
         None => Default::default(),
     };
     let (site, cache) = super::sites::site_of(&st, ip.as_deref()).await?;
+    let keys: Vec<String> = sqlx::query_scalar("SELECT signing_keys FROM devices WHERE id = $1")
+        .bind(id)
+        .fetch_one(&st.pool)
+        .await?;
     let current_group = group_id
         .map(|g| g.to_string())
         .unwrap_or_else(|| "none".into());
@@ -577,6 +583,7 @@ pub async fn detail(
             boot: fmt_time(&st, boot),
             enrolled: fmt_time(&st, Some(enrolled)),
             agent: o(agent),
+            signing: crate::signing::key_ids(&keys),
             errors: errors.into_iter().collect(),
             badge,
             badge_label,

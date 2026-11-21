@@ -107,7 +107,7 @@ fn validate_package(i: &PackageInput) -> anyhow::Result<ValidPackage> {
 }
 
 /// 任何派送或套件異動都讓報到端的快取過期
-async fn bump(conn: &mut PgConnection) -> Result<(), sqlx::Error> {
+pub(crate) async fn bump(conn: &mut PgConnection) -> Result<(), sqlx::Error> {
     sqlx::query("UPDATE deploy_state SET generation = generation + 1")
         .execute(conn)
         .await?;
@@ -230,7 +230,10 @@ pub async fn update_package(
     let n = sqlx::query(
         "UPDATE packages SET name = $2, version = $3, install_args = $4, uninstall_args = \
            CASE WHEN kind = 'exe' THEN $5 ELSE '' END, success_codes = $6, detect_name = $7, \
-           detect_publisher = $8, detect_min_version = $9, updated_at = now() \
+           detect_publisher = $8, detect_min_version = $9, updated_at = now(), \
+           signature = CASE WHEN install_args = $4 \
+                             AND uninstall_args = CASE WHEN kind = 'exe' THEN $5 ELSE '' END \
+                            THEN signature END \
          WHERE id = $1 AND kind = $10",
     )
     .bind(id)

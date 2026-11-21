@@ -31,6 +31,7 @@
   </fieldset>
   <button class="btn primary">儲存</button>
 </form>
+{% call m::signature_box(sig, nav.csrf, true, "") %}{% endcall %}
 <form class="actions" method="post" action="/packages/{{ id }}/delete">
   <input type="hidden" name="csrf" value="{{ nav.csrf }}">
   <button class="btn danger">刪除套件</button> <span class="muted">有派送使用時不能刪除。</span>

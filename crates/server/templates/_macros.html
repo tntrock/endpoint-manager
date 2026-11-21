@@ -45,3 +45,22 @@
 {% macro help_box(key, title) %}
 <div id="help-{{ key }}" popover class="help-pop"><h3>{{ title }}</h3>{{ caller() }}</div>
 {% endmacro %}
+
+{# 腳本／套件的簽章區塊。sig.base：/scripts/{id} 或 /packages/{id}；ready：可以上傳（腳本須已核准） #}
+{% macro signature_box(sig, csrf, ready, not_ready_hint) %}
+<fieldset id="signature"><legend>簽章</legend>
+  {% if let Some(msg) = sig.message %}<div class="notice ok" role="status">{{ msg }}</div>{% endif %}
+  {% if let Some(e) = sig.error %}<div class="notice error" role="alert">{{ e }}</div>{% endif %}
+  <p>{% if let Some(id) = sig.key_id %}<span class="tag ok">已簽章</span> 金鑰 <code>{{ id }}</code>{% else %}<span class="tag{% if sig.enforcing > 0 %} warn{% endif %}">未簽章</span>{% endif %}
+    {% if sig.enforcing > 0 %}<span class="muted">　{{ sig.enforcing }} 台端點要求簽章{% if sig.key_id.is_none() %}，這些端點不會執行{% endif %}。</span>{% endif %}</p>
+  {% if ready %}
+  <p><a class="btn sm" href="{{ sig.base }}/signing-request.json">下載簽章請求</a>
+    <span class="help">用 <code>endpoint-sign sign 金鑰檔 簽章請求.json</code> 簽章，把印出的簽章貼到下面。內容或參數一改，簽章就會清除。</span></p>
+  <form class="filters" method="post" action="{{ sig.base }}/signature">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input name="signature" required maxlength="200" size="70" placeholder="金鑰 ID:簽章" aria-label="簽章" autocomplete="off">
+    <button class="btn">上傳簽章</button>
+  </form>
+  {% else %}<p class="muted">{{ not_ready_hint }}</p>{% endif %}
+</fieldset>
+{% endmacro %}

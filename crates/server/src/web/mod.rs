@@ -21,6 +21,7 @@ pub mod password;
 pub mod registry;
 pub mod rules;
 pub mod scripts;
+pub mod signing;
 pub mod sites;
 pub mod software;
 pub mod tokens;
@@ -163,6 +164,11 @@ pub fn web_router(state: AppState) -> Router {
             "/scripts/{id}/edit",
             get(scripts::edit_form).post(scripts::update),
         )
+        .route(
+            "/scripts/{id}/signing-request.json",
+            get(signing::script_request),
+        )
+        .route("/scripts/{id}/signature", post(signing::sign_script))
         .route("/scripts/{id}/{action}", post(scripts::act))
         .route("/packages", get(packages::list))
         .route(
@@ -174,6 +180,11 @@ pub fn web_router(state: AppState) -> Router {
             get(packages::edit_form).post(packages::update),
         )
         .route("/packages/{id}/delete", post(packages::delete))
+        .route(
+            "/packages/{id}/signing-request.json",
+            get(signing::package_request),
+        )
+        .route("/packages/{id}/signature", post(signing::sign_package))
         .route("/registry/devices", get(registry::devices))
         .route("/compliance", get(compliance::overview))
         .route("/compliance/violations", get(compliance::violations))

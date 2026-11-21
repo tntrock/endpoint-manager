@@ -490,6 +490,83 @@ Windows 與 Linux 裝置在同一份清單：
 
 需要伺服器與 Agent 都在 0.6.0 以上。
 
+### 腳本與套件簽章（選用）
+
+**用途**：中央伺服器被入侵時，端點仍然不會執行攻擊者的程式。
+
+- 平常，端點會執行伺服器下發、且 SHA-256 相符的腳本與套件。這只能證明內容在傳送途中沒被改過。
+- 伺服器或資料庫被入侵時，攻擊者可以自己「核准」腳本、上傳安裝檔。
+- 開啟簽章後，端點**只執行由伺服器以外的金鑰簽章**的腳本與套件。簽章金鑰放在管理者自己的電腦，伺服器偽造不了簽章。
+
+#### 1. 產生金鑰（在管理者的電腦）
+
+從 GitHub Release 下載 `endpoint-sign`，然後執行：
+
+```
+endpoint-sign keygen sign-key-1.json     # 輸入兩次密語（至少 12 字元），印出公鑰與金鑰 ID
+endpoint-sign keygen sign-key-2.json     # 第二把：離線備援
+```
+
+- 私鑰以密語加密。**金鑰檔放在離線媒體，密語另外保管**，兩者遺失任一個都無法再簽章。
+- 建議一開始就設定兩把：一把日常用，一把鎖在保險箱。
+- 第一版不支援線上換金鑰。要換金鑰時，需要重新設定所有端點。
+
+#### 2. 設定端點信任的公鑰
+
+公鑰**只能在端點本機設定**。伺服器改不了，伺服器產生的安裝檔也不會帶公鑰。
+
+- **Windows**：安裝時加上 MSI 屬性 `SIGNING_KEYS`（逗號分隔），例如：
+
+  ```
+  msiexec /i endpoint-agent.msi /qn SIGNING_KEYS=公鑰1,公鑰2
+  ```
+
+  用 GPO 派送時，以 transform（.mst）設定這個屬性。之後升級沒帶這個屬性，就沿用原本的設定。
+
+- **Linux**：
+
+  ```
+  sudo endpoint-agent configure --signing-key 公鑰1 --signing-key 公鑰2
+  ```
+
+公鑰格式錯誤會讓安裝失敗，不會默默變成「不要求簽章」。設定後，裝置頁會顯示「要求簽章：是」，並列出金鑰 ID。
+
+#### 3. 簽章（每個腳本版本、每個套件各一次）
+
+1. 在腳本詳細頁（**先核准**）或套件頁，按「下載簽章請求」。
+2. 在管理者的電腦執行：
+
+   ```
+   endpoint-sign sign sign-key-1.json script-12-signing-request.json
+   endpoint-sign sign sign-key-1.json package-7-signing-request.json --file 原廠安裝檔.exe
+   ```
+
+   工具做的事：
+   - **腳本**：自己重新計算內容的雜湊，並印出全文，讓你確認簽的是什麼。
+   - **套件**：用 `--file` 指定你從原廠取得的安裝檔，比對雜湊與大小。不指定時，等於相信伺服器上的檔案。
+3. 把印出的簽章貼回頁面的「上傳簽章」。
+   - 伺服器會用端點回報的公鑰先驗證一次，貼錯會立刻提示。
+   - 還沒有端點回報公鑰時，只檢查格式。
+
+**簽章會自動清除的情況**：
+
+- 腳本：內容或逾時被修改。
+- 套件：安裝參數、移除參數被修改。
+
+這兩種情況都要重新簽章。已經建立的指令，保留建立當時的簽章。
+
+#### 端點的行為
+
+- 沒有簽章、簽章不符，或欄位被改過的腳本／套件：不執行，並回報「這台電腦要求簽章：…，未執行」。
+- 套件的安裝與移除都會檢查簽章。
+- 有端點要求簽章時，指令與派送表單會把未簽章的腳本或套件標成「未簽章」。
+
+**不在簽章範圍內**：重新開機、關機、重新收集、立即套用，以及 Windows Update 原則。這些動作不能用來在端點執行程式。
+
+伺服器仍然決定「哪些電腦執行哪個已簽章的內容」，所以只對**可以安全重複執行**的內容簽章。
+
+需要伺服器與 Agent 都在 0.9.0 以上。
+
 ## 開發
 
 需要 Rust stable 與 PostgreSQL 17。
@@ -524,6 +601,7 @@ curl --ssl-no-revoke --cacert pki/root.pem https://localhost:8443/healthz
 | `crates/server` | 中央伺服器：Agent API、管理網頁（askama 範本、`static/` 下的 CSS／JS）、背景工作 |
 | `crates/agent` | Agent（Windows 與 Linux） |
 | `crates/cache` | 分點快取 |
+| `crates/sign` | 簽章工具 `endpoint-sign`（金鑰與腳本／套件簽章） |
 | `installer/` | Agent 的 WiX 安裝檔 |
 | `packaging/linux/` | Linux Agent 的 systemd unit、deb 維護腳本與打包腳本（`build.sh`） |
 | `deploy/` | Dockerfile、Docker Compose、systemd unit |

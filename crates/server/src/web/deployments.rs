@@ -158,11 +158,14 @@ async fn form_page(
     i: &DeploymentInput,
     error: Option<String>,
 ) -> Result<FormPage, sqlx::Error> {
-    let pkgs: Vec<(i64, String, String, String)> = sqlx::query_as(
-        "SELECT id, name, version, kind FROM packages ORDER BY lower(name), id DESC",
+    let pkgs: Vec<(i64, String, String, String, bool)> = sqlx::query_as(
+        "SELECT id, name, version, kind, signature IS NOT NULL FROM packages \
+         ORDER BY lower(name), id DESC",
     )
     .fetch_all(&st.pool)
     .await?;
+    // 有端點要求簽章時，標出未簽章的套件（那些端點不會安裝）
+    let enforcing = crate::signing::enforcing_devices(&st.pool).await?;
     let groups: Vec<(i64, String)> =
         sqlx::query_as("SELECT id, name FROM device_groups ORDER BY name")
             .fetch_all(&st.pool)
@@ -181,10 +184,18 @@ async fn form_page(
         nav: Nav::new(s, "deployments"),
         packages: pkgs
             .into_iter()
-            .map(|(id, name, version, kind)| SelectOption {
+            .map(|(id, name, version, kind, signed)| SelectOption {
                 selected: i.package_id == id,
                 value: id.to_string(),
-                label: format!("{name} {version}（{}）", kind.to_uppercase()),
+                label: format!(
+                    "{name} {version}（{}{}）",
+                    kind.to_uppercase(),
+                    if !signed && enforcing > 0 {
+                        "，未簽章"
+                    } else {
+                        ""
+                    }
+                ),
             })
             .collect(),
         groups: pilot,

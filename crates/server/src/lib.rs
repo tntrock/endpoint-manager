@@ -25,6 +25,7 @@ pub mod notify;
 pub mod partitions;
 pub mod ratelimit;
 pub mod renew;
+pub mod signing;
 pub mod tls;
 pub mod tokens;
 pub mod totp;

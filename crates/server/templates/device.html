@@ -27,6 +27,7 @@
   <tr><th>記憶體</th><td>{{ d.ram }}</td><th>BIOS 序號</th><td>{{ d.serial }}</td></tr>
   <tr><th>最後報到</th><td>{{ d.last_seen }}</td><th>開機時間</th><td>{{ d.boot }}</td></tr>
   <tr><th>註冊時間</th><td>{{ d.enrolled }}</td><th>Agent 版本</th><td>{{ d.agent }}</td></tr>
+  <tr><th>要求簽章</th><td colspan="3">{% if d.signing.is_empty() %}否{% else %}<span class="tag ok">是</span> 金鑰 {% for k in d.signing %}<code>{{ k }}</code> {% endfor %}<span class="faint">只執行這些金鑰簽章的腳本與套件</span>{% endif %}</td></tr>
 </table>
 {% if !d.errors.is_empty() %}
 <div class="card">
