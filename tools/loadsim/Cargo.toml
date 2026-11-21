@@ -9,7 +9,7 @@ publish = false
 protocol.workspace = true
 endpoint-agent = { path = "../../crates/agent" }
 anyhow.workspace = true
-chrono.workspace = true
+time.workspace = true
 rcgen.workspace = true
 rustls.workspace = true
 serde.workspace = true

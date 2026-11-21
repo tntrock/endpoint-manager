@@ -5,7 +5,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use protocol::update::{ApplyState, MAX_DETAIL_LEN, PolicyData, UpdatePolicy, UpdateStatus};
 use protocol::{InventoryPayload, Section};
 use sha2::{Digest, Sha256};
@@ -20,7 +19,7 @@ use crate::collector::Collector;
 /// 原則沒變時多久重新檢查一次（衝突、待重開機）
 pub const RECHECK: Duration = Duration::from_secs(60 * 60);
 /// 狀態沒變時多久重送一次
-pub const RESEND: chrono::Duration = chrono::Duration::hours(24);
+pub const RESEND: time::Duration = time::Duration::hours(24);
 
 /// 報到後交給 worker 的工作。None（整個 Option）表示伺服器不支援：完全不動 WU 設定
 #[derive(Debug, Clone)]
@@ -75,10 +74,10 @@ impl<C: Collector, H: WuHost> UpdateWorker<C, H> {
     }
 
     pub async fn pass(&mut self, w: &UpdateWork) {
-        self.pass_at(w, Utc::now()).await
+        self.pass_at(w, time::OffsetDateTime::now_utc()).await
     }
 
-    pub async fn pass_at(&mut self, w: &UpdateWork, now: DateTime<Utc>) {
+    pub async fn pass_at(&mut self, w: &UpdateWork, now: time::OffsetDateTime) {
         let before = self.state.clone();
         // 登錄檔操作很快但是同步的：放到 blocking 執行緒
         let host = self.host.clone();
@@ -153,7 +152,7 @@ impl<C: Collector, H: WuHost> UpdateWorker<C, H> {
 
     /// WMI 可能卡住：逾時或失敗時沿用上次的日期（不在「未知」與正常之間跳動，也不重送）。
     /// 上一次還卡著時不再收集，避免每小時多疊一條卡住的執行緒。
-    async fn last_patch_date(&mut self, now: DateTime<Utc>) -> Option<chrono::NaiveDate> {
+    async fn last_patch_date(&mut self, now: time::OffsetDateTime) -> Option<time::Date> {
         let last = self.state.last_patch_date;
         if self.patch_inflight.swap(true, Ordering::SeqCst) {
             return last;
@@ -166,7 +165,7 @@ impl<C: Collector, H: WuHost> UpdateWorker<C, H> {
             r
         });
         // 伺服器拒收晚於現在 1 天的日期：垃圾或未來的 InstalledOn 不算
-        let not_after = (now + chrono::Duration::days(1)).date_naive();
+        let not_after = (now + time::Duration::days(1)).date();
         let date = match tokio::time::timeout(self.patch_timeout, task).await {
             Ok(Ok(Ok(InventoryPayload::Patches(items)))) => last_patch_date(&items, not_after),
             Ok(Ok(Ok(_))) => last,

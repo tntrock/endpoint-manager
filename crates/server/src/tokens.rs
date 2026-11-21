@@ -1,6 +1,5 @@
 //! 註冊金鑰。資料庫只存 SHA-256；查詢以 hash 比對，不會有逐字元比較的時序洩漏。
 
-use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
@@ -25,7 +24,7 @@ impl TokenKind {
 pub struct NewToken {
     pub name: String,
     pub group_id: Option<i64>,
-    pub expires_at: Option<DateTime<Utc>>,
+    pub expires_at: Option<time::OffsetDateTime>,
     pub max_uses: i32,
     pub created_by: String,
     pub kind: TokenKind,
@@ -90,7 +89,8 @@ pub async fn create_token_cli(
         &NewToken {
             name: name.into(),
             group_id,
-            expires_at: valid_days.map(|d| Utc::now() + chrono::Duration::days(d)),
+            expires_at: valid_days
+                .map(|d| time::OffsetDateTime::now_utc() + time::Duration::days(d)),
             max_uses,
             created_by: ACTOR.into(),
             kind: TokenKind::Device,
@@ -193,7 +193,7 @@ mod tests {
         assert_eq!((actor.as_str(), target), ("cli", Some(id.to_string())));
     }
 
-    fn new_token(max_uses: i32, expires_at: Option<DateTime<Utc>>) -> NewToken {
+    fn new_token(max_uses: i32, expires_at: Option<time::OffsetDateTime>) -> NewToken {
         NewToken {
             name: "t".into(),
             group_id: None,
@@ -226,7 +226,7 @@ mod tests {
     #[sqlx::test(migrations = false)]
     async fn expired_revoked_and_wrong_tokens_rejected(pool: PgPool) {
         crate::db::migrate(&pool).await.unwrap();
-        let past = Utc::now() - chrono::Duration::hours(1);
+        let past = time::OffsetDateTime::now_utc() - time::Duration::hours(1);
         let (_, expired) = create_token(&pool, &new_token(10, Some(past)))
             .await
             .unwrap();

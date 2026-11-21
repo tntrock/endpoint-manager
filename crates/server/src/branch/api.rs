@@ -8,7 +8,6 @@ use axum::Json;
 use axum::extract::{ConnectInfo, FromRequestParts, Path, State};
 use axum::http::request::Parts;
 use axum::response::Response;
-use chrono::{DateTime, Duration, Utc};
 use protocol::branch::{
     CacheAuthorize, CacheAuthorizeResponse, CacheCheckin, CacheCheckinResponse, CacheEnrollPoll,
     CacheEnrollPollResponse, CacheEnrollRequest, CacheEnrollResponse, CacheEnrollState,
@@ -16,6 +15,7 @@ use protocol::branch::{
 };
 use protocol::{RenewRequest, RenewResponse};
 use serde_json::json;
+use time::Duration;
 use uuid::Uuid;
 
 use crate::AppState;
@@ -29,7 +29,7 @@ use crate::tokens::{self, TokenKind};
 pub struct AuthedCache {
     pub cache_id: i64,
     pub site_id: Option<i64>,
-    pub cert_not_after: DateTime<Utc>,
+    pub cert_not_after: time::OffsetDateTime,
 }
 
 impl FromRequestParts<AppState> for AuthedCache {
@@ -40,7 +40,7 @@ impl FromRequestParts<AppState> for AuthedCache {
             .extensions
             .get::<PeerCert>()
             .ok_or(AppError::Unauthorized)?;
-        let row: Option<(i64, Option<i64>, DateTime<Utc>)> = sqlx::query_as(
+        let row: Option<(i64, Option<i64>, time::OffsetDateTime)> = sqlx::query_as(
             "SELECT c.id, c.site_id, k.not_after FROM cache_certs k JOIN caches c ON c.id = k.cache_id \
              WHERE k.fingerprint = $1 AND k.revoked_at IS NULL AND k.not_after > now() \
                AND c.status = 'active'",
@@ -168,7 +168,7 @@ pub async fn renew(
     cache: AuthedCache,
     Json(req): Json<RenewRequest>,
 ) -> Result<Json<RenewResponse>, AppError> {
-    if cache.cert_not_after - Utc::now() >= Duration::days(RENEW_BEFORE_DAYS) {
+    if cache.cert_not_after - time::OffsetDateTime::now_utc() >= Duration::days(RENEW_BEFORE_DAYS) {
         return Err(AppError::BadRequest("renewal not due".into()));
     }
     let mut tx = st.pool.begin().await?;
@@ -184,7 +184,12 @@ pub async fn renew(
     };
     let issued = st
         .ca
-        .sign_cache_csr(&req.csr_pem, cache.cache_id, &dns, Utc::now())
+        .sign_cache_csr(
+            &req.csr_pem,
+            cache.cache_id,
+            &dns,
+            time::OffsetDateTime::now_utc(),
+        )
         .map_err(|e| AppError::BadRequest(format!("{e:#}")))?;
     super::caches::insert_cert(&mut tx, cache.cache_id, &issued).await?;
     // 之後重新啟用時用新的金鑰簽發
@@ -278,7 +283,8 @@ pub async fn checkin(
             .collect(),
         bandwidth_limit_mbps: bandwidth.map(|b| b.max(1) as u32),
         disk_limit_gb: disk.max(1) as u32,
-        renew_certificate: cache.cert_not_after - Utc::now() < Duration::days(RENEW_BEFORE_DAYS),
+        renew_certificate: cache.cert_not_after - time::OffsetDateTime::now_utc()
+            < Duration::days(RENEW_BEFORE_DAYS),
     }))
 }
 

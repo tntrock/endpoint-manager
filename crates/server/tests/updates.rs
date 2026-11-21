@@ -1,6 +1,5 @@
 mod common;
 
-use chrono::NaiveDate;
 use common::TestServer;
 use endpoint_server::updates::admin::{self, PauseKind, PolicyInput};
 use endpoint_server::updates::policy::PolicySettings;
@@ -111,7 +110,7 @@ async fn group_belongs_to_one_policy(pool: PgPool) {
         &s.pool,
         a,
         PauseKind::Quality,
-        Some(chrono::Utc::now().date_naive()),
+        Some(time::OffsetDateTime::now_utc().date()),
         "admin",
     )
     .await
@@ -139,7 +138,7 @@ async fn pause_and_resume(pool: PgPool) {
         .await
         .unwrap();
     // 暫停日只接受最近 35 天內，寫死日期會隨時間過期
-    let day = chrono::Utc::now().date_naive();
+    let day = time::OffsetDateTime::now_utc().date();
     admin::set_pause(&s.pool, id, PauseKind::Feature, Some(day), "admin")
         .await
         .unwrap();
@@ -196,7 +195,7 @@ async fn checkin(s: &TestServer, a: &common::TestAgent) -> protocol::CheckinResp
             signing_keys: vec![],
             schema_version: protocol::SCHEMA_VERSION,
             agent_version: "0.5.0".into(),
-            boot_time: chrono::Utc::now(),
+            boot_time: time::OffsetDateTime::now_utc(),
             logged_on_user: None,
             ip_addresses: vec![],
             section_hashes: Default::default(),
@@ -305,13 +304,7 @@ async fn status_is_stored_per_device(pool: PgPool) {
     let a = s.enroll_ok(&tok, None, None).await;
     let b = s.enroll_ok(&tok, None, None).await;
     assert_eq!(put_status(&s, Some(&a), &status_body("applied")).await, 204);
-    let row: (
-        Option<i64>,
-        Option<i32>,
-        String,
-        bool,
-        Option<chrono::NaiveDate>,
-    ) = sqlx::query_as(
+    let row: (Option<i64>, Option<i32>, String, bool, Option<time::Date>) = sqlx::query_as(
         "SELECT policy_id, revision, state, reboot_pending, last_patch_date \
          FROM update_policy_status WHERE device_id = $1",
     )
@@ -326,7 +319,7 @@ async fn status_is_stored_per_device(pool: PgPool) {
             Some(2),
             "applied".into(),
             true,
-            NaiveDate::from_ymd_opt(2026, 9, 10)
+            protocol::timefmt::ymd(2026, 9, 10)
         )
     );
     let mut c = status_body("conflict");
@@ -359,7 +352,7 @@ async fn invalid_status_is_rejected(pool: PgPool) {
     let s = TestServer::start(pool).await;
     let tok = s.create_token(1).await;
     let a = s.enroll_ok(&tok, None, None).await;
-    let future = (chrono::Utc::now() + chrono::Duration::days(3)).date_naive();
+    let future = (time::OffsetDateTime::now_utc() + time::Duration::days(3)).date();
     let mut bad = vec![];
     let mut b = status_body("applied");
     b["last_patch_date"] = future.to_string().into();
@@ -436,10 +429,10 @@ async fn status_upload_drives_compliance(pool: PgPool) {
     )
     .await
     .unwrap();
-    let today = chrono::Utc::now().date_naive();
+    let today = time::OffsetDateTime::now_utc().date();
     let mut b = status_body("conflict");
     b["detail"] = "DeferQualityUpdates".into();
-    b["last_patch_date"] = (today - chrono::Duration::days(60)).to_string().into();
+    b["last_patch_date"] = (today - time::Duration::days(60)).to_string().into();
     assert_eq!(put_status(&s, Some(&a), &b).await, 204);
     let violating = |id: i64| {
         let pool = s.pool.clone();
@@ -472,14 +465,14 @@ async fn pause_date_must_be_recent(pool: PgPool) {
     let id = admin::create_policy(&s.pool, &input("一般", vec![tp]), "admin")
         .await
         .unwrap();
-    let old = NaiveDate::from_ymd_opt(2000, 1, 1).unwrap();
+    let old = protocol::timefmt::ymd(2000, 1, 1).unwrap();
     let e = err(
         admin::set_pause(&s.pool, id, PauseKind::Quality, Some(old), "admin")
             .await
             .unwrap_err(),
     );
     assert!(e.contains("35 天"), "{e}");
-    let today = chrono::Utc::now().date_naive();
+    let today = time::OffsetDateTime::now_utc().date();
     admin::set_pause(&s.pool, id, PauseKind::Quality, Some(today), "admin")
         .await
         .unwrap();

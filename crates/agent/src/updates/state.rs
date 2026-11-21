@@ -2,7 +2,6 @@
 
 use std::path::Path;
 
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::logic::Applied;
@@ -14,12 +13,15 @@ pub const FILE: &str = "update_policy.json";
 pub struct UpdateState {
     pub applied: Applied,
     /// 第一次看到待重開機的時間；重開後清除
-    pub reboot_pending_since: Option<DateTime<Utc>>,
+    #[serde(with = "protocol::timefmt::rfc3339_option", default)]
+    pub reboot_pending_since: Option<time::OffsetDateTime>,
     /// 上次成功送出的狀態雜湊與時間
     pub sent_hash: Option<String>,
-    pub sent_at: Option<DateTime<Utc>>,
+    #[serde(with = "protocol::timefmt::rfc3339_option", default)]
+    pub sent_at: Option<time::OffsetDateTime>,
     /// 上次成功收集到的最後裝更新日期（WMI 失敗時沿用）
-    pub last_patch_date: Option<chrono::NaiveDate>,
+    #[serde(with = "protocol::timefmt::date_option", default)]
+    pub last_patch_date: Option<time::Date>,
 }
 
 impl UpdateState {

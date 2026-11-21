@@ -5,10 +5,10 @@ use std::sync::{Arc, Mutex};
 use axum::Router;
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::post;
-use chrono::{Duration as CDuration, Utc};
 use common::TestServer;
 use endpoint_server::notify::{self, send, worker};
 use sqlx::PgPool;
+use time::Duration as CDuration;
 
 type Seen = Arc<Mutex<Vec<(HeaderMap, String)>>>;
 
@@ -122,7 +122,7 @@ async fn worker_sends_digest_filters_and_backs_off(pool: PgPool) {
     event(&s, a.device_id, "high", "none", "unknown").await; // 不是違規
     event(&s, a.device_id, "high", "violating", "none").await; // 解除
     let settings = notify::load_settings(&s.pool).await.unwrap();
-    let now = Utc::now();
+    let now = time::OffsetDateTime::now_utc();
     worker::run_channel(&s.pool, "webhook", &settings, &secrets, &senders, now)
         .await
         .unwrap();
@@ -160,7 +160,7 @@ async fn worker_sends_digest_filters_and_backs_off(pool: PgPool) {
     let (cursor, failures, err) = channel_row(&s).await;
     assert_eq!((cursor, failures), (max, 1));
     assert!(err.unwrap().contains("503"));
-    let next: chrono::DateTime<Utc> =
+    let next: time::OffsetDateTime =
         sqlx::query_scalar("SELECT next_attempt_at FROM notify_channels WHERE channel = 'webhook'")
             .fetch_one(&s.pool)
             .await
@@ -197,7 +197,7 @@ async fn backlog_is_capped(pool: PgPool) {
         &settings,
         &secrets,
         &senders(),
-        Utc::now(),
+        time::OffsetDateTime::now_utc(),
     )
     .await
     .unwrap();
@@ -209,7 +209,7 @@ async fn backlog_is_capped(pool: PgPool) {
 
 #[test]
 fn backoff_doubles_to_an_hour() {
-    let m = |f| worker::backoff(f).num_minutes();
+    let m = |f| worker::backoff(f).whole_minutes();
     assert_eq!((m(1), m(2), m(3), m(7), m(30)), (1, 2, 4, 60, 60));
 }
 
@@ -297,7 +297,7 @@ async fn cursor_does_not_pass_recent_events(pool: PgPool) {
         &settings,
         &secrets,
         &senders(),
-        Utc::now(),
+        time::OffsetDateTime::now_utc(),
     )
     .await
     .unwrap();
@@ -313,7 +313,7 @@ async fn cursor_does_not_pass_recent_events(pool: PgPool) {
         &settings,
         &secrets,
         &senders(),
-        Utc::now(),
+        time::OffsetDateTime::now_utc(),
     )
     .await
     .unwrap();
@@ -345,7 +345,7 @@ async fn backlog_cap_ignores_irrelevant_events(pool: PgPool) {
         &settings,
         &secrets,
         &senders(),
-        Utc::now(),
+        time::OffsetDateTime::now_utc(),
     )
     .await
     .unwrap();
@@ -373,7 +373,7 @@ async fn changing_webhook_url_resets_backoff(pool: PgPool) {
         &settings,
         &secrets,
         &senders(),
-        Utc::now(),
+        time::OffsetDateTime::now_utc(),
     )
     .await
     .unwrap();
@@ -424,7 +424,7 @@ async fn in_flight_send_does_not_overwrite_cursor_reset(pool: PgPool) {
         &settings,
         &secrets,
         &senders(),
-        Utc::now(),
+        time::OffsetDateTime::now_utc(),
     )
     .await
     .unwrap();
@@ -450,7 +450,7 @@ async fn violating_to_unknown_is_listed_with_to_unknown(pool: PgPool) {
         &settings,
         &secrets,
         &senders(),
-        Utc::now(),
+        time::OffsetDateTime::now_utc(),
     )
     .await
     .unwrap();
@@ -501,7 +501,7 @@ async fn in_flight_failure_does_not_undo_backoff_reset(pool: PgPool) {
         &settings,
         &secrets,
         &senders(),
-        Utc::now(),
+        time::OffsetDateTime::now_utc(),
     )
     .await
     .unwrap();

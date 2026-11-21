@@ -110,7 +110,7 @@ mod tests {
     fn steps() {
         assert_eq!(step(None), Step::Run);
         let started = Entry {
-            started_at: Some(chrono::Utc::now()),
+            started_at: Some(time::OffsetDateTime::now_utc()),
             result: None,
             reported: false,
         };

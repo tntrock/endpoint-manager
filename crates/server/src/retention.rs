@@ -187,7 +187,7 @@ pub fn spawn(pool: PgPool, metrics: Arc<Metrics>) {
                 Ok(p) => {
                     metrics.retention_deleted(RetentionKind::Commands, p.commands);
                     metrics.retention_deleted(RetentionKind::Audit, p.audit);
-                    metrics.retention_succeeded(chrono::Utc::now());
+                    metrics.retention_succeeded(time::OffsetDateTime::now_utc());
                     if p != Purged::default() {
                         tracing::info!(commands = p.commands, audit = p.audit, "retention purge");
                     }

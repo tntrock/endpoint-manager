@@ -5,7 +5,6 @@ use axum::body::Body;
 use axum::extract::{Form, Path, Query, State};
 use axum::http::header;
 use axum::response::{IntoResponse, Redirect, Response};
-use chrono::{DateTime, NaiveDate, Utc};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -82,7 +81,7 @@ pub type RawViolation = (
     String,
     String,
     String,
-    DateTime<Utc>,
+    time::OffsetDateTime,
 );
 
 fn violation_select() -> String {
@@ -258,7 +257,7 @@ pub struct ChannelStatus {
     pub error: String,
 }
 
-type ChannelRow = (String, Option<DateTime<Utc>>, Option<String>);
+type ChannelRow = (String, Option<time::OffsetDateTime>, Option<String>);
 
 /// 通知管道狀態（只給平台管理員）
 async fn channels(st: &AppState) -> Result<Vec<ChannelStatus>, sqlx::Error> {
@@ -328,13 +327,13 @@ pub async fn overview(
     };
     let rows: Vec<SummaryRow> = q.fetch_all(&st.pool).await?;
     let p = crate::compliance::worker::progress(&st.pool).await?;
-    let trend: Vec<(NaiveDate, i64)> = if s.all_devices() {
+    let trend: Vec<(time::Date, i64)> = if s.all_devices() {
         sqlx::query_as(
             "SELECT day, sum(violating)::bigint FROM compliance_daily \
              WHERE day > $1::date - 30 GROUP BY day ORDER BY day",
         )
         // 快照以管理網頁時區的日期記錄：區間也用同一個「今天」
-        .bind(crate::compliance::today(chrono::Utc::now()))
+        .bind(crate::compliance::today(time::OffsetDateTime::now_utc()))
         .fetch_all(&st.pool)
         .await?
     } else {
@@ -365,7 +364,7 @@ pub async fn overview(
         trend: trend
             .into_iter()
             .map(|(d, v)| TrendRow {
-                day: d.format("%m-%d").to_string(),
+                day: format!("{:02}-{:02}", u8::from(d.month()), d.day()),
                 violating: v,
             })
             .collect(),
@@ -404,7 +403,7 @@ fn csv_rows(rows: &[RawViolation]) -> String {
             severity_of(sev).label().into(),
             status_label(status).into(),
             summarize(&detail),
-            since.format("%Y-%m-%d %H:%M:%S").to_string(),
+            super::fmt_utc_seconds(*since),
         ];
         let line: Vec<String> = fields.iter().map(|x| csv_field(x)).collect();
         chunk.push_str(&line.join(","));
@@ -535,9 +534,9 @@ fn status_word(s: &str) -> &'static str {
     Status::parse(s).map(Status::label).unwrap_or("無")
 }
 
-type ResultDbRow = (String, String, String, String, DateTime<Utc>);
-type ExemptionDbRow = (i64, String, String, DateTime<Utc>, String);
-type EventDbRow = (DateTime<Utc>, String, String, String, String);
+type ResultDbRow = (String, String, String, String, time::OffsetDateTime);
+type ExemptionDbRow = (i64, String, String, time::OffsetDateTime, String);
+type EventDbRow = (time::OffsetDateTime, String, String, String, String);
 
 /// 裝置頁的「合規」分頁（htmx 片段）。範圍外的裝置回 404。
 pub async fn device_tab(st: &AppState, s: &Session, id: Uuid) -> Result<Response, AppError> {
@@ -668,7 +667,7 @@ pub async fn create_exemption(
         id,
         rule_id,
         &f.reason,
-        Utc::now() + chrono::Duration::days(days),
+        time::OffsetDateTime::now_utc() + time::Duration::days(days),
         &s.username,
     )
     .await
@@ -827,7 +826,7 @@ fn security_lines(st: &AppState, info: &protocol::SecurityInfo) -> Vec<SecurityL
     out
 }
 
-type SecurityDbRow = (String, String, String, String, String, DateTime<Utc>);
+type SecurityDbRow = (String, String, String, String, String, time::OffsetDateTime);
 
 /// 裝置頁的「安全設定」分頁（htmx 片段）。範圍外的裝置回 404。
 pub async fn security_tab(st: &AppState, s: &Session, id: Uuid) -> Result<Response, AppError> {

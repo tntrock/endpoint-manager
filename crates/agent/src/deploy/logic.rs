@@ -2,10 +2,10 @@
 
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Duration, Utc};
 use protocol::SoftwareItem;
 use protocol::deploy::{Assignment, DeployAction, DeployStatus, Detect, PackageKind, PackageSpec};
 use protocol::matcher::{Glob, cmp_version};
+use time::Duration;
 
 use super::state::Entry;
 
@@ -40,12 +40,12 @@ pub enum Plan {
     ReportCompliant,
     Execute,
     /// 上次失敗，等到這個時間再試
-    Wait(DateTime<Utc>),
+    Wait(time::OffsetDateTime),
     /// 24 小時內已安裝 MAX_REINSTALLS 次又被移除：回報失敗一次，不再重裝
     Removed,
 }
 
-pub fn decide(a: &Assignment, installed: bool, e: &Entry, now: DateTime<Utc>) -> Plan {
+pub fn decide(a: &Assignment, installed: bool, e: &Entry, now: time::OffsetDateTime) -> Plan {
     let satisfied = match a.action {
         DeployAction::Install => installed,
         DeployAction::Uninstall => !installed,
@@ -205,12 +205,12 @@ pub fn uninstall_cmd(spec: &PackageSpec, file: &Path) -> Option<Cmd> {
 mod tests {
     use super::*;
     use crate::deploy::state::Entry;
-    use chrono::{Duration, TimeZone, Utc};
     use protocol::deploy::{
         Assignment, DeployAction, DeployStatus, Detect, PackageKind, PackageSpec,
     };
     use protocol::{Arch, SoftwareItem};
     use std::path::Path;
+    use time::Duration;
 
     fn item(name: &str, publisher: Option<&str>, version: Option<&str>) -> SoftwareItem {
         SoftwareItem {
@@ -292,7 +292,7 @@ mod tests {
 
     #[test]
     fn decisions() {
-        let now = Utc.with_ymd_and_hms(2026, 9, 30, 12, 0, 0).unwrap();
+        let now = time::macros::datetime!(2026-09-30 12:00 UTC);
         let a = assignment(DeployAction::Install, 1);
         let fresh = Entry::default();
         assert_eq!(decide(&a, true, &fresh, now), Plan::ReportCompliant);
@@ -347,7 +347,7 @@ mod tests {
 
     #[test]
     fn reinstall_limit() {
-        let now = Utc.with_ymd_and_hms(2026, 9, 30, 12, 0, 0).unwrap();
+        let now = time::macros::datetime!(2026-09-30 12:00 UTC);
         let a = assignment(DeployAction::Install, 1);
         let removed = Entry {
             revision: 1,

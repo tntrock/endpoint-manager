@@ -114,7 +114,7 @@ fn accounts() -> AccountsInfo {
                 uid: 1000,
                 shell: "/bin/bash".into(),
                 locked: Some(false),
-                password_changed: chrono::NaiveDate::from_ymd_opt(2026, 1, 2),
+                password_changed: protocol::timefmt::ymd(2026, 1, 2),
             },
             LocalUser {
                 name: "bob".into(),

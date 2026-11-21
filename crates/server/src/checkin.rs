@@ -4,10 +4,10 @@ use std::collections::{BTreeMap, HashMap};
 
 use axum::Json;
 use axum::extract::State;
-use chrono::{DateTime, Duration, Utc};
 use protocol::{
     CheckinRequest, CheckinResponse, OsFamily, SCHEMA_VERSION, Section, validate_strings,
 };
+use time::Duration;
 
 const MAX_SIGNING_KEYS: usize = 16;
 
@@ -39,8 +39,8 @@ pub async fn checkin(
         return Err(AppError::BadRequest("unsupported schema_version".into()));
     }
     validate_strings(&req)?;
-    let now = Utc::now();
-    let earliest = DateTime::from_timestamp(946_684_800, 0).expect("2000-01-01");
+    let now = time::OffsetDateTime::now_utc();
+    let earliest = time::macros::datetime!(2000-01-01 00:00 UTC);
     // 端點時鐘可能不準：夾限而不拒絕，避免該電腦永遠報到失敗
     let boot_time = req.boot_time.clamp(earliest, now);
 
@@ -136,7 +136,8 @@ pub async fn checkin(
         next_checkin_seconds: settings.checkin_interval_secs,
         request_sections: sections_to_request(&stored, &req.section_hashes),
         collection_intervals: settings.intervals,
-        renew_certificate: device.cert_not_after - Utc::now() < Duration::days(RENEW_BEFORE_DAYS),
+        renew_certificate: device.cert_not_after - time::OffsetDateTime::now_utc()
+            < Duration::days(RENEW_BEFORE_DAYS),
         registry_queries,
         registry_queries_hash: Some(registry_queries_hash),
         deployments_hash: Some(protocol::deploy::assignments_hash(&deployments)),

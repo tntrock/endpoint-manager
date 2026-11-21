@@ -1,6 +1,5 @@
 //! 通知內容：彙整、Webhook JSON 與簽章。全部是純函式。
 
-use chrono::{DateTime, Utc};
 use hmac::{Hmac, KeyInit, Mac};
 use serde_json::{Value, json};
 use sha2::Sha256;
@@ -53,13 +52,13 @@ fn item(e: &EventInfo) -> Value {
     })
 }
 
-pub fn webhook_body(d: &Digest, generated_at: DateTime<Utc>) -> Value {
+pub fn webhook_body(d: &Digest, generated_at: time::OffsetDateTime) -> Value {
     let new: Vec<Value> = d.new.iter().take(MAX_WEBHOOK_ITEMS).map(item).collect();
     let room = MAX_WEBHOOK_ITEMS - new.len();
     let resolved: Vec<Value> = d.resolved.iter().take(room).map(item).collect();
     let truncated = ((new.len() + resolved.len()) as i64) < d.total_new + d.total_resolved;
     json!({
-        "generated_at": generated_at,
+        "generated_at": protocol::timefmt::format_rfc3339(generated_at).ok(),
         "total_new": d.total_new,
         "total_resolved": d.total_resolved,
         "dropped": d.dropped,
@@ -135,7 +134,7 @@ mod tests {
 
     #[test]
     fn webhook_body_truncates_at_500() {
-        let v = webhook_body(&digest(600), DateTime::UNIX_EPOCH);
+        let v = webhook_body(&digest(600), time::OffsetDateTime::UNIX_EPOCH);
         assert_eq!(
             v["new"].as_array().unwrap().len() + v["resolved"].as_array().unwrap().len(),
             MAX_WEBHOOK_ITEMS
@@ -144,7 +143,7 @@ mod tests {
         assert_eq!(v["total_new"], 600);
         assert_eq!(v["new"][0]["summary"], "缺少 KB5031455");
         assert_eq!(v["new"][0]["severity"], "high");
-        let small = webhook_body(&digest(2), DateTime::UNIX_EPOCH);
+        let small = webhook_body(&digest(2), time::OffsetDateTime::UNIX_EPOCH);
         assert_eq!(small["truncated"], false);
         assert_eq!(small["resolved"].as_array().unwrap().len(), 1);
     }

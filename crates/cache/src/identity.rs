@@ -3,7 +3,6 @@
 use std::path::Path;
 
 use anyhow::Context;
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::config::write_atomic;
@@ -161,13 +160,15 @@ pub fn load_identity(dir: &Path) -> anyhow::Result<Option<Identity>> {
 }
 
 /// 憑證鏈第一張（快取本身）的到期時間
-pub fn cert_not_after(chain_pem: &str) -> anyhow::Result<DateTime<Utc>> {
+pub fn cert_not_after(chain_pem: &str) -> anyhow::Result<time::OffsetDateTime> {
     use rustls::pki_types::{CertificateDer, pem::PemObject};
     let der = CertificateDer::pem_slice_iter(chain_pem.as_bytes())
         .next()
         .context("empty certificate chain")??;
     let (_, cert) = x509_parser::parse_x509_certificate(&der)?;
-    DateTime::from_timestamp(cert.validity().not_after.timestamp(), 0).context("bad not_after")
+    time::OffsetDateTime::from_unix_timestamp(cert.validity().not_after.timestamp())
+        .ok()
+        .context("bad not_after")
 }
 
 #[cfg(test)]

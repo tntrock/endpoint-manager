@@ -3,7 +3,6 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use chrono::{DateTime, Utc};
 use protocol::deploy::{DeployResult, DeployStatus};
 use serde::{Deserialize, Serialize};
 
@@ -13,7 +12,8 @@ pub const STATE_FILE: &str = "deploy.json";
 pub struct Entry {
     pub revision: i32,
     pub attempts: i32,
-    pub last_attempt: Option<DateTime<Utc>>,
+    #[serde(with = "protocol::timefmt::rfc3339_option", default)]
+    pub last_attempt: Option<time::OffsetDateTime>,
     pub last_failed: bool,
     /// 這個 revision 最後回報給伺服器的狀態（回報成功才記錄）
     pub reported: Option<DeployStatus>,
@@ -24,11 +24,11 @@ pub struct Entry {
     #[serde(default)]
     pub in_progress: bool,
     /// 最後一次出現在指派清單的時間：暫停期間指派會消失，不能立刻清掉紀錄
-    #[serde(default)]
-    pub last_seen: Option<DateTime<Utc>>,
+    #[serde(with = "protocol::timefmt::rfc3339_option", default)]
+    pub last_seen: Option<time::OffsetDateTime>,
     /// 這個 revision 安裝成功的時間（最近 24 小時）：被其他工具一再移除時不再重裝
-    #[serde(default)]
-    pub installs: Vec<DateTime<Utc>>,
+    #[serde(with = "protocol::timefmt::rfc3339_vec", default)]
+    pub installs: Vec<time::OffsetDateTime>,
 }
 
 /// 多久沒出現在指派清單才清掉紀錄
@@ -72,13 +72,13 @@ impl DeployState {
 
     /// 記下這次出現的派送；超過 FORGET_AFTER_DAYS 沒出現的才清掉
     /// （暫停中的派送不會下發，繼續後仍要沿用嘗試次數與已回報的狀態）
-    pub fn prune(&mut self, active: &[i64], now: DateTime<Utc>) {
+    pub fn prune(&mut self, active: &[i64], now: time::OffsetDateTime) {
         for id in active {
             if let Some(e) = self.entries.get_mut(id) {
                 e.last_seen = Some(now);
             }
         }
-        let cutoff = now - chrono::Duration::days(FORGET_AFTER_DAYS);
+        let cutoff = now - time::Duration::days(FORGET_AFTER_DAYS);
         self.entries
             .retain(|id, e| active.contains(id) || e.last_seen.is_some_and(|t| t > cutoff));
     }
@@ -104,14 +104,14 @@ mod tests {
         // revision 改變時重設
         let e = back.entry_for(5, 2);
         assert_eq!((e.revision, e.attempts, e.reported), (2, 0, None));
-        let now = chrono::Utc::now();
+        let now = time::OffsetDateTime::now_utc();
         back.prune(&[5, 6], now);
-        back.prune(&[5], now + chrono::Duration::days(1));
+        back.prune(&[5], now + time::Duration::days(1));
         assert!(
             back.entries.contains_key(&6),
             "暫時沒出現（例如暫停）要保留"
         );
-        back.prune(&[5], now + chrono::Duration::days(31));
+        back.prune(&[5], now + time::Duration::days(31));
         assert!(!back.entries.contains_key(&6), "30 天沒出現才清掉");
         std::fs::write(dir.path().join(STATE_FILE), b"{broken").unwrap();
         assert!(

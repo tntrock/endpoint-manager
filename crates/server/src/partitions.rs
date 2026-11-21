@@ -1,6 +1,5 @@
 //! inventory_changes 按月分割區的建立與清理。
 
-use chrono::{DateTime, Datelike, Utc};
 use sqlx::PgPool;
 
 pub const KEEP_MONTHS: i32 = 12;
@@ -37,8 +36,11 @@ pub fn partitions_to_drop(
 }
 
 /// 建立當月與未來兩個月的分割區，刪除超過保留期限的分割區。
-pub async fn maintain_partitions(pool: &PgPool, now: DateTime<Utc>) -> Result<(), sqlx::Error> {
-    let (y, m) = (now.year(), now.month());
+pub async fn maintain_partitions(
+    pool: &PgPool,
+    now: time::OffsetDateTime,
+) -> Result<(), sqlx::Error> {
+    let (y, m) = (now.year(), u32::from(u8::from(now.month())));
     for delta in 0..3 {
         let (sy, sm) = month_add(y, m, delta);
         let (ey, em) = month_add(y, m, delta + 1);

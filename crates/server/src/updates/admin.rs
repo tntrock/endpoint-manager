@@ -1,7 +1,6 @@
 //! 更新原則的管理（平台管理員）：驗證、CRUD、暫停、稽核。
 
 use anyhow::{bail, ensure};
-use chrono::NaiveDate;
 use serde_json::json;
 use sqlx::{PgConnection, PgPool};
 
@@ -221,13 +220,13 @@ pub async fn set_pause(
     pool: &PgPool,
     id: i64,
     kind: PauseKind,
-    start: Option<NaiveDate>,
+    start: Option<time::Date>,
     actor: &str,
 ) -> anyhow::Result<()> {
     // Windows 從暫停開始日起算 35 天自動恢復：太舊的日期等於沒暫停，未來的日期行為不確定
     if let Some(d) = start {
-        let today = chrono::Utc::now().date_naive();
-        if d < today - chrono::Duration::days(PAUSE_DAYS) || d > today + chrono::Duration::days(1) {
+        let today = time::OffsetDateTime::now_utc().date();
+        if d < today - time::Duration::days(PAUSE_DAYS) || d > today + time::Duration::days(1) {
             return Err(CmdError::Invalid(format!("暫停日期必須是最近 {PAUSE_DAYS} 天內")).into());
         }
     }
@@ -264,8 +263,8 @@ pub async fn set_pause(
         json!({
             "id": id,
             "kind": match kind { PauseKind::Quality => "quality", PauseKind::Feature => "feature" },
-            "start": start,
-            "old_start": old_start,
+            "start": start.map(protocol::timefmt::format_date),
+            "old_start": old_start.map(protocol::timefmt::format_date),
         }),
     )
     .await?;

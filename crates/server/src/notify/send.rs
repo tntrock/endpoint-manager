@@ -35,7 +35,7 @@ pub async fn send_webhook(
     let bytes = serde_json::to_vec(body).map_err(|e| e.to_string())?;
     let mut req = client.post(url).header("content-type", "application/json");
     if let Some(secret) = secret {
-        let ts = chrono::Utc::now().timestamp();
+        let ts = time::OffsetDateTime::now_utc().unix_timestamp();
         req = req
             .header("x-em-timestamp", ts.to_string())
             .header("x-em-signature", signature(secret, ts, &bytes));

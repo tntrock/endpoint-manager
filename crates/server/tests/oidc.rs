@@ -54,8 +54,8 @@ impl Idp {
         json!({
             "iss": self.issuer,
             "aud": "em-client",
-            "exp": chrono::Utc::now().timestamp() + 300,
-            "iat": chrono::Utc::now().timestamp(),
+            "exp": time::OffsetDateTime::now_utc().unix_timestamp() + 300,
+            "iat": time::OffsetDateTime::now_utc().unix_timestamp(),
             "nonce": nonce,
             "sub": sub,
             "email": email,

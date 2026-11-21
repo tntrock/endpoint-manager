@@ -2,7 +2,6 @@
 
 use std::collections::BTreeMap;
 
-use chrono::NaiveDate;
 use protocol::PatchItem;
 use protocol::update::{ApplyState, PolicyData, UpdatePolicy, VALUE_NAMES};
 use serde::{Deserialize, Serialize};
@@ -112,19 +111,29 @@ pub fn decide(
 }
 
 /// WMI `Win32_QuickFixEngineering.InstalledOn`：通常是 M/D/YYYY，少數是 16 位 hex FILETIME
-fn parse_installed_on(s: &str) -> Option<NaiveDate> {
+fn parse_installed_on(s: &str) -> Option<time::Date> {
     let s = s.trim();
     if s.len() == 16 && s.bytes().all(|b| b.is_ascii_hexdigit()) {
         let ticks = u64::from_str_radix(s, 16).ok()?;
         // FILETIME：1601-01-01 起的 100 奈秒數
         let secs = (ticks / 10_000_000) as i64 - 11_644_473_600;
-        return chrono::DateTime::from_timestamp(secs, 0).map(|t| t.date_naive());
+        return time::OffsetDateTime::from_unix_timestamp(secs)
+            .ok()
+            .map(|t| t.date());
     }
-    NaiveDate::parse_from_str(s, "%m/%d/%Y").ok()
+    // M/D/YYYY（月、日可以是一或兩位數）
+    let mut p = s.split('/');
+    let (Some(m), Some(d), Some(y), None) = (p.next(), p.next(), p.next(), p.next()) else {
+        return None;
+    };
+    if y.len() != 4 || m.is_empty() || m.len() > 2 || d.is_empty() || d.len() > 2 {
+        return None;
+    }
+    protocol::timefmt::ymd(y.parse().ok()?, m.parse().ok()?, d.parse().ok()?)
 }
 
 /// 最新的安裝日期；晚於 not_after 的（時鐘錯誤或垃圾資料）略過
-pub fn last_patch_date(items: &[PatchItem], not_after: NaiveDate) -> Option<NaiveDate> {
+pub fn last_patch_date(items: &[PatchItem], not_after: time::Date) -> Option<time::Date> {
     items
         .iter()
         .filter_map(|p| parse_installed_on(p.installed_on.as_deref()?))
@@ -286,13 +295,13 @@ mod tests {
         }
     }
 
-    fn far() -> chrono::NaiveDate {
-        chrono::NaiveDate::from_ymd_opt(2030, 1, 1).unwrap()
+    fn far() -> time::Date {
+        protocol::timefmt::ymd(2030, 1, 1).unwrap()
     }
 
     #[test]
     fn last_patch_date_formats() {
-        let d = |y, m, dd| chrono::NaiveDate::from_ymd_opt(y, m, dd);
+        let d = |y, m, dd| protocol::timefmt::ymd(y, m, dd);
         assert_eq!(
             last_patch_date(&[patch(Some("9/10/2026")), patch(Some("12/1/2025"))], far()),
             d(2026, 9, 10)

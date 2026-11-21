@@ -4,7 +4,6 @@ use askama::Template;
 use axum::extract::{Path, Query, RawForm, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Redirect, Response};
-use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
 use super::auth::{AdminSession, Nav, Session, check_csrf, platform};
@@ -244,11 +243,11 @@ type DetailRow = (
     i32,
     String,
     String,
-    DateTime<Utc>,
+    time::OffsetDateTime,
     String,
-    DateTime<Utc>,
+    time::OffsetDateTime,
     Option<String>,
-    Option<DateTime<Utc>>,
+    Option<time::OffsetDateTime>,
     Vec<String>,
     String,
     Option<String>,

@@ -1,6 +1,5 @@
 //! `/etc/os-release`、`/proc/*`、`ip`、`who` 輸出的解析。
 
-use chrono::{DateTime, Utc};
 use std::net::IpAddr;
 
 /// 去掉成對的 `"` 或 `'`
@@ -34,14 +33,14 @@ pub fn os_caption(os_release: &str) -> Option<String> {
 }
 
 /// `/proc/stat` 的 `btime`（開機時間，Unix 秒）
-pub fn boot_time(proc_stat: &str) -> Option<DateTime<Utc>> {
+pub fn boot_time(proc_stat: &str) -> Option<time::OffsetDateTime> {
     let secs: i64 = proc_stat
         .lines()
         .find_map(|l| l.strip_prefix("btime"))?
         .trim()
         .parse()
         .ok()?;
-    DateTime::from_timestamp(secs, 0)
+    time::OffsetDateTime::from_unix_timestamp(secs).ok()
 }
 
 /// `MemTotal` kB 轉 MB（整數除法）
@@ -199,7 +198,7 @@ mod tests {
     #[test]
     fn boot_time_reads_btime() {
         let t = boot_time("cpu  1 2 3\nbtime 1729700000\nprocesses 5\n").unwrap();
-        assert_eq!(t.timestamp(), 1729700000);
+        assert_eq!(t.unix_timestamp(), 1729700000);
         assert_eq!(boot_time("cpu 1\n"), None);
     }
 

@@ -52,7 +52,7 @@ async fn checkin(s: &TestServer, a: &TestAgent, keys: Vec<String>) -> protocol::
             signing_keys: keys,
             schema_version: protocol::SCHEMA_VERSION,
             agent_version: "0.9.0".into(),
-            boot_time: chrono::Utc::now(),
+            boot_time: time::OffsetDateTime::now_utc(),
             logged_on_user: None,
             ip_addresses: vec![],
             section_hashes: Default::default(),

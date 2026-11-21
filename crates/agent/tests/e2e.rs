@@ -31,7 +31,7 @@ async fn env(pool: PgPool, token_uses: i32) -> Env {
     let pki = tempfile::tempdir().unwrap();
     ca::init_ca(pki.path(), vec!["127.0.0.1".into()]).unwrap();
     db::migrate(&pool).await.unwrap();
-    partitions::maintain_partitions(&pool, chrono::Utc::now())
+    partitions::maintain_partitions(&pool, time::OffsetDateTime::now_utc())
         .await
         .unwrap();
     let state = AppState::new(pool.clone(), ca::Ca::load(pki.path()).unwrap())
@@ -95,7 +95,7 @@ async fn client_maps_status_codes(pool: PgPool) {
         signing_keys: vec![],
         schema_version: SCHEMA_VERSION,
         agent_version: "t".into(),
-        boot_time: chrono::Utc::now(),
+        boot_time: time::OffsetDateTime::now_utc(),
         logged_on_user: None,
         ip_addresses: vec![],
         section_hashes: Default::default(),
@@ -218,7 +218,7 @@ impl Collector for Fake {
             std::thread::sleep(d);
         }
         Ok(Heartbeat {
-            boot_time: chrono::Utc::now() - chrono::Duration::hours(1),
+            boot_time: time::OffsetDateTime::now_utc() - time::Duration::hours(1),
             logged_on_user: Some("CORP\\bob".into()),
             ip_addresses: vec!["10.1.1.1".into()],
         })
@@ -369,7 +369,7 @@ async fn unchanged_inventory_is_not_reuploaded(pool: PgPool) {
     next(a.run_cycle().await);
     let id = a.state().device_id.unwrap();
     let stamp = || async {
-        sqlx::query_scalar::<_, chrono::DateTime<chrono::Utc>>(
+        sqlx::query_scalar::<_, time::OffsetDateTime>(
             "SELECT max(updated_at) FROM inventory_sections WHERE device_id = $1",
         )
         .bind(id)
@@ -578,7 +578,7 @@ async fn expired_certificate_stops_agent(pool: PgPool) {
         .sign_device_csr(
             &csr_pem,
             uuid::Uuid::new_v4(),
-            chrono::Utc::now() - chrono::Duration::days(400),
+            time::OffsetDateTime::now_utc() - time::Duration::days(400),
         )
         .unwrap();
     endpoint_agent::state::AgentState {
@@ -705,7 +705,7 @@ mod deploy {
                 signing_keys: vec![],
                 schema_version: SCHEMA_VERSION,
                 agent_version: "t".into(),
-                boot_time: chrono::Utc::now(),
+                boot_time: time::OffsetDateTime::now_utc(),
                 logged_on_user: None,
                 ip_addresses: vec![],
                 section_hashes: Default::default(),
@@ -832,7 +832,7 @@ mod deploy {
             signing_keys: vec![],
             schema_version: SCHEMA_VERSION,
             agent_version: "t".into(),
-            boot_time: chrono::Utc::now(),
+            boot_time: time::OffsetDateTime::now_utc(),
             logged_on_user: None,
             ip_addresses: vec![],
             section_hashes: Default::default(),
@@ -977,13 +977,13 @@ mod deploy {
     async fn failures_retry_daily_at_most_three_times(pool: PgPool) {
         let e = env(pool, 1).await;
         let (_a, mut worker, runner, w, d) = setup(&e, 1603, false).await;
-        let t0 = chrono::Utc::now();
+        let t0 = time::OffsetDateTime::now_utc();
         worker.pass_at(&w, t0).await;
-        worker.pass_at(&w, t0 + chrono::Duration::hours(1)).await;
+        worker.pass_at(&w, t0 + time::Duration::hours(1)).await;
         assert_eq!(runner.runs.load(Ordering::SeqCst), 1, "24 小時內不重試");
-        worker.pass_at(&w, t0 + chrono::Duration::hours(25)).await;
-        worker.pass_at(&w, t0 + chrono::Duration::hours(50)).await;
-        worker.pass_at(&w, t0 + chrono::Duration::hours(75)).await;
+        worker.pass_at(&w, t0 + time::Duration::hours(25)).await;
+        worker.pass_at(&w, t0 + time::Duration::hours(50)).await;
+        worker.pass_at(&w, t0 + time::Duration::hours(75)).await;
         assert_eq!(runner.runs.load(Ordering::SeqCst), 3, "最多 3 次");
         let (st, msg, attempts) = status(&e, d).await.unwrap();
         assert_eq!((st.as_str(), attempts), ("failed", 3));
@@ -1041,7 +1041,10 @@ mod deploy {
         let w = work(&a, &e, assignments(&c).await);
         assert_eq!(w.assignments.len(), 2);
         worker
-            .pass_at(&w, chrono::Utc::now() - chrono::Duration::hours(1))
+            .pass_at(
+                &w,
+                time::OffsetDateTime::now_utc() - time::Duration::hours(1),
+            )
             .await;
         let at = |d: i64| worker.state().entries[&d].last_attempt.unwrap();
         assert!(at(d2) > at(d1), "{} vs {}", at(d1), at(d2));
@@ -1172,17 +1175,15 @@ mod deploy {
     async fn paused_assignment_keeps_attempt_history(pool: PgPool) {
         let e = env(pool, 1).await;
         let (_a, mut worker, runner, w, _d) = setup(&e, 1603, false).await;
-        let t0 = chrono::Utc::now();
+        let t0 = time::OffsetDateTime::now_utc();
         worker.pass_at(&w, t0).await;
         // 暫停期間指派消失，繼續後同一 revision 仍在 24 小時等待中
         let empty = Work {
             assignments: vec![],
             ..w.clone()
         };
-        worker
-            .pass_at(&empty, t0 + chrono::Duration::hours(1))
-            .await;
-        worker.pass_at(&w, t0 + chrono::Duration::hours(2)).await;
+        worker.pass_at(&empty, t0 + time::Duration::hours(1)).await;
+        worker.pass_at(&w, t0 + time::Duration::hours(2)).await;
         assert_eq!(
             runner.runs.load(Ordering::SeqCst),
             1,
@@ -1226,13 +1227,13 @@ mod deploy {
             .acquire_many_owned(4)
             .await
             .unwrap();
-        let now = chrono::Utc::now();
+        let now = time::OffsetDateTime::now_utc();
         let next = worker
             .pass_at(&w, now)
             .await
             .expect("依 Retry-After 排下次");
         assert!(
-            next > now && next <= now + chrono::Duration::seconds(60 + 120),
+            next > now && next <= now + time::Duration::seconds(60 + 120),
             "{next} vs {now}"
         );
         assert_eq!(runner.runs.load(Ordering::SeqCst), 0);
@@ -1346,12 +1347,12 @@ mod deploy {
         let e = env(pool, 1).await;
         let (_a, mut worker, runner, w, d) = setup(&e, 0, true).await;
         let (url, _) = stub(&e, Stub::Status(503, Some(60))).await;
-        let before = chrono::Utc::now();
+        let before = time::OffsetDateTime::now_utc();
         let next = worker.pass(&via(&w, &url, true)).await.expect("稍後再試");
         // Retry-After 60 秒，加上 0.8～1.2 倍的隨機延遲（不是沒有 Retry-After 時的 5 分鐘）
-        assert!(next >= before + chrono::Duration::seconds(47), "{next}");
+        assert!(next >= before + time::Duration::seconds(47), "{next}");
         assert!(
-            next <= chrono::Utc::now() + chrono::Duration::seconds(73),
+            next <= time::OffsetDateTime::now_utc() + time::Duration::seconds(73),
             "{next}"
         );
         assert_eq!(runner.runs.load(Ordering::SeqCst), 0);
@@ -1366,11 +1367,11 @@ mod deploy {
         worker
             .pass_at(
                 &via(&w, &dead_url(), true),
-                chrono::Utc::now() - chrono::Duration::hours(2),
+                time::OffsetDateTime::now_utc() - time::Duration::hours(2),
             )
             .await;
         let until = worker.cache_paused_until().expect("快取連不上時暫停");
-        assert!(until > chrono::Utc::now(), "{until}");
+        assert!(until > time::OffsetDateTime::now_utc(), "{until}");
     }
 
     #[sqlx::test(migrations = false)]
@@ -1929,13 +1930,13 @@ mod updates {
         let e = env(pool, 1).await;
         let mut s = setup(&e).await;
         let w = work(&s);
-        let now = chrono::Utc::now();
+        let now = time::OffsetDateTime::now_utc();
         s.worker.pass_at(&w, now).await;
         let first = s.worker.state().sent_at;
         assert_eq!(first, Some(now));
-        s.worker.pass_at(&w, now + chrono::Duration::hours(1)).await;
+        s.worker.pass_at(&w, now + time::Duration::hours(1)).await;
         assert_eq!(s.worker.state().sent_at, first, "內容沒變不重送");
-        let later = now + chrono::Duration::hours(25);
+        let later = now + time::Duration::hours(25);
         s.worker.pass_at(&w, later).await;
         assert_eq!(s.worker.state().sent_at, Some(later), "滿 24 小時重送");
     }
@@ -1948,7 +1949,7 @@ mod updates {
         let since = |e: &Env, d| {
             let pool = e.pool.clone();
             async move {
-                let r: (bool, Option<chrono::DateTime<chrono::Utc>>) = sqlx::query_as(
+                let r: (bool, Option<time::OffsetDateTime>) = sqlx::query_as(
                     "SELECT reboot_pending, reboot_pending_since FROM update_policy_status \
                      WHERE device_id = $1",
                 )
@@ -1959,18 +1960,20 @@ mod updates {
                 r
             }
         };
-        let t0 = chrono::DateTime::from_timestamp(chrono::Utc::now().timestamp(), 0).unwrap();
+        let t0 = time::OffsetDateTime::now_utc()
+            .replace_nanosecond(0)
+            .unwrap();
         s.host.reboot.store(true, Ordering::SeqCst);
         s.worker.pass_at(&w, t0).await;
         assert_eq!(since(&e, s.device).await, (true, Some(t0)));
-        s.worker.pass_at(&w, t0 + chrono::Duration::hours(2)).await;
+        s.worker.pass_at(&w, t0 + time::Duration::hours(2)).await;
         assert_eq!(since(&e, s.device).await, (true, Some(t0)), "起始時間不變");
         s.host.reboot.store(false, Ordering::SeqCst);
-        s.worker.pass_at(&w, t0 + chrono::Duration::hours(3)).await;
+        s.worker.pass_at(&w, t0 + time::Duration::hours(3)).await;
         assert_eq!(since(&e, s.device).await, (false, None));
     }
 
-    async fn patch_date(e: &Env, device: uuid::Uuid) -> Option<chrono::NaiveDate> {
+    async fn patch_date(e: &Env, device: uuid::Uuid) -> Option<time::Date> {
         sqlx::query_scalar("SELECT last_patch_date FROM update_policy_status WHERE device_id = $1")
             .bind(device)
             .fetch_one(&e.pool)
@@ -2007,19 +2010,19 @@ mod updates {
         let mut worker = UpdateWorker::new(e.dir.path(), s.fake.clone(), s.host.clone())
             .with_patch_timeout(Duration::from_millis(200));
         let w = work(&s);
-        let now = chrono::Utc::now();
+        let now = time::OffsetDateTime::now_utc();
         worker.pass_at(&w, now).await;
-        let d = chrono::NaiveDate::from_ymd_opt(2026, 9, 10);
+        let d = protocol::timefmt::ymd(2026, 9, 10);
         assert_eq!(patch_date(&e, s.device).await, d);
         s.fake.hang_patches_ms.store(3000, Ordering::SeqCst);
         let start = std::time::Instant::now();
         // 25 小時後：一定會重送
-        worker.pass_at(&w, now + chrono::Duration::hours(25)).await;
+        worker.pass_at(&w, now + time::Duration::hours(25)).await;
         assert!(start.elapsed() < Duration::from_secs(2), "沒有等 WMI");
         assert_eq!(patch_date(&e, s.device).await, d);
         assert_eq!(
             worker.state().sent_at,
-            Some(now + chrono::Duration::hours(25))
+            Some(now + time::Duration::hours(25))
         );
     }
 
@@ -2421,7 +2424,7 @@ mod commands {
         st.entries.insert(
             w.commands[0].id,
             Entry {
-                started_at: Some(chrono::Utc::now()),
+                started_at: Some(time::OffsetDateTime::now_utc()),
                 result: None,
                 reported: false,
             },

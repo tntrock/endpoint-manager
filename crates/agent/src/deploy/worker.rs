@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use protocol::branch::DownloadSource;
 use protocol::deploy::{
     Assignment, DeployAction, DeployResult, DeployStatus, MAX_RESULT_MESSAGE, PackageKind,
@@ -244,7 +243,7 @@ pub struct Worker<C: Collector, R: Runner> {
     runner: R,
     state: DeployState,
     /// 快取暫停期：這個時間之前都直接向中央下載
-    cache_paused_until: Option<DateTime<Utc>>,
+    cache_paused_until: Option<time::OffsetDateTime>,
     /// 這次執行實際下載的來源（回報時帶上）
     source: Option<DownloadSource>,
     /// 信任的簽章公鑰；非空時只執行有效簽章的套件
@@ -318,16 +317,20 @@ impl<C: Collector, R: Runner> Worker<C, R> {
     }
 
     /// 快取暫停到什麼時候（連不上快取後改向中央的期間）
-    pub fn cache_paused_until(&self) -> Option<DateTime<Utc>> {
+    pub fn cache_paused_until(&self) -> Option<time::OffsetDateTime> {
         self.cache_paused_until
     }
 
-    pub async fn pass(&mut self, w: &Work) -> Option<DateTime<Utc>> {
-        self.pass_at(w, Utc::now()).await
+    pub async fn pass(&mut self, w: &Work) -> Option<time::OffsetDateTime> {
+        self.pass_at(w, time::OffsetDateTime::now_utc()).await
     }
 
     /// 處理一輪；回傳最早需要再檢查的時間（失敗後的重試、伺服器忙碌後的重試）
-    pub async fn pass_at(&mut self, w: &Work, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    pub async fn pass_at(
+        &mut self,
+        w: &Work,
+        now: time::OffsetDateTime,
+    ) -> Option<time::OffsetDateTime> {
         let client = match ServerClient::new(&w.server_url, &w.root_pem, w.identity_pem.clone()) {
             Ok(c) => c,
             Err(e) => {
@@ -338,14 +341,14 @@ impl<C: Collector, R: Runner> Worker<C, R> {
         let mut items = self.software().await?;
         let mut sorted: Vec<&Assignment> = w.assignments.iter().collect();
         sorted.sort_by_key(|a| a.deployment_id);
-        let mut next: Option<DateTime<Utc>> = None;
+        let mut next: Option<time::OffsetDateTime> = None;
         // 每個指派用當下的時間（前一個安裝可能跑了很久），以 now 為起點
-        let started = Utc::now();
-        let wake = |t: DateTime<Utc>, next: &mut Option<DateTime<Utc>>| {
+        let started = time::OffsetDateTime::now_utc();
+        let wake = |t: time::OffsetDateTime, next: &mut Option<time::OffsetDateTime>| {
             *next = Some(next.map_or(t, |n| n.min(t)));
         };
         for a in sorted {
-            let now = now + (Utc::now() - started);
+            let now = now + (time::OffsetDateTime::now_utc() - started);
             self.source = None;
             self.flush_unreported(&client, a).await;
             self.report_interrupted(&client, a).await;
@@ -474,7 +477,7 @@ impl<C: Collector, R: Runner> Worker<C, R> {
         &mut self,
         client: &ServerClient,
         a: &Assignment,
-        now: DateTime<Utc>,
+        now: time::OffsetDateTime,
         message: String,
     ) {
         let e = self.state.entry_for(a.deployment_id, a.revision);
@@ -514,7 +517,7 @@ impl<C: Collector, R: Runner> Worker<C, R> {
         a: &Assignment,
         status: DeployStatus,
         exit_code: i32,
-        now: DateTime<Utc>,
+        now: time::OffsetDateTime,
     ) {
         let e = self.state.entry_for(a.deployment_id, a.revision);
         let attempts = e.attempts;
@@ -523,7 +526,7 @@ impl<C: Collector, R: Runner> Worker<C, R> {
         e.last_failed = false;
         if a.action == DeployAction::Install {
             e.installs
-                .retain(|t| *t > now - chrono::Duration::hours(RETRY_AFTER_HOURS));
+                .retain(|t| *t > now - time::Duration::hours(RETRY_AFTER_HOURS));
             e.installs.push(now);
         }
         tracing::info!(deployment_id = a.deployment_id, ?status, "deploy: done");
@@ -542,7 +545,7 @@ impl<C: Collector, R: Runner> Worker<C, R> {
         file: &Path,
     ) -> Result<(), DownloadError> {
         // 暫停期用當下時間：一輪的起始時間可能早在前一個安裝開始前
-        let now = Utc::now();
+        let now = time::OffsetDateTime::now_utc();
         if let Some(src) = &w.package_source
             && self.cache_paused_until.is_none_or(|t| now >= t)
         {
@@ -559,7 +562,7 @@ impl<C: Collector, R: Runner> Worker<C, R> {
                         }
                         tracing::warn!(url = %src.url, "deploy: cache unreachable; using central for a while");
                         self.cache_paused_until =
-                            Some(now + chrono::Duration::from_std(CACHE_PAUSE).unwrap_or_default());
+                            Some(now + time::Duration::try_from(CACHE_PAUSE).unwrap_or_default());
                     }
                     Err(DownloadError::Mismatch) if src.fallback_to_central => {
                         tracing::warn!(url = %src.url, "deploy: file from cache does not match; trying central");
@@ -580,8 +583,8 @@ impl<C: Collector, R: Runner> Worker<C, R> {
         w: &Work,
         client: &ServerClient,
         a: &Assignment,
-        now: DateTime<Utc>,
-    ) -> Option<DateTime<Utc>> {
+        now: time::OffsetDateTime,
+    ) -> Option<time::OffsetDateTime> {
         let spec = &a.package;
         let ext = match spec.kind {
             PackageKind::Msi => "msi",
@@ -638,7 +641,7 @@ impl<C: Collector, R: Runner> Worker<C, R> {
                         _ => None,
                     };
                     let wait = with_jitter(after.unwrap_or(DOWNLOAD_RETRY), jitter());
-                    return Some(now + chrono::Duration::from_std(wait).unwrap_or_default());
+                    return Some(now + time::Duration::try_from(wait).unwrap_or_default());
                 }
                 Err(DownloadError::Unauthorized) => return None,
                 Err(e) => {
@@ -766,7 +769,9 @@ pub async fn run_worker<C: Collector, R: Runner>(
                 n = worker.pass(w) => n,
                 _ = shutdown.changed() => return,
             };
-            if let Some(d) = next.and_then(|t| (t - Utc::now()).to_std().ok()) {
+            if let Some(d) = next.and_then(|t| {
+                std::time::Duration::try_from(t - time::OffsetDateTime::now_utc()).ok()
+            }) {
                 wait = wait.min(d);
             }
         }

@@ -4,8 +4,8 @@ use askama::Template;
 use axum::extract::{Form, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Redirect, Response};
-use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
+use time::Duration;
 
 use super::auth::{AdminSession, Nav, Session, check_csrf, platform};
 use super::devices::{action_error, db_error};
@@ -64,7 +64,7 @@ type Row = (
     Option<i64>,
     String,
     String,
-    Option<DateTime<Utc>>,
+    Option<time::OffsetDateTime>,
     Option<String>,
     Option<i64>,
     i64,
@@ -75,8 +75,8 @@ type TokenDbRow = (
     String,
     i32,
     i32,
-    Option<DateTime<Utc>>,
-    Option<DateTime<Utc>>,
+    Option<time::OffsetDateTime>,
+    Option<time::OffsetDateTime>,
     String,
 );
 
@@ -138,7 +138,7 @@ async fn page_for(
     .fetch_all(&st.pool)
     .await
     .map_err(db_error)?;
-    let now = Utc::now();
+    let now = time::OffsetDateTime::now_utc();
     Ok(render(&CachesPage {
         nav: Nav::new(s, "sites"),
         new_token,
@@ -270,7 +270,7 @@ pub async fn create_token(
         &NewToken {
             name: name.into(),
             group_id: None,
-            expires_at: valid_days.map(|d| Utc::now() + Duration::days(d)),
+            expires_at: valid_days.map(|d| time::OffsetDateTime::now_utc() + Duration::days(d)),
             max_uses,
             created_by: s.username.clone(),
             kind: TokenKind::Cache,

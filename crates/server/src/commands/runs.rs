@@ -1,9 +1,9 @@
 //! 建立與取消遠端指令：權限範圍、腳本快照、群組展開成每台一筆。
 
-use chrono::{Duration, Utc};
 use protocol::command::{CommandAction, ScriptLanguage};
 use serde_json::json;
 use sqlx::PgPool;
+use time::Duration;
 use uuid::Uuid;
 
 use super::{Actor, CmdError, check};
@@ -160,7 +160,7 @@ pub async fn create_run(
         }
     };
 
-    let expires_at = Utc::now() + Duration::hours(i.expires_hours);
+    let expires_at = time::OffsetDateTime::now_utc() + Duration::hours(i.expires_hours);
     let run_id: i64 = sqlx::query_scalar(
         "INSERT INTO command_runs (action, delay_minutes, script_id, script_sha256, \
            script_content, script_timeout_minutes, target_label, created_by, expires_at, \
@@ -233,7 +233,7 @@ pub async fn create_run(
             "id": run_id, "action": action.as_str(), "count": count, "skipped_os": skipped,
             "script_id": script.as_ref().map(|s| s.0),
             "script_sha256": script.as_ref().map(|s| s.1.clone()),
-            "delay_minutes": delay, "expires_at": expires_at,
+            "delay_minutes": delay, "expires_at": protocol::timefmt::format_rfc3339(expires_at).ok(),
         }),
     )
     .await?;

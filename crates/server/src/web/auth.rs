@@ -5,7 +5,6 @@ use argon2::{Argon2, PasswordHasher, PasswordVerifier};
 use axum::extract::FromRequestParts;
 use axum::http::{header, request::Parts};
 use axum::response::{IntoResponse, Redirect, Response};
-use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -182,7 +181,7 @@ pub async fn login(pool: &PgPool, username: &str, password: &str) -> anyhow::Res
 }
 
 /// id、密碼雜湊、鎖定期限、是否有 MFA、角色
-type LoginRow = (i64, String, Option<DateTime<Utc>>, bool, String);
+type LoginRow = (i64, String, Option<time::OffsetDateTime>, bool, String);
 
 /// `sso_only`：設定了單一登入且密碼登入只限平台管理員
 pub async fn login_checked(
@@ -214,7 +213,7 @@ pub async fn login_checked(
         tx.commit().await?;
         return Ok(LoginOutcome::Failed);
     };
-    let locked = locked_until.is_some_and(|t| t > Utc::now());
+    let locked = locked_until.is_some_and(|t| t > time::OffsetDateTime::now_utc());
     // 鎖定期間仍做一次雜湊（固定耗時），但不採用結果
     let password_ok = verify_blocking(password, &hash).await;
     if locked || !password_ok {
@@ -488,7 +487,7 @@ type ChallengeRow = (
     String,
     Option<String>,
     Option<i64>,
-    Option<DateTime<Utc>>,
+    Option<time::OffsetDateTime>,
 );
 
 /// 登入第二步：以挑戰 token 與驗證碼（或復原碼）換工作階段
@@ -508,7 +507,10 @@ pub async fn login_mfa(pool: &PgPool, challenge: &str, code: &str) -> anyhow::Re
         return Ok(MfaOutcome::Restart);
     };
     // 期間被鎖定，或 MFA 被重設
-    let (Some(secret), false) = (secret, locked_until.is_some_and(|t| t > Utc::now())) else {
+    let (Some(secret), false) = (
+        secret,
+        locked_until.is_some_and(|t| t > time::OffsetDateTime::now_utc()),
+    ) else {
         drop_challenge(&mut tx, &challenge_hash).await?;
         crate::audit::record(
             &mut tx,

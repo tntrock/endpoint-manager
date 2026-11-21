@@ -4,7 +4,6 @@ use askama::Template;
 use axum::extract::{Form, Path, RawForm, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Redirect, Response};
-use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
 use super::auth::{AdminSession, Nav, Role, check_csrf, platform};
@@ -58,9 +57,9 @@ type Row = (
     String,
     String,
     Option<String>,
-    Option<DateTime<Utc>>,
-    Option<DateTime<Utc>>,
-    DateTime<Utc>,
+    Option<time::OffsetDateTime>,
+    Option<time::OffsetDateTime>,
+    time::OffsetDateTime,
     Vec<i64>,
     bool,
     bool,
@@ -77,7 +76,7 @@ const SELECT: &str = "SELECT a.id, a.username, a.role, \
 fn to_row(st: &AppState, r: Row) -> (AccountRow, Vec<i64>) {
     let (id, username, role, groups, locked_until, disabled_at, created_at, group_ids, mfa, sso) =
         r;
-    let locked = locked_until.is_some_and(|t| t > Utc::now());
+    let locked = locked_until.is_some_and(|t| t > time::OffsetDateTime::now_utc());
     let (state, state_class) = if disabled_at.is_some() {
         ("已停用", "bad")
     } else if locked {

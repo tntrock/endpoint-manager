@@ -75,8 +75,8 @@ type UpdateDbRow = (
     String,
     String,
     bool,
-    Option<chrono::DateTime<chrono::Utc>>,
-    Option<chrono::NaiveDate>,
+    Option<time::OffsetDateTime>,
+    Option<time::Date>,
 );
 
 async fn load_config(conn: &mut PgConnection, ids: &[Uuid]) -> Result<ConfigFacts, sqlx::Error> {
@@ -205,7 +205,7 @@ pub async fn load_facts(
     .fetch_all(&mut *conn)
     .await?;
     let mut cfg = load_config(conn, &[id]).await?;
-    let now = chrono::Utc::now();
+    let now = time::OffsetDateTime::now_utc();
     Ok(Some(DeviceFacts {
         active,
         group_id,
@@ -473,7 +473,7 @@ pub async fn load_facts_bulk(
         kbs.entry(d).or_default().push(kb);
     }
     let mut cfg = load_config(conn, ids).await?;
-    let now = chrono::Utc::now();
+    let now = time::OffsetDateTime::now_utc();
     let mut has: std::collections::HashSet<(Uuid, String)> = std::collections::HashSet::new();
     has.extend(sections);
     let has = |d: Uuid, s: &str| has.contains(&(d, s.to_string()));

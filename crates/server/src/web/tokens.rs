@@ -4,8 +4,8 @@ use askama::Template;
 use axum::extract::{Form, Path, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Redirect, Response};
-use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
+use time::Duration;
 
 use super::auth::{AdminSession, Nav, Session, check_csrf};
 use super::devices::{SelectOption, db_error, group_options};
@@ -85,10 +85,10 @@ type Row = (
     Option<String>,
     i32,
     i32,
-    Option<DateTime<Utc>>,
-    Option<DateTime<Utc>>,
+    Option<time::OffsetDateTime>,
+    Option<time::OffsetDateTime>,
     String,
-    DateTime<Utc>,
+    time::OffsetDateTime,
 );
 
 /// `created`：剛建立的金鑰明碼，與 Linux 註冊指令要用的伺服器網址（或網址的錯誤）
@@ -112,7 +112,7 @@ async fn page_for(
     .fetch_all(&st.pool)
     .await
     .map_err(db_error)?;
-    let now = Utc::now();
+    let now = time::OffsetDateTime::now_utc();
     let rows = rows
         .into_iter()
         .map(
@@ -272,7 +272,7 @@ pub async fn create(
         &NewToken {
             name: name.into(),
             group_id: group,
-            expires_at: valid_days.map(|d| Utc::now() + Duration::days(d)),
+            expires_at: valid_days.map(|d| time::OffsetDateTime::now_utc() + Duration::days(d)),
             max_uses,
             created_by: s.username.clone(),
             kind: crate::tokens::TokenKind::Device,

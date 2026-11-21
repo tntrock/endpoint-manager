@@ -1,10 +1,9 @@
 //! WMI 收集。每次呼叫建立新的 WMIConnection（在 blocking 執行緒上初始化 COM）。
 
 use anyhow::Context;
-use chrono::Utc;
 use protocol::{BasicInfo, Disk, HardwareInfo, InventoryPayload, PatchItem, Section, ServiceItem};
 use serde::Deserialize;
-use wmi::{WMIConnection, WMIDateTime};
+use wmi::{WMIConnection, WMIOffsetDateTime};
 
 use crate::collector::{Collector, Heartbeat, Identity};
 use crate::serde_util::u64_any;
@@ -27,7 +26,7 @@ struct ComputerSystem {
 struct OperatingSystem {
     caption: Option<String>,
     build_number: Option<String>,
-    last_boot_up_time: Option<WMIDateTime>,
+    last_boot_up_time: Option<WMIOffsetDateTime>,
 }
 
 #[derive(Deserialize)]
@@ -179,8 +178,8 @@ impl Collector for WindowsCollector {
                 .into_iter()
                 .next()
                 .and_then(|o| o.last_boot_up_time)
-                .map(|t| t.0.with_timezone(&Utc))
-                .unwrap_or_else(Utc::now),
+                .map(|t| t.0.to_offset(time::UtcOffset::UTC))
+                .unwrap_or_else(time::OffsetDateTime::now_utc),
             logged_on_user: cs.and_then(|c| c.user_name),
             ip_addresses: nics
                 .into_iter()

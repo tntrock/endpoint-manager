@@ -59,7 +59,7 @@ pub struct AppState {
     pub enroll_limiter: Arc<ratelimit::RateLimiter>,
     pub login_limiter: Arc<ratelimit::RateLimiter>,
     /// 管理網頁顯示時間用的時區
-    pub display_offset: chrono::FixedOffset,
+    pub display_offset: time::UtcOffset,
     /// 通用範本 MSI；None 表示不提供下載安裝檔
     pub agent_msi: Option<std::path::PathBuf>,
     /// Linux agent 安裝包（原樣提供下載）；None 表示不提供
@@ -102,7 +102,7 @@ impl AppState {
                 LOGIN_PER_IP_PER_MINUTE,
                 Duration::from_secs(60),
             )),
-            display_offset: chrono::FixedOffset::east_opt(8 * 3600).expect("valid offset"),
+            display_offset: time::UtcOffset::from_whole_seconds(8 * 3600).expect("valid offset"),
             agent_msi: None,
             agent_deb: None,
             agent_rpm: None,
@@ -172,7 +172,7 @@ impl AppState {
     }
 
     pub fn with_display_offset(mut self, hours: i32) -> Self {
-        if let Some(o) = chrono::FixedOffset::east_opt(hours * 3600) {
+        if let Ok(o) = time::UtcOffset::from_whole_seconds(hours * 3600) {
             self.display_offset = o;
         }
         self
@@ -221,7 +221,7 @@ pub async fn serve(cfg: config::Config) -> anyhow::Result<()> {
         .connect(&cfg.database_url)
         .await?;
     db::migrate(&pool).await?;
-    partitions::maintain_partitions(&pool, chrono::Utc::now()).await?;
+    partitions::maintain_partitions(&pool, time::OffsetDateTime::now_utc()).await?;
     deploy::store::cleanup_temp(&cfg.package_dir).await;
 
     let server_names = ca::server_names(&cfg.ca_dir)?;
@@ -271,7 +271,9 @@ pub async fn serve(cfg: config::Config) -> anyhow::Result<()> {
         let mut tick = tokio::time::interval(Duration::from_secs(24 * 3600));
         loop {
             tick.tick().await;
-            if let Err(e) = partitions::maintain_partitions(&part_pool, chrono::Utc::now()).await {
+            if let Err(e) =
+                partitions::maintain_partitions(&part_pool, time::OffsetDateTime::now_utc()).await
+            {
                 tracing::error!(error = %e, "partition maintenance failed");
             }
         }

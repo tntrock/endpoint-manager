@@ -2,7 +2,6 @@
 
 use std::time::{Duration, Instant};
 
-use chrono::NaiveDate;
 use futures_util::StreamExt;
 use serde_json::json;
 use sqlx::PgPool;
@@ -189,7 +188,7 @@ pub async fn expire_exemptions(pool: &PgPool) -> Result<u64, sqlx::Error> {
     Ok(n)
 }
 
-pub async fn snapshot_daily(pool: &PgPool, day: NaiveDate) -> Result<(), sqlx::Error> {
+pub async fn snapshot_daily(pool: &PgPool, day: time::Date) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO compliance_daily (day, rule_id, violating, unknown, exempt) \
          SELECT $1, r.id, count(v.rule_id) FILTER (WHERE v.status = 'violating'), \
@@ -220,7 +219,7 @@ pub async fn history_days(pool: &PgPool) -> Result<i64, sqlx::Error> {
 }
 
 /// `today`：管理網頁時區的今天（與每日快照的日期一致）
-pub async fn cleanup_history(pool: &PgPool, today: chrono::NaiveDate) -> Result<u64, sqlx::Error> {
+pub async fn cleanup_history(pool: &PgPool, today: time::Date) -> Result<u64, sqlx::Error> {
     let days = history_days(pool).await? as i32;
     let events =
         sqlx::query("DELETE FROM violation_events WHERE at < now() - make_interval(days => $1)")
@@ -255,7 +254,7 @@ pub fn spawn(pool: PgPool) {
             }
             if last_hourly.is_none_or(|t| t.elapsed() >= Duration::from_secs(3600)) {
                 last_hourly = Some(Instant::now());
-                let today = super::today(chrono::Utc::now());
+                let today = super::today(time::OffsetDateTime::now_utc());
                 if let Err(e) = snapshot_daily(&pool, today).await {
                     tracing::error!(error = %e, "compliance snapshot failed");
                 }

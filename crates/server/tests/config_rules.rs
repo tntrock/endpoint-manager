@@ -59,7 +59,7 @@ async fn checkin(s: &TestServer, a: &TestAgent) -> protocol::CheckinResponse {
             signing_keys: vec![],
             schema_version: SCHEMA_VERSION,
             agent_version: "0.3.0".into(),
-            boot_time: chrono::Utc::now(),
+            boot_time: time::OffsetDateTime::now_utc(),
             logged_on_user: None,
             ip_addresses: vec![],
             section_hashes: Default::default(),
@@ -288,7 +288,7 @@ async fn filtered_upload_is_requested_again(pool: PgPool) {
             signing_keys: vec![],
             schema_version: SCHEMA_VERSION,
             agent_version: "0.3.0".into(),
-            boot_time: chrono::Utc::now(),
+            boot_time: time::OffsetDateTime::now_utc(),
             logged_on_user: None,
             ip_addresses: vec![],
             section_hashes: [(protocol::Section::Registry, full_hash)]

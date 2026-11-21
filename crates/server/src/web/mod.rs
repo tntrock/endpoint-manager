@@ -34,7 +34,6 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
-use chrono::{DateTime, Utc};
 
 use crate::AppState;
 
@@ -78,13 +77,24 @@ pub fn not_found() -> Response {
     (StatusCode::NOT_FOUND, "找不到").into_response()
 }
 
-pub fn fmt_time(state: &AppState, t: Option<DateTime<Utc>>) -> String {
-    t.map(|t| {
-        t.with_timezone(&state.display_offset)
-            .format("%Y-%m-%d %H:%M")
-            .to_string()
+pub fn fmt_time(state: &AppState, t: Option<time::OffsetDateTime>) -> String {
+    t.and_then(|t| {
+        t.to_offset(state.display_offset)
+            .format(time::macros::format_description!(
+                "[year]-[month]-[day] [hour]:[minute]"
+            ))
+            .ok()
     })
     .unwrap_or_else(|| "—".into())
+}
+
+/// UTC 的「年-月-日 時:分:秒」（CSV 匯出）
+pub fn fmt_utc_seconds(t: time::OffsetDateTime) -> String {
+    t.to_offset(time::UtcOffset::UTC)
+        .format(time::macros::format_description!(
+            "[year]-[month]-[day] [hour]:[minute]:[second]"
+        ))
+        .unwrap_or_default()
 }
 
 /// LIKE 搜尋時把使用者輸入的 % _ \ 當一般字元。

@@ -3,12 +3,12 @@
 use std::path::Path;
 
 use anyhow::Context;
-use chrono::{DateTime, Duration, Utc};
 use rcgen::{
     BasicConstraints, CertificateParams, CertificateSigningRequestParams, DistinguishedName,
     DnType, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair, KeyUsagePurpose, SerialNumber,
 };
 use sha2::{Digest, Sha256};
+use time::Duration;
 use uuid::Uuid;
 
 pub const DEVICE_CERT_DAYS: i64 = 365;
@@ -17,7 +17,7 @@ pub struct IssuedCert {
     pub serial: String,
     pub fingerprint: String,
     pub pem: String,
-    pub not_after: DateTime<Utc>,
+    pub not_after: time::OffsetDateTime,
 }
 
 pub struct Ca {
@@ -54,8 +54,9 @@ pub fn server_names(dir: &Path) -> anyhow::Result<Vec<String>> {
     Ok(names)
 }
 
-fn to_time(dt: DateTime<Utc>) -> time::OffsetDateTime {
-    time::OffsetDateTime::from_unix_timestamp(dt.timestamp()).expect("valid timestamp")
+/// 憑證時間以秒為單位：去掉小數秒
+fn to_time(dt: time::OffsetDateTime) -> time::OffsetDateTime {
+    dt.replace_nanosecond(0).expect("valid nanosecond")
 }
 
 fn cn(name: &str) -> DistinguishedName {
@@ -93,7 +94,7 @@ fn write_secret(path: &Path, contents: &str) -> anyhow::Result<()> {
 
 pub fn init_ca(dir: &Path, server_names: Vec<String>) -> anyhow::Result<()> {
     std::fs::create_dir_all(dir)?;
-    let now = Utc::now();
+    let now = time::OffsetDateTime::now_utc();
 
     let mut root_params = CertificateParams::default();
     root_params.distinguished_name = cn("Endpoint Manager Root CA");
@@ -168,7 +169,7 @@ impl Ca {
         &self,
         csr_pem: &str,
         device_id: Uuid,
-        now: DateTime<Utc>,
+        now: time::OffsetDateTime,
     ) -> anyhow::Result<IssuedCert> {
         let mut params = CertificateParams::default();
         params.distinguished_name = cn(&device_id.to_string());
@@ -184,7 +185,7 @@ impl Ca {
         csr_pem: &str,
         cache_id: i64,
         dns_names: &[String],
-        now: DateTime<Utc>,
+        now: time::OffsetDateTime,
     ) -> anyhow::Result<IssuedCert> {
         let mut params = CertificateParams::new(dns_names.to_vec()).context("invalid DNS name")?;
         params.distinguished_name = cn(&format!("cache-{cache_id}"));
@@ -204,7 +205,7 @@ impl Ca {
         &self,
         mut params: CertificateParams,
         csr_pem: &str,
-        now: DateTime<Utc>,
+        now: time::OffsetDateTime,
     ) -> anyhow::Result<IssuedCert> {
         let csr = CertificateSigningRequestParams::from_pem(csr_pem).context("invalid CSR")?;
         let serial = random_serial();
@@ -219,7 +220,7 @@ impl Ca {
             serial: hex::encode(serial),
             fingerprint: fingerprint(cert.der()),
             pem: cert.pem(),
-            not_after: DateTime::from_timestamp(not_after.timestamp(), 0).expect("valid"),
+            not_after: to_time(not_after),
         })
     }
 }
@@ -255,7 +256,7 @@ mod tests {
 
         let ca = Ca::load(dir.path()).unwrap();
         let id = Uuid::new_v4();
-        let now = Utc::now();
+        let now = time::OffsetDateTime::now_utc();
         let issued = ca.sign_device_csr(&csr(), id, now).unwrap();
 
         let der = pem_to_der(&issued.pem);
@@ -263,8 +264,8 @@ mod tests {
         assert_eq!(fingerprint(&der), issued.fingerprint);
         assert_eq!(issued.serial.len(), 32);
         assert!(
-            (issued.not_after - now - chrono::Duration::days(DEVICE_CERT_DAYS))
-                .num_seconds()
+            (issued.not_after - now - time::Duration::days(DEVICE_CERT_DAYS))
+                .whole_seconds()
                 .abs()
                 < 5
         );
@@ -277,10 +278,10 @@ mod tests {
         init_ca(dir.path(), vec!["localhost".into()]).unwrap();
         let ca = Ca::load(dir.path()).unwrap();
         let a = ca
-            .sign_device_csr(&csr(), Uuid::new_v4(), Utc::now())
+            .sign_device_csr(&csr(), Uuid::new_v4(), time::OffsetDateTime::now_utc())
             .unwrap();
         let b = ca
-            .sign_device_csr(&csr(), Uuid::new_v4(), Utc::now())
+            .sign_device_csr(&csr(), Uuid::new_v4(), time::OffsetDateTime::now_utc())
             .unwrap();
         assert_ne!(a.serial, b.serial);
     }
@@ -291,7 +292,7 @@ mod tests {
         init_ca(dir.path(), vec!["localhost".into()]).unwrap();
         let ca = Ca::load(dir.path()).unwrap();
         assert!(
-            ca.sign_device_csr("not a csr", Uuid::new_v4(), Utc::now())
+            ca.sign_device_csr("not a csr", Uuid::new_v4(), time::OffsetDateTime::now_utc())
                 .is_err()
         );
     }

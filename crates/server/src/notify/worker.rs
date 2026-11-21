@@ -4,7 +4,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -20,9 +19,9 @@ pub struct Senders {
 }
 
 /// 第 n 次失敗後的重試間隔：1、2、4…分鐘，上限 60 分鐘。
-pub fn backoff(failures: i32) -> chrono::Duration {
+pub fn backoff(failures: i32) -> time::Duration {
     let exp = (failures.max(1) - 1).min(6) as u32;
-    chrono::Duration::minutes((1i64 << exp).min(60))
+    time::Duration::minutes((1i64 << exp).min(60))
 }
 
 /// 門檻以上、且變成或離開「違規」的事件。違規變成「未知」也列在解除（帶 to=unknown），
@@ -116,7 +115,13 @@ pub async fn load_digest(
     })
 }
 
-type ChannelRow = (i64, Option<DateTime<Utc>>, Option<DateTime<Utc>>, i32, i64);
+type ChannelRow = (
+    i64,
+    Option<time::OffsetDateTime>,
+    Option<time::OffsetDateTime>,
+    i32,
+    i64,
+);
 
 /// 處理一個管道一次：未啟用、重試時間未到、彙整間隔未到都直接返回。
 pub async fn run_channel(
@@ -125,7 +130,7 @@ pub async fn run_channel(
     settings: &NotifySettings,
     secrets: &NotifySecrets,
     senders: &Senders,
-    now: DateTime<Utc>,
+    now: time::OffsetDateTime,
 ) -> Result<(), sqlx::Error> {
     let enabled = channel == "webhook" && settings.webhook_url.is_some();
     if !enabled {
@@ -144,7 +149,7 @@ pub async fn run_channel(
         return Ok(());
     }
     // 失敗重試由 next_attempt_at 控制，不受彙整間隔限制
-    let interval = chrono::Duration::minutes(settings.interval_minutes.into());
+    let interval = time::Duration::minutes(settings.interval_minutes.into());
     if failures == 0 && last_sent.is_some_and(|t| now < t + interval) {
         return Ok(());
     }
@@ -268,8 +273,15 @@ pub fn spawn(pool: PgPool, secrets: Arc<NotifySecrets>) {
                 }
             };
             for channel in ["webhook"] {
-                if let Err(e) =
-                    run_channel(&pool, channel, &settings, &secrets, &senders, Utc::now()).await
+                if let Err(e) = run_channel(
+                    &pool,
+                    channel,
+                    &settings,
+                    &secrets,
+                    &senders,
+                    time::OffsetDateTime::now_utc(),
+                )
+                .await
                 {
                     tracing::error!(channel, error = %e, "notification worker failed");
                 }

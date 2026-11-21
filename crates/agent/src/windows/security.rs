@@ -99,7 +99,7 @@ struct MpStatus {
     #[serde(rename = "IsTamperProtected")]
     is_tamper_protected: Option<bool>,
     #[serde(rename = "AntivirusSignatureLastUpdated")]
-    antivirus_signature_last_updated: Option<wmi::WMIDateTime>,
+    antivirus_signature_last_updated: Option<wmi::WMIOffsetDateTime>,
 }
 
 fn defender() -> anyhow::Result<DefenderInfo> {
@@ -120,7 +120,7 @@ fn defender() -> anyhow::Result<DefenderInfo> {
         tamper: s.is_tamper_protected.unwrap_or(false),
         signature_updated: s
             .antivirus_signature_last_updated
-            .map(|t| t.0.with_timezone(&chrono::Utc)),
+            .map(|t| t.0.to_offset(time::UtcOffset::UTC)),
     })
 }
 

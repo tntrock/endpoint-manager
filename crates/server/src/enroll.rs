@@ -5,7 +5,6 @@ use std::time::Instant;
 
 use axum::Json;
 use axum::extract::{ConnectInfo, State};
-use chrono::Utc;
 use protocol::{EnrollRequest, EnrollResponse, OsFamily, SCHEMA_VERSION, validate_strings};
 use uuid::Uuid;
 
@@ -142,7 +141,7 @@ pub async fn enroll(
 
     let issued = st
         .ca
-        .sign_device_csr(&req.csr_pem, device_id, Utc::now())
+        .sign_device_csr(&req.csr_pem, device_id, time::OffsetDateTime::now_utc())
         .map_err(|e| AppError::BadRequest(format!("{e:#}")))?;
     sqlx::query(
         "INSERT INTO device_certs (serial, fingerprint, device_id, not_after) \

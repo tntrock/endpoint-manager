@@ -4,7 +4,6 @@
 use askama::Template;
 use axum::extract::{Path, Query, RawForm, State};
 use axum::response::{IntoResponse, Redirect, Response};
-use chrono::{DateTime, NaiveDate, Utc};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -30,25 +29,25 @@ const ERROR: &str = "(s.state = 'error' AND (s.policy_id IS NULL OR s.policy_id 
 /// Windows Update 寬限期的預設值（期限有填、寬限沒填時使用）
 const DEFAULT_GRACE: u32 = 2;
 
-fn pause_labels(set: &PolicySettings, today: NaiveDate) -> Vec<String> {
+fn pause_labels(set: &PolicySettings, today: time::Date) -> Vec<String> {
     [
         ("品質更新", set.quality_pause_start),
         ("功能更新", set.feature_pause_start),
     ]
     .into_iter()
     .filter_map(|(what, start)| {
-        let end = start? + chrono::Duration::days(PAUSE_DAYS);
+        let end = start? + time::Duration::days(PAUSE_DAYS);
         Some(if today > end {
             format!("{what}暫停已過期")
         } else {
-            format!("{what}暫停中，至 {}", end.format("%-m/%-d"))
+            format!("{what}暫停中，至 {}/{}", u8::from(end.month()), end.day())
         })
     })
     .collect()
 }
 
 /// 設定摘要（每項一行）
-fn describe(set: &PolicySettings, today: NaiveDate) -> Vec<String> {
+fn describe(set: &PolicySettings, today: time::Date) -> Vec<String> {
     let mut v = vec![];
     if let Some(d) = set.quality_defer_days {
         v.push(format!("品質更新延後 {d} 天"));
@@ -178,7 +177,7 @@ pub async fn list(
         .fetch_all(&st.pool)
         .await?;
     let mut names = group_names(&st, &s).await?;
-    let today = crate::compliance::today(Utc::now());
+    let today = crate::compliance::today(time::OffsetDateTime::now_utc());
     Ok(render(&ListPage {
         nav: Nav::new(&s, "updates"),
         rows: rows
@@ -520,7 +519,7 @@ type DeviceDbRow = (
     Option<i64>,
     Option<i32>,
     Option<String>,
-    Option<DateTime<Utc>>,
+    Option<time::OffsetDateTime>,
 );
 
 pub async fn detail(
@@ -595,7 +594,7 @@ pub async fn detail(
         .remove(&id)
         .unwrap_or_default()
         .join("、");
-    let today = crate::compliance::today(Utc::now());
+    let today = crate::compliance::today(time::OffsetDateTime::now_utc());
     Ok(render(&DetailPage {
         nav: Nav::new(&s, "updates"),
         id,
@@ -640,7 +639,7 @@ pub async fn act(
     platform(&s)?;
     let pool = &st.pool;
     let user = s.username.as_str();
-    let today = crate::compliance::today(Utc::now());
+    let today = crate::compliance::today(time::OffsetDateTime::now_utc());
     let r = match action.as_str() {
         "pause-quality" => admin::set_pause(pool, id, PauseKind::Quality, Some(today), user).await,
         "resume-quality" => admin::set_pause(pool, id, PauseKind::Quality, None, user).await,
@@ -686,7 +685,7 @@ pub async fn overview(
     .bind(&s.groups)
     .fetch_all(&st.pool)
     .await?;
-    let reboots: Vec<(Uuid, String, DateTime<Utc>)> = sqlx::query_as(
+    let reboots: Vec<(Uuid, String, time::OffsetDateTime)> = sqlx::query_as(
         "SELECT v.id, v.hostname, u.reboot_pending_since FROM update_policy_status u \
          JOIN devices v ON v.id = u.device_id \
          WHERE u.reboot_pending AND u.reboot_pending_since IS NOT NULL \
@@ -697,7 +696,7 @@ pub async fn overview(
     .bind(&s.groups)
     .fetch_all(&st.pool)
     .await?;
-    let now = Utc::now();
+    let now = time::OffsetDateTime::now_utc();
     let dash = |v: Option<String>| v.unwrap_or_else(|| "—".into());
     Ok(render(&OverviewPage {
         nav: Nav::new(&s, "updates"),
@@ -711,7 +710,7 @@ pub async fn overview(
                 id: id.to_string(),
                 hostname,
                 since: fmt_time(&st, Some(since)),
-                days: (now - since).num_days(),
+                days: (now - since).whole_days(),
             })
             .collect(),
     }))
@@ -754,9 +753,9 @@ type ReportRow = (
     Option<i64>,
     Option<i32>,
     bool,
-    Option<DateTime<Utc>>,
-    Option<NaiveDate>,
-    DateTime<Utc>,
+    Option<time::OffsetDateTime>,
+    Option<time::Date>,
+    time::OffsetDateTime,
     Option<String>,
 );
 
@@ -839,7 +838,7 @@ mod tests {
 
     #[test]
     fn pause_labels_expire_after_35_days() {
-        let d = |m, day| NaiveDate::from_ymd_opt(2026, m, day).unwrap();
+        let d = |m, day| protocol::timefmt::ymd(2026, m, day).unwrap();
         let set = PolicySettings {
             quality_pause_start: Some(d(9, 1)),
             ..Default::default()

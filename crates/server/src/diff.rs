@@ -114,7 +114,7 @@ pub fn items_of(p: &InventoryPayload) -> BTreeMap<String, String> {
                 // 只記到日：病毒碼每天更新多次，不要每次都寫一筆變更
                 let day = d
                     .signature_updated
-                    .map(|t| t.format("%Y-%m-%d").to_string())
+                    .map(|t| protocol::timefmt::format_date(t.date()))
                     .unwrap_or_default();
                 out.push(("defender.signature_updated".into(), day));
             });
@@ -373,7 +373,7 @@ mod tests {
                 uid: 1000,
                 shell: "/bin/bash".into(),
                 locked: Some(false),
-                password_changed: chrono::NaiveDate::from_ymd_opt(2026, 1, 2),
+                password_changed: protocol::timefmt::ymd(2026, 1, 2),
             }],
             system_user_count: 30,
             privileged: vec![PrivilegeEntry {

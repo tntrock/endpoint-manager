@@ -29,7 +29,7 @@ pub async fn central(pool: PgPool) -> Env {
     let pki = tempfile::tempdir().unwrap();
     ca::init_ca(pki.path(), vec!["localhost".into(), "127.0.0.1".into()]).unwrap();
     db::migrate(&pool).await.unwrap();
-    partitions::maintain_partitions(&pool, chrono::Utc::now())
+    partitions::maintain_partitions(&pool, time::OffsetDateTime::now_utc())
         .await
         .unwrap();
     let state = AppState::new(pool.clone(), ca::Ca::load(pki.path()).unwrap())
