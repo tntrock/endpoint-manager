@@ -44,6 +44,7 @@ const WINDOWS_ONLY_TABS: &[&str] = &[
 fn tabs_for(os_family: &str) -> Vec<(&'static str, &'static str)> {
     if os_family == "linux" {
         vec![
+            ("timeline", "時間軸"),
             ("commands", "遠端指令"),
             ("software", "軟體"),
             ("services", "服務"),
@@ -52,6 +53,7 @@ fn tabs_for(os_family: &str) -> Vec<(&'static str, &'static str)> {
         ]
     } else {
         vec![
+            ("timeline", "時間軸"),
             ("compliance", "合規"),
             ("security", "安全設定"),
             ("deployments", "派送"),
@@ -451,10 +453,12 @@ pub struct DeviceView {
     pub agent: String,
     /// 要求簽章時的金鑰 ID（空：不要求）
     pub signing: Vec<String>,
-    pub errors: Vec<(String, String)>,
     pub badge: &'static str,
     pub badge_label: &'static str,
     pub can_retire: bool,
+    pub linux: bool,
+    /// 最後回報的相對時間
+    pub seen_ago: String,
 }
 
 #[derive(Template)]
@@ -462,6 +466,8 @@ pub struct DeviceView {
 struct DevicePage {
     nav: Nav,
     d: DeviceView,
+    cards: Vec<super::device_status::Card>,
+    issues: Vec<super::device_status::Issue>,
     groups: Vec<SelectOption>,
     tabs: Vec<(&'static str, &'static str)>,
 }
@@ -560,7 +566,30 @@ pub async fn detail(
     let current_group = group_id
         .map(|g| g.to_string())
         .unwrap_or_else(|| "none".into());
+    let errors: Vec<(String, String)> = errors
+        .into_iter()
+        .map(|(k, v)| (super::timeline::section_label(&k).to_string(), v))
+        .collect();
+    let linux = os_family == "linux";
+    let boot = fmt_time(&st, boot);
+    let agent = o(agent);
+    let (cards, issues) = super::device_status::build(
+        &st,
+        &super::device_status::Facts {
+            id,
+            linux,
+            status: &status,
+            last_seen,
+            online: last_seen.is_some_and(|t| t > cutoff),
+            boot: boot.clone(),
+            agent: agent.clone(),
+            errors: &errors,
+        },
+    )
+    .await?;
     Ok(render(&DevicePage {
+        cards,
+        issues,
         groups: if s.all_devices() {
             group_options(&st, &s, &current_group, false).await?
         } else {
@@ -583,14 +612,15 @@ pub async fn detail(
             ram,
             serial: o(serial),
             last_seen: fmt_time(&st, last_seen),
-            boot: fmt_time(&st, boot),
+            seen_ago: super::device_status::ago(time::OffsetDateTime::now_utc(), last_seen),
+            boot,
             enrolled: fmt_time(&st, Some(enrolled)),
-            agent: o(agent),
+            agent,
             signing: crate::signing::key_ids(&keys),
-            errors: errors.into_iter().collect(),
             badge,
             badge_label,
             can_retire: status != "retired",
+            linux,
         },
         tabs: tabs_for(&os_family),
     }))
@@ -612,6 +642,9 @@ pub async fn tab(
     match dev {
         Some((g, os)) if s.in_scope(g) && tab_applies(&os, &tab) => {}
         _ => return Ok(not_found()),
+    }
+    if tab == "timeline" {
+        return super::timeline::tab(&st, id).await;
     }
     if tab == "accounts" {
         return accounts_tab(&st, &s, id).await;

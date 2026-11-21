@@ -14,7 +14,7 @@ use crate::retention::{self, MAX_DAYS, MIN_AUDIT_DAYS, MIN_COMMAND_DAYS, Retenti
 
 const PAGE_SIZE: i64 = 50;
 
-fn label(action: &str) -> &str {
+pub(super) fn label(action: &str) -> &str {
     match action {
         "login" => "登入成功",
         "login_failed" => "登入失敗",

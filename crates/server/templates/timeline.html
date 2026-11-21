@@ -1,0 +1,12 @@
+{% if first_page && days.is_empty() %}<p class="muted">還沒有任何事件。</p>{% endif %}
+{% for d in days %}
+<h3 class="tl-day">{{ d.date }}</h3>
+<ol class="tl">
+  {% for item in d.events %}<li class="tl-item tl-{{ item.1.kind }}">
+    <span class="tl-time num">{{ item.0 }}</span>
+    <div class="tl-body"><div class="tl-title">{{ item.1.title }}</div>{% if !item.1.detail.is_empty() %}<div class="tl-detail">{{ item.1.detail }}</div>{% endif %}</div>
+    {% if let Some(t) = item.1.tab %}<a class="tl-link" href="#tab" hx-get="/devices/{{ id }}/tab/{{ t }}" hx-target="#tab">查看</a>{% endif %}
+  </li>{% endfor %}
+</ol>
+{% endfor %}
+{% if let Some(u) = more %}<div class="tl-more" id="tl-more"><button class="btn sm" type="button" hx-get="{{ u }}" hx-target="#tl-more" hx-swap="outerHTML">載入更早的事件</button></div>{% endif %}
