@@ -10,7 +10,7 @@
       {% if !n.mac.is_empty() %}<span class="faint num">{{ n.mac }}</span>{% endif %}</td>
     <td>{{ n.kind }}{% if !n.ssid.is_empty() %}<span class="faint">{{ n.ssid }}</span>{% endif %}</td>
     <td>{% if n.up %}<span class="tag ok">已連線</span>{% else %}<span class="tag">未連線</span>{% endif %}</td>
-    <td>{% for a in n.addresses %}<span class="num">{{ a.addr }}</span>{% if !a.site.is_empty() %} <span class="faint">{{ a.site }}</span>{% endif %}<br>{% endfor %}</td>
+    <td>{% for a in n.addresses %}<span class="num">{{ a.addr }}</span>{% if !a.site.is_empty() %} <span class="tag info">{{ a.site }}</span>{% endif %}<br>{% endfor %}</td>
     <td>{% for g in n.gateways %}<span class="num">{{ g }}</span><br>{% endfor %}</td>
     <td>{% for d in n.dns %}<span class="num">{{ d }}</span><br>{% endfor %}</td>
   </tr>{% endfor %}
