@@ -307,7 +307,10 @@ async fn dashboard_shows_branch_caches(pool: PgPool) {
 
     // 快取設定頁用同樣的判斷：使用中但太久沒回報顯示離線
     let (_, html) = s.page(&admin, "/caches").await;
-    assert!(html.contains(r#"<span class="tag bad">離線 2 小時</span>"#), "{html}");
+    assert!(
+        html.contains(r#"<span class="tag bad">離線 2 小時</span>"#),
+        "{html}"
+    );
 
     // 群組管理員看不到快取（快取設定只限平台管理員）
     let gary = s.login_as("gary", Role::GroupAdmin, &["台北總部"]).await;
