@@ -121,15 +121,7 @@ async fn host_tab_guest_link_and_unmanaged(pool: PgPool) {
         assert!(html.contains(&format!(">{n}<")), "{n}");
     }
 
-    // 變更歷史記新增；區段雜湊可以由資料庫重建
-    let n: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM inventory_changes WHERE device_id = $1 AND section = 'vms'",
-    )
-    .bind(host.device_id)
-    .fetch_one(&s.pool)
-    .await
-    .unwrap();
-    assert_eq!(n, 4);
+    // 第一次上傳只當基準線，不記變更；區段雜湊可以由資料庫重建
     let mut conn = s.pool.acquire().await.unwrap();
     let back = endpoint_server::inventory::load_payload(&mut conn, host.device_id, Section::Vms)
         .await
@@ -143,6 +135,21 @@ async fn host_tab_guest_link_and_unmanaged(pool: PgPool) {
         vm("proxmox", "100", "dup", "running", None),
     ]);
     assert_eq!(put(&s, &host, &p).await, 204);
+    // 變更歷史：移除 orphan、old、ct，新增 dup（同 ID 但名稱不同，只記一筆）
+    let changes: Vec<(String, String)> = sqlx::query_as(
+        "SELECT change, item_key FROM inventory_changes          WHERE device_id = $1 AND section = 'vms' ORDER BY item_key",
+    )
+    .bind(host.device_id)
+    .fetch_all(&s.pool)
+    .await
+    .unwrap();
+    assert_eq!(changes.len(), 4, "{changes:?}");
+    assert!(
+        changes
+            .iter()
+            .any(|(c, k)| c == "added" && k.starts_with("dup|")),
+        "{changes:?}"
+    );
     let (_, html) = s.page(&c, "/").await;
     assert!(!html.contains("虛擬機未安裝 Agent"));
     let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM vm_guests WHERE host_id = $1")
