@@ -1040,7 +1040,8 @@ mod tests {
         assert_eq!(Section::parse("accounts"), Some(Section::Accounts));
         assert!(!Section::WINDOWS.contains(&Section::Accounts));
         assert!(!Section::LINUX.contains(&Section::Registry));
-        assert_eq!(Section::ALL.len(), 10);
+        assert_eq!(Section::ALL.len(), 11);
+        assert!(Section::WINDOWS.contains(&Section::Vms) && Section::LINUX.contains(&Section::Vms));
         assert!(!Section::WINDOWS.contains(&Section::Containers));
         assert!(Section::WINDOWS.contains(&Section::Network));
         assert!(Section::LINUX.contains(&Section::Network));
