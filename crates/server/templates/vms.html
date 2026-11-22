@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head"><div><h1>虛擬機</h1><div class="sub">虛擬化主機回報的虛擬機，以及是否已安裝 Agent</div></div></div>
+<form class="filters" method="get" action="/vms">
+  <input name="q" value="{{ q }}" placeholder="虛擬機或主機名稱" aria-label="名稱">
+  <select name="group" aria-label="群組">{% for o in groups %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}</select>
+  <label><input type="checkbox" name="unmanaged" value="true" {% if unmanaged %}checked{% endif %}> 只看執行中、未安裝 Agent</label>
+  <button class="btn primary">篩選</button>
+</form>
+{% if rows.is_empty() %}<p class="muted">沒有符合的虛擬機。Agent 會回報 Hyper-V、KVM／libvirt 與 Proxmox VE 主機上的虛擬機。</p>{% else %}
+<table>
+  <tr><th>名稱</th><th>主機</th><th>平台</th><th>狀態</th><th>Agent</th></tr>
+  {% for r in rows %}<tr>
+    <td>{{ r.name }}</td>
+    <td><a href="{{ r.host_href }}">{{ r.host }}</a></td>
+    <td>{{ r.platform }}</td>
+    <td>{% if r.state_tone.is_empty() %}{{ r.state }}{% else %}<span class="tag {{ r.state_tone }}">{{ r.state }}</span>{% endif %}</td>
+    <td>{% if !r.guest.href.is_empty() %}<a href="{{ r.guest.href }}">{{ r.guest.label }}</a>{% else if r.guest.tone.is_empty() %}<span class="muted">{{ r.guest.label }}</span>{% else %}<span class="tag {{ r.guest.tone }}">{{ r.guest.label }}</span>{% endif %}</td>
+  </tr>{% endfor %}
+</table>
+{% if truncated %}<p class="muted">結果過多，只顯示前 1000 台，請縮小篩選範圍。</p>{% endif %}
+{% endif %}
+<p class="muted">以虛擬機的 BIOS UUID 對到已註冊的裝置；Proxmox 的 LXC 容器沒有 BIOS UUID，無法配對。</p>
+{% endblock %}

@@ -121,6 +121,21 @@ pub fn sanitize(p: &mut InventoryPayload) {
             }
             a.sudoers_unparsed.iter_mut().for_each(fix);
         }
+        InventoryPayload::Vms(v) => {
+            v.vms.truncate(protocol::MAX_VMS);
+            for r in &mut v.platforms {
+                fix(&mut r.kind);
+                fix_opt(&mut r.version);
+                fix_opt(&mut r.error);
+            }
+            for x in &mut v.vms {
+                for s in [&mut x.platform, &mut x.id, &mut x.name, &mut x.state] {
+                    fix(s);
+                }
+                fix_opt(&mut x.bios_uuid);
+                fix_opt(&mut x.os_hint);
+            }
+        }
         InventoryPayload::Containers(c) => {
             c.containers.truncate(protocol::MAX_CONTAINERS);
             for r in &mut c.runtimes {
@@ -240,6 +255,47 @@ mod tests {
         assert_eq!(
             (x.ports[0].as_str(), x.host_mounts[0].as_str()),
             ("p", "/srv")
+        );
+    }
+
+    #[test]
+    fn vms_are_cleaned_and_capped() {
+        use protocol::{MAX_VMS, RuntimeInfo, VmItem, VmsInfo};
+        let vm = |i: usize| VmItem {
+            platform: " libvirt ".into(),
+            id: format!("{i}"),
+            name: format!("vm {i}"),
+            state: "running".into(),
+            bios_uuid: Some(" ".into()),
+            vcpus: Some(1),
+            memory_mb: None,
+            os_hint: Some("Linux".into()),
+        };
+        let mut p = InventoryPayload::Vms(VmsInfo {
+            platforms: vec![RuntimeInfo {
+                kind: "libvirt".into(),
+                version: Some(" 10.0 ".into()),
+                error: None,
+            }],
+            vms: (0..MAX_VMS + 3).map(vm).collect(),
+            truncated: true,
+        });
+        sanitize(&mut p);
+        assert_eq!(p.validate(), Ok(()));
+        let InventoryPayload::Vms(v) = &p else {
+            unreachable!()
+        };
+        assert_eq!(v.vms.len(), MAX_VMS);
+        assert_eq!(v.platforms[0].version.as_deref(), Some("10.0"));
+        let x = &v.vms[0];
+        assert_eq!(
+            (
+                x.platform.as_str(),
+                x.name.as_str(),
+                x.bios_uuid.as_deref(),
+                x.os_hint.as_deref()
+            ),
+            ("libvirt", "vm0", None, Some("Linux"))
         );
     }
 

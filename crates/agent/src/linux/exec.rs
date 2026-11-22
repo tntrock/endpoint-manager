@@ -9,6 +9,13 @@ use std::time::{Duration, Instant};
 /// 每個外部指令的逾時
 pub const CMD_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// 執行外部指令；測試時換成回傳固定輸出的假指令
+pub type Run<'a> = &'a dyn Fn(&str, &[&str]) -> anyhow::Result<String>;
+
+pub fn real_run(program: &str, args: &[&str]) -> anyhow::Result<String> {
+    run_capture(program, args, CMD_TIMEOUT)
+}
+
 #[derive(Debug)]
 struct NotFound(String);
 

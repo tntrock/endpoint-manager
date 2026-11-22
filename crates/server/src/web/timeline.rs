@@ -59,6 +59,7 @@ pub fn section_label(section: &str) -> &str {
         "accounts" => "帳號",
         "containers" => "容器",
         "network" => "網路",
+        "vms" => "虛擬機",
         other => other,
     }
 }

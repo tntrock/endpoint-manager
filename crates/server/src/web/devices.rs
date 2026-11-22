@@ -87,8 +87,19 @@ fn net_filter(net: &str) -> &'static str {
 /// Linux 裝置沒有資料的分頁（合規分頁在 Linux 只放容器規則的結果）
 const WINDOWS_ONLY_TABS: &[&str] = &["security", "deployments", "updates", "patches"];
 
-/// `containers`：這台有偵測到容器執行環境（才顯示「容器」分頁）
-fn tabs_for(os_family: &str, containers: bool) -> Vec<(&'static str, &'static str)> {
+/// `containers`：這台有偵測到容器執行環境（才顯示「容器」分頁）；
+/// `vms`：這台是虛擬化主機（才顯示「虛擬機」分頁）
+fn tabs_for(os_family: &str, containers: bool, vms: bool) -> Vec<(&'static str, &'static str)> {
+    let mut tabs = tabs_for_os(os_family, containers);
+    if vms {
+        // 放在「變更歷史」前面
+        let at = tabs.len() - 1;
+        tabs.insert(at, ("vms", "虛擬機"));
+    }
+    tabs
+}
+
+fn tabs_for_os(os_family: &str, containers: bool) -> Vec<(&'static str, &'static str)> {
     if os_family == "linux" {
         let mut tabs = vec![
             ("timeline", "時間軸"),
@@ -639,6 +650,8 @@ pub struct DeviceView {
     pub runs_in: String,
     /// 最後回報的相對時間
     pub seen_ago: String,
+    /// 這台是虛擬機：執行於哪台主機（連結（範圍外為空）、主機名稱、虛擬機名稱）
+    pub vm_host: Option<(String, String, String)>,
 }
 
 #[derive(Template)]
@@ -807,8 +820,13 @@ pub async fn detail(
             linux,
             runs_in: runs_in_label(runs_in.as_deref(), runs_in_detail.as_deref())
                 .unwrap_or_default(),
+            vm_host: super::vms::host_of(&st, &s, id).await?,
         },
-        tabs: tabs_for(&os_family, containers),
+        tabs: tabs_for(
+            &os_family,
+            containers,
+            super::vms::has_platforms(&st, id).await?,
+        ),
     }))
 }
 
@@ -837,6 +855,9 @@ pub async fn tab(
     }
     if tab == "containers" {
         return super::containers::device_tab(&st, id).await;
+    }
+    if tab == "vms" {
+        return super::vms::device_tab(&st, &s, id).await;
     }
     if tab == "network" {
         return super::network::device_tab(&st, id).await;

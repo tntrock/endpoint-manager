@@ -35,6 +35,7 @@ pub mod sort;
 pub mod timeline;
 pub mod tokens;
 pub mod updates;
+pub mod vms;
 
 use askama::Template;
 use axum::Router;
@@ -157,6 +158,7 @@ pub fn web_router(state: AppState) -> Router {
         .route("/logout", post(login::logout))
         .route("/devices", get(devices::list))
         .route("/software", get(software::search))
+        .route("/vms", get(vms::list))
         .route("/containers", get(images::list))
         .route("/containers/image", get(images::detail))
         .route("/registry", get(registry::query))

@@ -309,6 +309,11 @@ impl Collector for Fake {
             Section::Registry => anyhow::bail!("registry is collected via collect_registry"),
             Section::Accounts => anyhow::bail!("accounts is Linux only"),
             Section::Containers => anyhow::bail!("containers is Linux only"),
+            Section::Vms => InventoryPayload::Vms(protocol::VmsInfo {
+                platforms: vec![],
+                vms: vec![],
+                truncated: false,
+            }),
             Section::Network => InventoryPayload::Network(protocol::NetworkInfo {
                 interfaces: vec![protocol::NetInterface {
                     name: "Ethernet".into(),

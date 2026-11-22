@@ -162,6 +162,12 @@ pub fn items_of(p: &InventoryPayload) -> BTreeMap<String, String> {
                 ));
             }
         }
+        InventoryPayload::Vms(v) => {
+            // 只記虛擬機的新增、移除與改名；開關機不記
+            for x in &v.vms {
+                pairs.push((format!("{}|{}|{}", x.name, x.platform, x.id), String::new()));
+            }
+        }
         InventoryPayload::Containers(c) => {
             // 只記容器的新增、移除與映像改變；狀態（執行中、停止）不記，排程工作會一直起停
             for x in &c.containers {
