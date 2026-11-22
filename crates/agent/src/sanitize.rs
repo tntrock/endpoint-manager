@@ -148,6 +148,10 @@ pub fn sanitize(p: &mut InventoryPayload) {
                 }
                 x.ports.iter_mut().for_each(fix);
                 x.host_mounts.iter_mut().for_each(fix);
+                if let Some(k) = &mut x.k8s {
+                    fix(&mut k.namespace);
+                    fix(&mut k.pod);
+                }
             }
         }
         InventoryPayload::Network(n) => {
@@ -204,6 +208,7 @@ mod tests {
             ports: vec!["p\0".into()],
             host_mounts: vec![" /srv ".into()],
             owner: Some("alice".into()),
+            k8s: None,
         };
         let mut p = InventoryPayload::Containers(ContainersInfo {
             runtimes: vec![RuntimeInfo {

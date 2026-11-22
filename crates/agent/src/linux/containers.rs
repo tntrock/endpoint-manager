@@ -1,4 +1,5 @@
-//! 主機上的容器（Docker、Podman，含一般使用者的 rootless Podman）。
+//! 主機上的容器：Docker、Podman（含一般使用者的 rootless Podman）、containerd（crictl／nerdctl）、
+//! Incus／LXD 系統容器。
 
 use std::path::Path;
 
@@ -83,6 +84,132 @@ fn rootless(items: &mut Vec<ContainerItem>, errors: &mut Vec<String>) {
     }
 }
 
+fn run(program: &str, args: &[&str]) -> anyhow::Result<String> {
+    run_capture(program, args, CMD_TIMEOUT)
+}
+
+/// Kubernetes 節點的 containerd：`crictl`（只有 k8s.io 命名空間）
+fn crictl() -> anyhow::Result<Vec<ContainerItem>> {
+    let ps = run("crictl", &["ps", "-a", "-o", "json"])?;
+    // inspect 要完整的 ID；從 ps 的輸出取
+    let full: Vec<String> = serde_json::from_str::<serde_json::Value>(&ps)?["containers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|c| c["id"].as_str().map(str::to_string))
+        .collect();
+    if full.is_empty() {
+        return Ok(vec![]);
+    }
+    let mut args = vec!["inspect"];
+    args.extend(full.iter().map(String::as_str));
+    // inspect 失敗時仍回報 ps 的基本資料（名稱、映像、狀態、Pod）
+    let inspect = run("crictl", &args).unwrap_or_default();
+    parse::parse_crictl(&ps, &inspect)
+}
+
+/// 非 Kubernetes 的 containerd：`nerdctl`，逐一命名空間。`moby` 是 Docker 自己的（已由 docker 讀過），
+/// `k8s.io` 有 crictl 時已經讀過
+fn nerdctl(skip_k8s: bool) -> anyhow::Result<Vec<ContainerItem>> {
+    let namespaces = run("nerdctl", &["namespace", "ls", "-q"])?;
+    let mut out = Vec::new();
+    for ns in namespaces.split_whitespace() {
+        if ns == "moby" || (skip_k8s && ns == "k8s.io") {
+            continue;
+        }
+        let ids = run(
+            "nerdctl",
+            &["--namespace", ns, "ps", "-a", "-q", "--no-trunc"],
+        )?;
+        let ids: Vec<&str> = ids.split_whitespace().collect();
+        if ids.is_empty() {
+            continue;
+        }
+        let mut args = vec!["--namespace", ns, "inspect"];
+        args.extend(ids);
+        out.extend(parse::parse_inspect(
+            "containerd",
+            &run("nerdctl", &args)?,
+            None,
+        )?);
+    }
+    Ok(out)
+}
+
+/// containerd：crictl 與 nerdctl 有哪個用哪個，合成一個執行環境。都沒有就回 None
+fn containerd(items: &mut Vec<ContainerItem>) -> Option<RuntimeInfo> {
+    let mut errors = Vec::new();
+    let mut found = false;
+    let mut version = None;
+    match crictl() {
+        Ok(v) => {
+            found = true;
+            items.extend(v);
+        }
+        Err(e) if is_not_found(&e) => {}
+        Err(e) => {
+            found = true;
+            errors.push(format!("crictl：{}", short(&e)));
+        }
+    }
+    let had_crictl = found;
+    if found {
+        version = run("crictl", &["version"])
+            .ok()
+            .and_then(|o| parse::crictl_runtime_version(&o));
+    }
+    match nerdctl(had_crictl && errors.is_empty()) {
+        Ok(v) => {
+            found = true;
+            items.extend(v);
+        }
+        Err(e) if is_not_found(&e) => {}
+        Err(e) => {
+            found = true;
+            errors.push(format!("nerdctl：{}", short(&e)));
+        }
+    }
+    if version.is_none() {
+        version = run("containerd", &["--version"]).ok().and_then(|o| {
+            o.split_whitespace()
+                .nth(2)
+                .map(|v| v.trim_start_matches('v').to_string())
+        });
+    }
+    found.then(|| RuntimeInfo {
+        kind: "containerd".into(),
+        version,
+        error: (!errors.is_empty()).then(|| errors.join("；")),
+    })
+}
+
+/// 系統容器：Incus，沒有時 LXD（`lxc`）
+fn system_containers(items: &mut Vec<ContainerItem>) -> Option<RuntimeInfo> {
+    for runtime in ["incus", "lxc"] {
+        let listed = run(runtime, &["list", "--all-projects", "--format", "json"])
+            .or_else(|_| run(runtime, &["list", "--format", "json"]));
+        let error = match listed {
+            Err(e) if is_not_found(&e) => continue,
+            Err(e) => Some(short(&e)),
+            Ok(json) => match parse::parse_incus(runtime, &json) {
+                Ok(v) => {
+                    items.extend(v);
+                    None
+                }
+                Err(e) => Some(short(&e)),
+            },
+        };
+        return Some(RuntimeInfo {
+            kind: runtime.into(),
+            version: run(runtime, &["--version"])
+                .ok()
+                .and_then(|o| parse::last_word(&o)),
+            error,
+        });
+    }
+    None
+}
+
 pub fn collect() -> ContainersInfo {
     let mut runtimes = Vec::new();
     let mut items = Vec::new();
@@ -110,6 +237,9 @@ pub fn collect() -> ContainersInfo {
             error,
         });
     }
+    runtimes.extend(containerd(&mut items));
+    runtimes.extend(system_containers(&mut items));
+
     let (containers, truncated) = parse::select(items, time::OffsetDateTime::now_utc());
     ContainersInfo {
         runtimes,

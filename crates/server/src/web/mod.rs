@@ -16,6 +16,7 @@ pub mod deployments;
 pub mod device_status;
 pub mod devices;
 pub mod groups;
+pub mod images;
 pub mod login;
 pub mod mfa;
 pub mod network;
@@ -155,6 +156,8 @@ pub fn web_router(state: AppState) -> Router {
         .route("/logout", post(login::logout))
         .route("/devices", get(devices::list))
         .route("/software", get(software::search))
+        .route("/containers", get(images::list))
+        .route("/containers/image", get(images::detail))
         .route("/registry", get(registry::query))
         .route(
             "/deployments",
