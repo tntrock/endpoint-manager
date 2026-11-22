@@ -92,6 +92,7 @@ fn tabs_for(os_family: &str, containers: bool) -> Vec<(&'static str, &'static st
             ("commands", "遠端指令"),
             ("software", "軟體"),
             ("services", "服務"),
+            ("network", "網路"),
         ];
         if containers {
             tabs.push(("containers", "容器"));
@@ -109,6 +110,7 @@ fn tabs_for(os_family: &str, containers: bool) -> Vec<(&'static str, &'static st
             ("software", "軟體"),
             ("patches", "修補（KB）"),
             ("services", "服務"),
+            ("network", "網路"),
             ("changes", "變更歷史"),
         ]
     }
@@ -211,8 +213,11 @@ pub struct DeviceRow {
     /// 容器或 WSL 的標籤文字
     pub guest: Option<String>,
     pub ip: String,
+    /// 全部位址（滑過 IP 時顯示）
+    pub all_ips: String,
     pub last_seen: String,
     pub badge: &'static str,
+
     pub badge_label: &'static str,
 }
 
@@ -255,6 +260,7 @@ type ListRow = (
     String,
     Option<String>,
     Option<String>,
+    String,
 );
 
 fn page_url(q: &ListQuery, sort: &str, page: i64) -> String {
@@ -306,7 +312,8 @@ async fn list_page(
     let mut rows: Vec<ListRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT d.id, d.hostname, g.name, coalesce(d.domain, ''), coalesce(d.os_caption, ''), \
                 coalesce(d.logged_on_user, ''), coalesce(d.last_ip, ''), d.last_seen_at, d.status, \
-                d.os_family, d.runs_in, d.runs_in_detail \
+                d.os_family, d.runs_in, d.runs_in_detail, \
+                coalesce((SELECT string_agg(host(x), ', ') FROM unnest(d.ips) x), '') \
          FROM devices d LEFT JOIN device_groups g ON g.id = d.group_id \
          WHERE ($1::bool OR d.group_id = ANY($2::bigint[])) \
            AND ($12 = '' OR d.os_family = $12) \
@@ -314,7 +321,8 @@ async fn list_page(
                 WHEN 'physical' THEN d.runs_in = 'host' AND d.runs_in_detail = 'none' \
                 WHEN 'vm' THEN d.runs_in = 'host' AND d.runs_in_detail <> 'none' \
                 ELSE d.runs_in = $13 END) IS TRUE \
-           AND ($3 = '' OR d.hostname ILIKE $4 OR d.logged_on_user ILIKE $4 OR d.last_ip ILIKE $4) \
+           AND ($3 = '' OR d.hostname ILIKE $4 OR d.logged_on_user ILIKE $4 OR d.last_ip ILIKE $4 \
+                OR EXISTS (SELECT 1 FROM unnest(d.ips) x WHERE host(x) ILIKE $4)) \
            AND (CASE WHEN $5 = '' THEN d.status <> 'retired' WHEN $5 = 'all' THEN true \
                      WHEN $5 = 'stale' THEN d.status NOT IN ('retired', 'pending_approval') \
                           AND (d.last_seen_at IS NULL OR d.last_seen_at < now() - interval '7 days') \
@@ -359,6 +367,7 @@ async fn list_page(
                 os_family,
                 runs_in,
                 runs_in_detail,
+                all_ips,
             )| {
                 let (badge, badge_label) =
                     status_label(&status, last_seen.is_some_and(|t| t > cutoff));
@@ -370,6 +379,7 @@ async fn list_page(
                     os,
                     user,
                     ip,
+                    all_ips,
                     last_seen: fmt_time(st, last_seen),
                     badge,
                     badge_label,
@@ -803,6 +813,10 @@ pub async fn tab(
     if tab == "containers" {
         return super::containers::device_tab(&st, id).await;
     }
+    if tab == "network" {
+        return super::network::device_tab(&st, id).await;
+    }
+
     if tab == "compliance" {
         return super::compliance::device_tab(&st, &s, id).await;
     }

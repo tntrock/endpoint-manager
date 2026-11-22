@@ -2,6 +2,9 @@
 
 use protocol::{InventoryPayload, MAX_ITEMS, MAX_STRING_LEN};
 
+/// 每張網卡的位址、閘道、DNS 各自上限：256 張 × (1 + 16 × 3) 不會超過 MAX_ITEMS
+const MAX_PER_NIC: usize = 16;
+
 pub fn clean(s: &str) -> String {
     let no_nul: String = s.chars().filter(|c| *c != '\0').collect();
     no_nul.trim().chars().take(MAX_STRING_LEN).collect()
@@ -147,6 +150,22 @@ pub fn sanitize(p: &mut InventoryPayload) {
                 x.host_mounts.iter_mut().for_each(fix);
             }
         }
+        InventoryPayload::Network(n) => {
+            n.interfaces.truncate(protocol::MAX_INTERFACES);
+            for i in &mut n.interfaces {
+                fix(&mut i.name);
+                fix(&mut i.kind);
+                fix_opt(&mut i.description);
+                fix_opt(&mut i.mac);
+                fix_opt(&mut i.ssid);
+                // 每張網卡的清單各自限制在合理範圍，合計才不會超過 MAX_ITEMS
+                for v in [&mut i.addresses, &mut i.gateways, &mut i.dns] {
+                    v.truncate(MAX_PER_NIC);
+                    v.iter_mut().for_each(fix);
+                    v.retain(|s| !s.is_empty());
+                }
+            }
+        }
     }
 }
 
@@ -217,6 +236,37 @@ mod tests {
             (x.ports[0].as_str(), x.host_mounts[0].as_str()),
             ("p", "/srv")
         );
+    }
+
+    #[test]
+    fn network_is_cleaned_and_capped() {
+        use protocol::{MAX_INTERFACES, NetInterface, NetworkInfo};
+        let nic = |i: usize| NetInterface {
+            name: format!(" eth\0{i} "),
+            description: Some("  ".into()),
+            kind: "ethernet".into(),
+            up: true,
+            mac: Some("AA:BB".into()),
+            addresses: (0..100).map(|n| format!("10.0.0.{n}/24")).collect(),
+            gateways: vec![" ".into(), "10.0.0.1".into()],
+            dns: vec![],
+            ssid: Some("x".repeat(MAX_STRING_LEN + 1)),
+        };
+        let mut p = InventoryPayload::Network(NetworkInfo {
+            interfaces: (0..MAX_INTERFACES + 3).map(nic).collect(),
+        });
+        sanitize(&mut p);
+        assert_eq!(p.validate(), Ok(()));
+        let InventoryPayload::Network(n) = &p else {
+            unreachable!()
+        };
+        assert_eq!(n.interfaces.len(), MAX_INTERFACES);
+        let i = &n.interfaces[0];
+        assert_eq!(i.name, "eth0");
+        assert_eq!(i.description, None);
+        assert_eq!(i.addresses.len(), MAX_PER_NIC);
+        assert_eq!(i.gateways, ["10.0.0.1"]);
+        assert_eq!(i.ssid.as_ref().unwrap().chars().count(), MAX_STRING_LEN);
     }
 
     #[test]

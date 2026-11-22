@@ -234,6 +234,14 @@ fn collector_reports_this_machine() {
             InventoryPayload::Registry(_) => unreachable!("registry 不經 collect"),
             InventoryPayload::Accounts(_) => unreachable!("Windows 不收集帳號"),
             InventoryPayload::Containers(_) => unreachable!("Windows 不收集容器"),
+            InventoryPayload::Network(n) => {
+                // CI 機器一定有一張有位址的網卡
+                assert!(
+                    n.interfaces.iter().any(|i| !i.addresses.is_empty()),
+                    "{n:?}"
+                );
+                assert!(n.interfaces.iter().all(|i| i.kind != "loopback"));
+            }
         }
     }
 }

@@ -4,6 +4,7 @@ pub mod collect;
 pub mod commands;
 pub mod eventlog;
 pub mod install;
+pub mod network;
 pub mod registry;
 pub mod regwatch;
 pub mod secdir;

@@ -33,6 +33,8 @@ fn interval(s: Section, iv: &CollectionIntervals) -> Duration {
         Section::Accounts => iv.security_secs,
         // 容器的變化頻率跟服務差不多（規格 §4）
         Section::Containers => iv.services_secs,
+        // 網卡的即時變化之後靠本機事件（網路規格 §3.2），區段本身跟服務一樣
+        Section::Network => iv.services_secs,
     };
     Duration::from_secs(secs.into())
 }
@@ -105,6 +107,7 @@ mod tests {
             ..DEFAULT_INTERVALS
         };
         assert_eq!(interval(Section::Containers, &iv), Duration::from_secs(600));
+        assert_eq!(interval(Section::Network, &iv), Duration::from_secs(600));
         assert_eq!(interval(Section::Accounts, &iv), Duration::from_secs(900));
     }
 
@@ -160,7 +163,8 @@ mod tests {
                 Section::Patches,
                 Section::Services,
                 Section::Security,
-                Section::Registry
+                Section::Registry,
+                Section::Network
             ]
         );
         let much_later = t0 + Duration::from_secs(86_400);

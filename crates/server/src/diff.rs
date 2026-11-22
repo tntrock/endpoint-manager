@@ -147,6 +147,21 @@ pub fn items_of(p: &InventoryPayload) -> BTreeMap<String, String> {
                 ));
             }
         }
+        InventoryPayload::Network(n) => {
+            // 網卡的種類、啟用狀態、位址與閘道；DNS 不記（VPN 連線時常常整組換掉）
+            for i in &n.interfaces {
+                pairs.push((
+                    format!("nic|{}", i.name),
+                    format!(
+                        "{}|{}|{}|{}",
+                        i.kind,
+                        if i.up { "up" } else { "down" },
+                        i.addresses.join(","),
+                        i.gateways.join(",")
+                    ),
+                ));
+            }
+        }
         InventoryPayload::Containers(c) => {
             // 只記容器的新增、移除與映像改變；狀態（執行中、停止）不記，排程工作會一直起停
             for x in &c.containers {

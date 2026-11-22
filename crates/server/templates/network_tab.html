@@ -1,0 +1,19 @@
+{% if !loaded %}<p class="muted">尚無網路資料（Agent 還沒上傳這個區段，需要 Agent 0.12.0 以上）。</p>{% else %}
+{% match dual_homed %}{% when Some with (why) %}
+<div class="notice error"><p><strong>多重連線</strong>：{{ why }}。</p><p>同時連上公司網路與其他網路，可能繞過公司的防火牆。</p></div>
+{% when None %}{% endmatch %}
+<table>
+  <tr><th>網卡</th><th>種類</th><th>狀態</th><th>位址</th><th>預設閘道</th><th>DNS</th></tr>
+  {% for n in nics %}<tr>
+    <td>{{ n.name }}{% if n.involved %} <span class="tag bad">多重連線</span>{% else if n.uplink %} <span class="tag info">對外</span>{% endif %}
+      {% if !n.description.is_empty() %}<span class="faint">{{ n.description }}</span>{% endif %}
+      {% if !n.mac.is_empty() %}<span class="faint num">{{ n.mac }}</span>{% endif %}</td>
+    <td>{{ n.kind }}{% if !n.ssid.is_empty() %}<span class="faint">{{ n.ssid }}</span>{% endif %}</td>
+    <td>{% if n.up %}<span class="tag ok">已連線</span>{% else %}<span class="tag">未連線</span>{% endif %}</td>
+    <td>{% for a in n.addresses %}<span class="num">{{ a.addr }}</span>{% if !a.site.is_empty() %} <span class="faint">{{ a.site }}</span>{% endif %}<br>{% endfor %}</td>
+    <td>{% for g in n.gateways %}<span class="num">{{ g }}</span><br>{% endfor %}</td>
+    <td>{% for d in n.dns %}<span class="num">{{ d }}</span><br>{% endfor %}</td>
+  </tr>{% endfor %}
+</table>
+<p class="muted">資料時間：{{ updated }}。「對外」是有預設閘道的實體網卡；VPN 與虛擬網卡不算。{% if !has_sites %}尚未設定據點網段，只依「兩張以上網卡都有預設閘道」判斷多重連線。{% endif %}</p>
+{% endif %}

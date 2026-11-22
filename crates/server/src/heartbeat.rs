@@ -12,6 +12,8 @@ pub const FLUSH_INTERVAL_SECS: u64 = 30;
 pub struct HotFields {
     pub seen_at: time::OffsetDateTime,
     pub ip: Option<String>,
+    /// 全部位址（已驗證格式，見 [`valid_ips`]）
+    pub ips: Vec<String>,
     pub logged_on_user: Option<String>,
     pub boot_time: time::OffsetDateTime,
     pub agent_version: String,
@@ -102,17 +104,20 @@ async fn write_rows(pool: &PgPool, rows: &[(Uuid, HotFields)]) -> Result<(), sql
     let mut ids = Vec::with_capacity(rows.len());
     let (mut seen, mut ips, mut users, mut boots, mut vers, mut errs) =
         (vec![], vec![], vec![], vec![], vec![], vec![]);
+    // 每列一個以逗號串接的字串：UNNEST 不能展開長度不同的二維陣列
+    let mut all_ips = Vec::with_capacity(rows.len());
     for (id, h) in rows {
         ids.push(*id);
         seen.push(h.seen_at);
         ips.push(h.ip.as_deref());
+        all_ips.push(h.ips.join(","));
         users.push(h.logged_on_user.as_deref());
         boots.push(h.boot_time);
         vers.push(h.agent_version.as_str());
         errs.push(h.section_errors.to_string());
     }
     sqlx::query(
-        "UPDATE devices d SET last_seen_at = v.seen, last_ip = v.ip, logged_on_user = v.usr,              boot_time = v.boot, agent_version = v.ver, section_errors = v.errs::jsonb          FROM UNNEST($1::uuid[], $2::timestamptz[], $3::text[], $4::text[],                      $5::timestamptz[], $6::text[], $7::text[])              AS v(id, seen, ip, usr, boot, ver, errs)          WHERE d.id = v.id",
+        "UPDATE devices d SET last_seen_at = v.seen, last_ip = v.ip, logged_on_user = v.usr,              boot_time = v.boot, agent_version = v.ver, section_errors = v.errs::jsonb,               ips = string_to_array(v.ips, ',')::inet[]          FROM UNNEST($1::uuid[], $2::timestamptz[], $3::text[], $4::text[],                      $5::timestamptz[], $6::text[], $7::text[], $8::text[])               AS v(id, seen, ip, usr, boot, ver, errs, ips)          WHERE d.id = v.id",
     )
     .bind(&ids)
     .bind(&seen)
@@ -121,14 +126,46 @@ async fn write_rows(pool: &PgPool, rows: &[(Uuid, HotFields)]) -> Result<(), sql
     .bind(&boots)
     .bind(&vers)
     .bind(&errs)
+    .bind(&all_ips)
     .execute(pool)
     .await?;
     Ok(())
 }
 
+/// 每台最多存的位址數
+pub const MAX_IPS: usize = 64;
+
+/// Agent 回報的位址：只留解析得了的（寫入時轉 inet，格式錯一個整批都會失敗），去重，最多 [`MAX_IPS`] 個
+pub fn valid_ips(raw: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for r in raw {
+        let Ok(ip) = r.trim().parse::<std::net::IpAddr>() else {
+            continue;
+        };
+        let s = ip.to_string();
+        if !out.contains(&s) {
+            out.push(s);
+        }
+        if out.len() == MAX_IPS {
+            break;
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn valid_ips_filters_dedups_and_caps() {
+        let raw: Vec<String> = ["10.0.0.1", "x", " 10.0.0.1 ", "::1"]
+            .map(String::from)
+            .to_vec();
+        assert_eq!(valid_ips(&raw), ["10.0.0.1", "::1"]);
+        let many: Vec<String> = (0..100).map(|i| format!("10.0.1.{i}")).collect();
+        assert_eq!(valid_ips(&many).len(), MAX_IPS);
+    }
     use std::time::{Duration, Instant};
 
     /// docker stop 只給 30 秒（stop_grace_period）：資料庫卡住時，關閉前的寫入不能無限等待。
@@ -153,6 +190,7 @@ mod tests {
             HotFields {
                 seen_at: time::OffsetDateTime::now_utc(),
                 ip: None,
+                ips: vec![],
                 logged_on_user: None,
                 boot_time: time::OffsetDateTime::now_utc(),
                 agent_version: "t".into(),

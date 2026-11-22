@@ -18,6 +18,7 @@ pub mod devices;
 pub mod groups;
 pub mod login;
 pub mod mfa;
+pub mod network;
 pub mod notify;
 pub mod packages;
 pub mod password;

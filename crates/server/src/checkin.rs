@@ -49,6 +49,7 @@ pub async fn checkin(
         HotFields {
             seen_at: now,
             ip: req.ip_addresses.first().cloned(),
+            ips: crate::heartbeat::valid_ips(&req.ip_addresses),
             logged_on_user: req.logged_on_user.clone(),
             boot_time,
             agent_version: req.agent_version.clone(),
