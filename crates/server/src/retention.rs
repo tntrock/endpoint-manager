@@ -111,7 +111,22 @@ async fn load_tx(tx: &mut sqlx::PgConnection) -> Result<Retention, sqlx::Error> 
 pub struct Purged {
     pub commands: u64,
     pub audit: u64,
+    /// Agent 上傳的事件與已結束的多重連線期間（固定保留天數）
+    pub events: u64,
 }
+
+/// Agent 上傳的事件保留天數（固定）
+pub const EVENT_DAYS: i32 = 180;
+/// 已結束的多重連線期間保留天數（固定，比事件長：合規回溯與稽核要用）
+pub const PERIOD_DAYS: i32 = 365;
+
+const DELETE_EVENTS: &str = "DELETE FROM device_events WHERE ctid IN ( \
+     SELECT ctid FROM device_events WHERE received_at < now() - make_interval(days => $1) \
+     LIMIT $2)";
+
+const DELETE_PERIODS: &str = "DELETE FROM device_dual_homed_periods WHERE id IN ( \
+     SELECT id FROM device_dual_homed_periods \
+     WHERE ended_at < now() - make_interval(days => $1) ORDER BY id LIMIT $2)";
 
 /// 已結束（過期、沒有未完成目標）且超過保留天數的指令；目標與輸出隨之刪除
 const DELETE_COMMANDS: &str = "DELETE FROM command_runs WHERE id IN ( \
@@ -162,6 +177,8 @@ async fn purge_with(pool: &PgPool, pause: Duration) -> Result<Purged, sqlx::Erro
     if r.audit_days > 0 {
         p.audit = delete_batches(pool, DELETE_AUDIT, r.audit_days, pause).await?;
     }
+    p.events = delete_batches(pool, DELETE_EVENTS, EVENT_DAYS, pause).await?
+        + delete_batches(pool, DELETE_PERIODS, PERIOD_DAYS, pause).await?;
     if p != Purged::default() {
         let mut c = pool.acquire().await?;
         audit::record(
@@ -169,7 +186,7 @@ async fn purge_with(pool: &PgPool, pause: Duration) -> Result<Purged, sqlx::Erro
             "system",
             "retention_purge",
             None,
-            json!({ "commands": p.commands, "audit": p.audit }),
+            json!({ "commands": p.commands, "audit": p.audit, "events": p.events }),
         )
         .await?;
     }
@@ -189,7 +206,12 @@ pub fn spawn(pool: PgPool, metrics: Arc<Metrics>) {
                     metrics.retention_deleted(RetentionKind::Audit, p.audit);
                     metrics.retention_succeeded(time::OffsetDateTime::now_utc());
                     if p != Purged::default() {
-                        tracing::info!(commands = p.commands, audit = p.audit, "retention purge");
+                        tracing::info!(
+                            commands = p.commands,
+                            audit = p.audit,
+                            events = p.events,
+                            "retention purge"
+                        );
                     }
                 }
                 Err(e) => tracing::error!(error = %e, "retention purge failed"),
@@ -327,7 +349,8 @@ mod tests {
             p,
             Purged {
                 commands: 1,
-                audit: 0
+                audit: 0,
+                events: 0
             }
         );
         assert_eq!(runs(&pool).await, keep);
@@ -360,6 +383,49 @@ mod tests {
         .unwrap();
         let p = purge_with(&pool, Duration::ZERO).await.unwrap();
         assert_eq!(p, Purged::default());
+    }
+
+    #[sqlx::test(migrations = false)]
+    async fn purges_old_events_and_periods(pool: PgPool) {
+        crate::db::migrate(&pool).await.unwrap();
+        let dev = device(&pool).await;
+        for (seq, days) in [(1, 200), (2, 10)] {
+            sqlx::query(
+                "INSERT INTO device_events (device_id, journal_id, seq, at, received_at, kind, data) \
+                 VALUES ($1, gen_random_uuid(), $2, now(), now() - make_interval(days => $3), \
+                         'net.up', '{}')",
+            )
+            .bind(dev)
+            .bind(seq as i64)
+            .bind(days)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        // 已結束 400 天、已結束 10 天、持續中（開始於 500 天前）
+        for (start, end) in [(500, Some(400)), (20, Some(10)), (500, None)] {
+            sqlx::query(
+                "INSERT INTO device_dual_homed_periods (device_id, started_at, ended_at, detail) \
+                 VALUES ($1, now() - make_interval(days => $2), \
+                         now() - make_interval(days => $3), 'x')",
+            )
+            .bind(dev)
+            .bind(start)
+            .bind(end)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let p = purge_with(&pool, Duration::ZERO).await.unwrap();
+        assert_eq!(p.events, 2);
+        let left: (i64, i64) = sqlx::query_as(
+            "SELECT (SELECT count(*) FROM device_events), \
+                    (SELECT count(*) FROM device_dual_homed_periods)",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(left, (1, 2));
     }
 
     #[sqlx::test(migrations = false)]

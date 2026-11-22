@@ -360,6 +360,8 @@ async fn package_source(
         .json(&protocol::CheckinRequest {
             os_family: None,
             signing_keys: vec![],
+            journal_id: None,
+            events: vec![],
             schema_version: protocol::SCHEMA_VERSION,
             agent_version: "0.7.0".into(),
             boot_time: time::OffsetDateTime::now_utc(),

@@ -8,6 +8,8 @@ fn checkin() -> CheckinRequest {
     CheckinRequest {
         os_family: None,
         signing_keys: vec![],
+        journal_id: None,
+        events: vec![],
         schema_version: SCHEMA_VERSION,
         agent_version: "0.1.0".into(),
         boot_time: time::OffsetDateTime::now_utc(),

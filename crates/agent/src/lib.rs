@@ -7,9 +7,11 @@ pub mod collector;
 pub mod commands;
 pub mod config;
 pub mod deploy;
+pub mod journal;
 #[cfg(target_os = "linux")]
 pub mod linux;
 pub mod linux_parse;
+pub mod netwatch;
 pub mod network;
 pub mod regvalue;
 pub mod sanitize;

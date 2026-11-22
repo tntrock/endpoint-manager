@@ -35,6 +35,8 @@ async fn metrics_requires_token_and_reports_counts(pool: PgPool) {
         .json(&protocol::CheckinRequest {
             os_family: None,
             signing_keys: vec![],
+            journal_id: None,
+            events: vec![],
             schema_version: protocol::SCHEMA_VERSION,
             agent_version: "0.9.0".into(),
             boot_time: time::OffsetDateTime::now_utc(),

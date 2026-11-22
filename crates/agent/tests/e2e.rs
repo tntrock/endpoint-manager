@@ -93,6 +93,8 @@ async fn client_maps_status_codes(pool: PgPool) {
     let checkin = CheckinRequest {
         os_family: None,
         signing_keys: vec![],
+        journal_id: None,
+        events: vec![],
         schema_version: SCHEMA_VERSION,
         agent_version: "t".into(),
         boot_time: time::OffsetDateTime::now_utc(),
@@ -641,6 +643,55 @@ async fn config_sections_start_after_server_confirms_support(pool: PgPool) {
     );
 }
 
+/// 本機日誌的事件在伺服器表明支援後才上傳；確認後刪除；超過一次上限時很快再報到
+#[sqlx::test(migrations = false)]
+async fn journal_events_upload_after_server_confirms(pool: PgPool) {
+    let e = env(pool, 1).await;
+    let mut a = Agent::new(e.dir.path(), Fake::new()).unwrap();
+    let journal = a.journal();
+    let now = time::OffsetDateTime::now_utc();
+    {
+        let mut j = journal.lock().unwrap();
+        for i in 0..protocol::MAX_EVENTS_PER_CHECKIN + 5 {
+            j.append(
+                "net.changed",
+                serde_json::json!({ "name": format!("n{i}") }),
+                now,
+            )
+            .unwrap();
+        }
+    }
+    let stored = |pool: PgPool| async move {
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM device_events")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    };
+    // 第一輪還不知道伺服器支援事件：不送
+    next(a.run_cycle().await);
+    assert_eq!(stored(e.pool.clone()).await, 0);
+    assert_eq!(
+        journal.lock().unwrap().len(),
+        protocol::MAX_EVENTS_PER_CHECKIN + 5
+    );
+    // 第二輪送出 200 筆，還剩 5 筆：很快再報到
+    let wait = next(a.run_cycle().await);
+    assert_eq!(wait, endpoint_agent::agent::EVENTS_FOLLOW_UP);
+    assert_eq!(
+        stored(e.pool.clone()).await,
+        protocol::MAX_EVENTS_PER_CHECKIN as i64
+    );
+    assert_eq!(journal.lock().unwrap().len(), 5);
+    // 第三輪送完，回到正常間隔
+    let wait = next(a.run_cycle().await);
+    assert!(wait > endpoint_agent::agent::EVENTS_FOLLOW_UP, "{wait:?}");
+    assert!(journal.lock().unwrap().is_empty());
+    assert_eq!(
+        stored(e.pool.clone()).await,
+        protocol::MAX_EVENTS_PER_CHECKIN as i64 + 5
+    );
+}
+
 mod deploy {
     use super::*;
     use endpoint_agent::client::DownloadError;
@@ -720,6 +771,8 @@ mod deploy {
             .checkin(&CheckinRequest {
                 os_family: None,
                 signing_keys: vec![],
+                journal_id: None,
+                events: vec![],
                 schema_version: SCHEMA_VERSION,
                 agent_version: "t".into(),
                 boot_time: time::OffsetDateTime::now_utc(),
@@ -847,6 +900,8 @@ mod deploy {
         c.checkin(&CheckinRequest {
             os_family: None,
             signing_keys: vec![],
+            journal_id: None,
+            events: vec![],
             schema_version: SCHEMA_VERSION,
             agent_version: "t".into(),
             boot_time: time::OffsetDateTime::now_utc(),

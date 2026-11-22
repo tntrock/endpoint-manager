@@ -4,6 +4,7 @@ pub mod collect;
 pub mod commands;
 pub mod eventlog;
 pub mod install;
+pub mod netnotify;
 pub mod network;
 pub mod registry;
 pub mod regwatch;
@@ -84,6 +85,17 @@ pub async fn run(dir: &Path, shutdown: watch::Receiver<bool>) -> anyhow::Result<
         shutdown.clone(),
     ));
     regwatch::watch_software(tx.clone());
+    // 位址變更通知喚醒，另外每 5 分鐘讀一次補上只改路由的情況
+    let (wake_tx, wake_rx) = mpsc::channel(1);
+    netnotify::watch_addresses(wake_tx);
+    tokio::spawn(crate::netwatch::run(
+        agent.collector(),
+        agent.journal(),
+        tx.clone(),
+        wake_rx,
+        std::time::Duration::from_secs(300),
+        shutdown.clone(),
+    ));
     regwatch::watch_patches(tx);
     run_agent(agent, shutdown, rx).await;
     Ok(())
