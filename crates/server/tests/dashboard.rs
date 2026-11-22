@@ -270,3 +270,47 @@ async fn device_list_stale_filter(pool: PgPool) {
     }
     assert!(html.contains("離線超過 7 天"));
 }
+
+/// 分點快取：總覽列出每台的狀態，離線與待核准列進「需要處理」；只給平台管理員
+#[sqlx::test(migrations = false)]
+async fn dashboard_shows_branch_caches(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    fixture(&s).await;
+    let admin = s.admin_client().await;
+    let (_, html) = s.page(&admin, "/").await;
+    assert!(!html.contains("分點快取"), "沒有快取時不顯示");
+
+    exec(
+        &s,
+        "INSERT INTO caches (name, site_id, url, dns_names, csr_pem, poll_secret_hash, status, \
+                             last_seen, version, disk_used_bytes) VALUES \
+         ('ok-cache', (SELECT id FROM sites WHERE name = '台北'), 'https://a:8443', ARRAY['a'], 'c', 'x', \
+          'active', now(), '0.12.0', 2147483648), \
+         ('down-cache', (SELECT id FROM sites WHERE name = '台北機房'), 'https://b:8443', ARRAY['b'], 'c', 'x', \
+          'active', now() - interval '2 hours', '0.11.0', NULL), \
+         ('new-cache', NULL, 'https://c:8443', ARRAY['c'], 'c', 'x', 'pending', NULL, NULL, NULL), \
+         ('bad-cache', NULL, 'https://d:8443', ARRAY['d'], 'c', 'x', 'rejected', NULL, NULL, NULL)",
+    )
+    .await;
+    let (status, html) = s.page(&admin, "/").await;
+    assert_eq!(status, 200);
+    assert!(html.contains("<h2>分點快取</h2>"), "{html}");
+    assert!(html.contains(r#"<span class="tag ok">正常</span>"#));
+    assert!(html.contains(r#"<span class="tag bad">離線 2 小時</span>"#));
+    assert!(html.contains(r#"<span class="tag warn">待核准</span>"#));
+    assert!(html.contains("2.0 / 100 GB"), "磁碟：已用／據點上限");
+    assert!(html.contains("（未指定據點）"));
+    assert!(!html.contains("bad-cache"), "已拒絕的不列");
+    assert!(html.contains("<span class=\"t\">分點快取離線</span>"));
+    assert!(html.contains("<span class=\"t\">分點快取待核准</span>"));
+    assert!(!html.contains(" style="));
+
+    // 快取設定頁用同樣的判斷：使用中但太久沒回報顯示離線
+    let (_, html) = s.page(&admin, "/caches").await;
+    assert!(html.contains(r#"<span class="tag bad">離線 2 小時</span>"#), "{html}");
+
+    // 群組管理員看不到快取（快取設定只限平台管理員）
+    let gary = s.login_as("gary", Role::GroupAdmin, &["台北總部"]).await;
+    let (_, html) = s.page(&gary, "/").await;
+    assert!(!html.contains("分點快取"));
+}

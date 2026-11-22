@@ -13,6 +13,7 @@
   --shadow: 0 12px 30px -10px rgba(0,0,0,.6);
   --sans: "Segoe UI", "Microsoft JhengHei UI", "Microsoft JhengHei", system-ui, sans-serif;
   --mono: "Cascadia Mono", Consolas, ui-monospace, monospace;
+  --control-h: 34px;
 }
 /* 淺色（冷灰）：語意色與主色比規格稍深，讓標籤與連結達到 AA */
 :root[data-theme="light"] {
@@ -149,6 +150,9 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .btn.danger:hover { background: var(--bad-bg); border-color: var(--bad); }
 .btn.ghost { background: transparent; border-color: transparent; color: var(--muted); }
 .btn.sm { padding: 4px 9px; font-size: 12px; border-radius: 7px; }
+/* 同一列的輸入框、下拉選單、按鈕一樣高，才會上下對齊 */
+.btn, button:not([class]) { min-height: var(--control-h); }
+.btn.sm { min-height: 28px; }
 
 /* 狀態標籤、嚴重度 */
 .tag { display: inline-flex; align-items: center; gap: 5px; padding: 1px 9px 1px 7px; border-radius: 20px;
@@ -169,7 +173,17 @@ table { width: 100%; margin: 0 0 16px; border-collapse: separate; border-spacing
   background: var(--panel); border: 1px solid var(--line); border-radius: 12px; font-size: 13px; }
 th { padding: 9px 12px; text-align: left; vertical-align: top; font-size: 11.5px; font-weight: 600;
   letter-spacing: .06em; color: var(--muted); background: var(--row); border-bottom: 1px solid var(--line); }
-td { padding: 9px 12px; vertical-align: top; border-bottom: 1px solid var(--line); }
+/* baseline：有輸入框或標籤的儲存格，文字與旁邊儲存格的文字對齊 */
+td { padding: 9px 12px; vertical-align: baseline; border-bottom: 1px solid var(--line); }
+td.nw { white-space: nowrap; }
+/* 欄名、時間、數字、狀態標籤、裝置名稱連結都不在中間斷行 */
+th { white-space: nowrap; }
+td .num, td .tag, td .sev, td a[href^="/devices/"] { white-space: nowrap; }
+td.wrap { overflow-wrap: anywhere; }
+/* 操作欄：按鈕與下拉選單排成一兩列，不要被擠成直的一排 */
+td.acts { min-width: 22em; }
+td.acts .actions { margin: 0; }
+td.acts form { flex-wrap: nowrap; }
 tr:last-child > td, tr:last-child > th { border-bottom: 0; }
 tr:hover > td { background: color-mix(in srgb, var(--accent) 5%, transparent); }
 td.num, th.num { text-align: right; }
@@ -178,21 +192,35 @@ td .faint { display: block; font-size: 11px; font-family: var(--mono); }
 /* 表單 */
 input, select, textarea { max-width: 100%; padding: 7px 11px; border: 1px solid var(--line2); border-radius: 9px;
   background: var(--input); color: var(--text); font: inherit; }
-input[type=checkbox], input[type=radio] { padding: 0; accent-color: var(--accent); }
+input:not([type=checkbox], [type=radio], [type=file], [type=range]), select {
+  height: var(--control-h); padding-top: 0; padding-bottom: 0; }
+input[type=checkbox], input[type=radio] { width: 15px; height: 15px; margin: 0; padding: 0; flex: none; accent-color: var(--accent); }
 input[type=file] { padding: 5px; }
 input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.field { display: grid; gap: 5px; margin: 0 0 12px; font-size: 12.5px; color: var(--muted); }
+/* 欄位不撐滿整列：輸入框依 size 或內容決定寬度，長文字欄位自己指定 */
+.field { display: grid; justify-items: start; gap: 5px; margin: 0 0 12px; font-size: 12.5px; color: var(--muted); }
 .field input, .field select, .field textarea { font-size: 14px; }
 .field textarea { width: 100%; }
 .help { display: block; font-size: 12px; color: var(--muted); }
+/* 輸入框後面接單位（天、分鐘、%）：同一行 */
+.with-unit { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text); }
 .field.error input, .field.error select, .field.error textarea { border-color: var(--bad); }
 .field.error .help { color: var(--bad); }
 .row { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: flex-end; }
-.checks { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 0 0 12px; }
+/* 列裡不是欄位的東西（勾選框、說明文字、按鈕）對齊欄位的輸入框：同高、同樣的下邊距 */
+.row > :not(.field) { display: inline-flex; align-items: center; gap: 6px; min-height: var(--control-h); margin: 0 0 12px; }
+.checks { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; margin: 0 0 12px; }
 .checks label { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
+/* 「只套用：」「排除：」這類前置文字固定寬度，上下兩列的勾選框才會對齊 */
+.checks-label { min-width: 6.5em; color: var(--muted); }
+/* 任何包著勾選框／圓鈕的標籤：框與文字垂直置中 */
+label:has(> input[type=checkbox]), label:has(> input[type=radio]) { display: inline-flex; align-items: center; gap: 6px; }
+/* 單獨一個勾選框（篩選列、批次操作裡）：跟旁邊的按鈕同高、不多出下邊距 */
+label.checks { display: inline-flex; gap: 6px; min-height: var(--control-h); margin: 0; font-size: 13px; }
 fieldset { margin: 0 0 14px; padding: 12px 16px 4px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
 legend { padding: 0 6px; color: var(--muted); font-size: 12.5px; font-weight: 600; }
 form.filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 14px; }
+.search input { height: auto; padding: 8px 0; }
 progress { width: 12em; vertical-align: middle; accent-color: var(--accent); }
 
 /* 分頁籤、篩選、提示、空狀態、分頁 */
@@ -307,6 +335,8 @@ progress { width: 12em; vertical-align: middle; accent-color: var(--accent); }
 .legend i.seg-3, .meter .seg-3 { background: var(--line2); fill: var(--line2); }
 .dash-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 14px; margin-bottom: 14px; }
 .dash-grid .card { margin: 0; }
+.dash-grid .wide { grid-column: 1 / -1; }
+.card > table:last-child { margin-bottom: 0; }
 .card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 12px; }
 .card-head h2 { margin: 0; }
 .seg { display: inline-flex; border: 1px solid var(--line2); border-radius: 8px; overflow: hidden; font-size: 12px; }

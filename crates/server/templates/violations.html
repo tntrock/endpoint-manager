@@ -37,7 +37,7 @@
   <tr>
     {% if nav.platform %}<td class="pick"><input type="checkbox" name="keys" value="{{ v.key }}" aria-label="選取 {{ v.hostname }}：{{ v.rule }}"></td>{% endif %}
     <td><a href="/devices/{{ v.device_id }}">{{ v.hostname }}</a></td>
-    <td>{{ v.group }}</td><td>{{ v.rule }}</td>
+    <td class="nw">{{ v.group }}</td><td>{{ v.rule }}</td>
     <td><span class="sev {{ v.severity_class }}">{{ v.severity }}</span></td>
     <td>{% if v.status == "違規" %}<span class="tag bad">{{ v.status }}</span>{% else if v.status == "豁免" %}<span class="tag info">{{ v.status }}</span>{% else %}<span class="tag off">{{ v.status }}</span>{% endif %}</td>
     <td>{{ v.summary }}</td><td><span class="num">{{ v.since }}</span></td>

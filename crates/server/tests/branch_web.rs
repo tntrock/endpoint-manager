@@ -516,7 +516,7 @@ async fn cache_tokens_and_lifecycle(pool: PgPool) {
         !s.page(&admin, "/caches")
             .await
             .1
-            .contains("<td>台北快取</td>")
+            .contains(">台北快取<")
     );
     let (st, _, _) = post(
         &s,

@@ -53,6 +53,19 @@
         <span class="num">{{ r.count }}</span></a>{% endfor %}
     </div>{% endif %}
   </section>
+  {% if !caches.is_empty() %}
+  <section class="card wide">
+    <div class="card-head"><div><h2>分點快取</h2><div class="sub">每 30 秒回報一次；超過 3 分鐘沒回報算離線</div></div><a class="btn sm" href="/caches">據點與快取</a></div>
+    <table>
+      <tr><th>快取</th><th>據點</th><th>狀態</th><th>最後回報</th><th>版本</th><th class="num">磁碟（已用／上限）</th><th class="num">預先下載</th></tr>
+      {% for c in caches %}
+      <tr><td class="nw">{{ c.name }}</td><td class="nw">{{ c.site }}</td><td><span class="tag {{ c.tone }}">{{ c.state }}</span></td>
+        <td class="nw"><span class="num">{{ c.last_seen }}</span></td><td>{{ c.version }}</td><td class="num nw">{{ c.disk }}</td>
+        <td class="num nw">{% if c.expected == 0 %}<span class="muted">沒有派送</span>{% else %}{{ c.stored }} / {{ c.expected }}{% endif %}</td></tr>
+      {% endfor %}
+    </table>
+  </section>
+  {% endif %}
 </div>
 {% if !pending.is_empty() %}
 <div class="card" id="pending">
@@ -72,7 +85,7 @@
   <tr>
     <td><a href="/devices/{{ p.id }}">{{ p.hostname }}</a></td>
     <td><a href="/devices/{{ p.old_id }}">{{ p.old_hostname }}</a></td>
-    <td>{{ p.group }}</td>
+    <td class="nw">{{ p.group }}</td>
     <td><span class="num">{{ p.enrolled_at }}</span></td>
     <td>{% if nav.manage %}<div class="actions">
       <form method="post" action="/devices/{{ p.id }}/approve"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="btn sm">核准</button></form>

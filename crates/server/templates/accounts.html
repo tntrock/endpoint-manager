@@ -22,8 +22,8 @@
     <label class="field">帳號 <input name="username" required maxlength="64" autocomplete="off"></label>
     <label class="field">初始密碼（至少 12 字元） <input name="password" type="password" required minlength="12" autocomplete="new-password"></label>
   </div>
-  <p class="checks">角色：{% for r in roles %}<label><input type="radio" name="role" value="{{ r.value }}" {% if r.selected %}checked{% endif %}> {{ r.label }}</label> {% endfor %}</p>
-  <p class="checks">群組（群組管理員／檢視者必選）：{% for g in groups %}<label><input type="checkbox" name="groups" value="{{ g.value }}"> {{ g.label }}</label> {% endfor %}</p>
+  <p class="checks"><span class="checks-label">角色：</span>{% for r in roles %}<label><input type="radio" name="role" value="{{ r.value }}" {% if r.selected %}checked{% endif %}> {{ r.label }}</label> {% endfor %}</p>
+  <p class="checks"><span class="checks-label">群組（群組管理員／檢視者必選）：</span>{% for g in groups %}<label><input type="checkbox" name="groups" value="{{ g.value }}"> {{ g.label }}</label> {% endfor %}</p>
   <button class="btn primary">建立</button>
 </form>
 </fieldset>

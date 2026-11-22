@@ -11,14 +11,14 @@
     <p class="checks">{% for g in groups %}<label><input type="checkbox" name="groups" value="{{ g.value }}" {% if g.selected %}checked{% endif %}> {{ g.label }}</label> {% endfor %}</p>
   </fieldset>
   <fieldset><legend>延後（空白＝不設定）</legend>
-    <label class="field">品質更新延後 <input name="quality_defer_days" value="{{ f.quality_defer_days }}" inputmode="numeric" size="4"> 天（0–30）</label>
-    <label class="field">功能更新延後 <input name="feature_defer_days" value="{{ f.feature_defer_days }}" inputmode="numeric" size="4"> 天（0–365）</label>
+    <label class="field">品質更新延後 <span class="with-unit"><input name="quality_defer_days" value="{{ f.quality_defer_days }}" inputmode="numeric" size="4"> 天（0–30）</span></label>
+    <label class="field">功能更新延後 <span class="with-unit"><input name="feature_defer_days" value="{{ f.feature_defer_days }}" inputmode="numeric" size="4"> 天（0–365）</span></label>
   </fieldset>
   <fieldset><legend>期限（空白＝不設定；寬限沒填時為 2 天）</legend>
-    <div class="row"><label class="field">品質更新期限 <input name="quality_deadline" value="{{ f.quality_deadline }}" inputmode="numeric" size="4"> 天（0–30）</label>
-       <label class="field">寬限 <input name="quality_grace" value="{{ f.quality_grace }}" inputmode="numeric" size="4"> 天（0–7）</label></div>
-    <div class="row"><label class="field">功能更新期限 <input name="feature_deadline" value="{{ f.feature_deadline }}" inputmode="numeric" size="4"> 天（0–30）</label>
-       <label class="field">寬限 <input name="feature_grace" value="{{ f.feature_grace }}" inputmode="numeric" size="4"> 天（0–7）</label></div>
+    <div class="row"><label class="field">品質更新期限 <span class="with-unit"><input name="quality_deadline" value="{{ f.quality_deadline }}" inputmode="numeric" size="4"> 天（0–30）</span></label>
+       <label class="field">寬限 <span class="with-unit"><input name="quality_grace" value="{{ f.quality_grace }}" inputmode="numeric" size="4"> 天（0–7）</span></label></div>
+    <div class="row"><label class="field">功能更新期限 <span class="with-unit"><input name="feature_deadline" value="{{ f.feature_deadline }}" inputmode="numeric" size="4"> 天（0–30）</span></label>
+       <label class="field">寬限 <span class="with-unit"><input name="feature_grace" value="{{ f.feature_grace }}" inputmode="numeric" size="4"> 天（0–7）</span></label></div>
     <p class="checks"><label><input type="checkbox" name="no_auto_reboot" value="1" {% if f.no_auto_reboot %}checked{% endif %}> 寬限期結束前不自動重開機</label></p>
   </fieldset>
   <fieldset><legend>使用中時段{% call m::help_btn("active-hours", "使用中時段") %}{% endcall %}</legend>

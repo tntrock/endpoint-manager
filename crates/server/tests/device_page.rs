@@ -203,12 +203,15 @@ async fn runs_in_label_tag_filter_and_hint(pool: PgPool) {
     // 清單：只標出容器與 WSL；篩選
     let (_, html) = s.page(&admin, "/devices").await;
     assert!(
-        html.contains(r#"<span class="tag info">容器（docker）</span>"#)
-            && html.contains(r#"<span class="tag info">WSL 2</span>"#)
+        html.contains(r#">容器（docker）</span>"#)
+            && html.contains(r#">WSL 2</span>"#)
             && !html.contains(r#"<span class="tag info">實體機</span>"#),
         "{html}"
     );
     assert!(html.contains(r#"<select name="env""#));
+    // 標籤滑鼠移上去有白話說明
+    assert!(html.contains(r#"<span class="tag info" title="WSL（Windows Subsystem for Linux）"#));
+    assert!(html.contains("WSL（Windows 裡的 Linux）"), "篩選選項附說明");
     for (env, want) in [
         ("physical", "env-phys"),
         ("vm", "env-vm"),
@@ -233,6 +236,10 @@ async fn runs_in_label_tag_filter_and_hint(pool: PgPool) {
     assert!(html.contains("虛擬機（Hyper-V）") && !html.contains("Agent 在容器內執行"));
     let (_, html) = s.page(&admin, &format!("/devices/{}", ids[2])).await;
     assert!(html.contains("容器（docker）") && html.contains("Agent 在容器內執行"));
+    let (_, html) = s.page(&admin, &format!("/devices/{}", ids[3])).await;
+    assert!(html.contains("WSL 2") && html.contains("裝在 Windows 電腦裡的 Linux 環境"));
+    let (_, html) = s.page(&admin, &format!("/devices/{}", ids[0])).await;
+    assert!(html.contains("實體機") && !html.contains("裝在 Windows 電腦裡"));
     let (_, html) = s.page(&admin, &format!("/devices/{}", ids[4])).await;
     assert!(html.contains("Agent 尚未回報"));
 }
