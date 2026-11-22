@@ -26,6 +26,7 @@ pub mod registry;
 pub mod report;
 pub mod rules;
 pub mod scripts;
+pub mod settings;
 pub mod signing;
 pub mod sites;
 pub mod software;
@@ -262,6 +263,7 @@ pub fn web_router(state: AppState) -> Router {
         )
         .route("/accounts/{id}/oidc-unlink", post(accounts::unlink_oidc))
         .route("/password", get(password::form).post(password::submit))
+        .route("/settings", get(settings::page).post(settings::save))
         .route("/audit", get(audit::page))
         .route("/audit/retention", post(audit::retention))
         .route("/metrics", get(crate::metrics::handler))
