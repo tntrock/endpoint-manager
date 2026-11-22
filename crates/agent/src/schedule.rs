@@ -35,6 +35,8 @@ fn interval(s: Section, iv: &CollectionIntervals) -> Duration {
         Section::Containers => iv.services_secs,
         // 網卡的即時變化之後靠本機事件（網路規格 §3.2），區段本身跟服務一樣
         Section::Network => iv.services_secs,
+        // 虛擬機跟容器一樣（容器規格 §5.5）
+        Section::Vms => iv.services_secs,
     };
     Duration::from_secs(secs.into())
 }
@@ -164,7 +166,8 @@ mod tests {
                 Section::Services,
                 Section::Security,
                 Section::Registry,
-                Section::Network
+                Section::Network,
+                Section::Vms
             ]
         );
         let much_later = t0 + Duration::from_secs(86_400);

@@ -11,6 +11,7 @@ pub mod regwatch;
 pub mod secdir;
 pub mod security;
 pub mod service;
+pub mod vms;
 pub mod wupolicy;
 
 use std::path::{Path, PathBuf};

@@ -224,6 +224,9 @@ impl Collector for WindowsCollector {
         if section == Section::Network {
             return Ok(InventoryPayload::Network(super::network::collect()?));
         }
+        if section == Section::Vms {
+            return Ok(InventoryPayload::Vms(super::vms::collect()));
+        }
         let con = wmi()?;
         Ok(match section {
             Section::Basic => {
@@ -281,10 +284,11 @@ impl Collector for WindowsCollector {
                         .collect(),
                 )
             }
-            // 這幾個區段不經這裡的 WMI 連線：Security、Network 在上面另外處理，
+            // 這幾個區段不經這裡的 WMI 連線：Security、Network、Vms 在上面另外處理，
             // Registry 走 collect_registry，Accounts 與 Containers 只有 Linux
             Section::Security
             | Section::Network
+            | Section::Vms
             | Section::Registry
             | Section::Accounts
             | Section::Containers => {

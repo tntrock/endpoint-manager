@@ -234,6 +234,10 @@ fn collector_reports_this_machine() {
             InventoryPayload::Registry(_) => unreachable!("registry 不經 collect"),
             InventoryPayload::Accounts(_) => unreachable!("Windows 不收集帳號"),
             InventoryPayload::Containers(_) => unreachable!("Windows 不收集容器"),
+            // CI 機器不一定有 Hyper-V；有的話只會是 Hyper-V
+            InventoryPayload::Vms(v) => {
+                assert!(v.platforms.iter().all(|p| p.kind == "hyperv"), "{v:?}")
+            }
             InventoryPayload::Network(n) => {
                 // CI 機器一定有一張有位址的網卡
                 assert!(

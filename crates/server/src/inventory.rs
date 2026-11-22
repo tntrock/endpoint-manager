@@ -283,6 +283,20 @@ pub async fn load_payload(
                 }
             }
         }
+        Section::Vms => {
+            let data: serde_json::Value =
+                sqlx::query_scalar("SELECT data FROM device_vms WHERE device_id = $1")
+                    .bind(device_id)
+                    .fetch_one(&mut *conn)
+                    .await?;
+            match serde_json::from_value(data) {
+                Ok(v) => InventoryPayload::Vms(v),
+                Err(e) => {
+                    tracing::warn!(%device_id, error = %e, "虛擬機區段 jsonb 無法解析，視為無資料");
+                    return Ok(None);
+                }
+            }
+        }
         Section::Containers => {
             let data: serde_json::Value =
                 sqlx::query_scalar("SELECT data FROM device_containers WHERE device_id = $1")
@@ -409,6 +423,46 @@ pub async fn load_payload(
     Ok(Some(payload))
 }
 
+/// 虛擬機清單整批重寫到 vm_guests（配對裝置用）
+async fn write_vm_guests(
+    conn: &mut PgConnection,
+    host: Uuid,
+    v: &protocol::VmsInfo,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM vm_guests WHERE host_id = $1")
+        .bind(host)
+        .execute(&mut *conn)
+        .await?;
+    // 同一個平台與 ID 重複時只留第一筆（主鍵）
+    let mut seen = std::collections::HashSet::new();
+    let vms: Vec<&protocol::VmItem> = v
+        .vms
+        .iter()
+        .filter(|x| seen.insert((x.platform.as_str(), x.id.as_str())))
+        .collect();
+    if vms.is_empty() {
+        return Ok(());
+    }
+    let forms: Vec<Option<[String; 2]>> = vms
+        .iter()
+        .map(|x| x.bios_uuid.as_deref().and_then(protocol::uuid_forms))
+        .collect();
+    let col = |f: fn(&protocol::VmItem) -> &str| vms.iter().map(|x| f(x)).collect::<Vec<&str>>();
+    sqlx::query(
+        "INSERT INTO vm_guests (host_id, platform, vm_id, name, state, bios_uuid, bios_uuid_swapped)          SELECT $1, * FROM unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[])",
+    )
+    .bind(host)
+    .bind(col(|x| &x.platform))
+    .bind(col(|x| &x.id))
+    .bind(col(|x| &x.name))
+    .bind(col(|x| &x.state))
+    .bind(forms.iter().map(|f| f.as_ref().map(|f| f[0].clone())).collect::<Vec<_>>())
+    .bind(forms.iter().map(|f| f.as_ref().map(|f| f[1].clone())).collect::<Vec<_>>())
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
 async fn write_payload(
     conn: &mut PgConnection,
     device_id: Uuid,
@@ -452,6 +506,16 @@ async fn write_payload(
             .bind(json(c))
             .execute(&mut *conn)
             .await?;
+        }
+        InventoryPayload::Vms(v) => {
+            sqlx::query(
+                "INSERT INTO device_vms (device_id, data) VALUES ($1, $2::jsonb)                  ON CONFLICT (device_id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()",
+            )
+            .bind(device_id)
+            .bind(json(v))
+            .execute(&mut *conn)
+            .await?;
+            write_vm_guests(conn, device_id, v).await?;
         }
         InventoryPayload::Network(n) => {
             sqlx::query(

@@ -2,7 +2,7 @@
 {% block content %}
 <div class="page-head">
   <div><div class="crumb"><a href="/devices">裝置</a> ／ {{ d.hostname }}</div><h1>{{ d.hostname }} <span class="tag {{ d.badge }}">{{ d.badge_label }}</span></h1>
-    <div class="sub device-sub"><span>{{ d.group }}</span><span>{% if d.linux %}Linux{% else %}Windows{% endif %}{% if !d.os.is_empty() %}・{{ d.os }}{% endif %}</span>{% if !d.runs_in.is_empty() %}<span>{{ d.runs_in }}</span>{% endif %}{% if !d.ip.is_empty() %}<span class="num">{{ d.ip }}</span>{% endif %}<span>最後回報 {{ d.seen_ago }}</span></div></div>
+    <div class="sub device-sub"><span>{{ d.group }}</span><span>{% if d.linux %}Linux{% else %}Windows{% endif %}{% if !d.os.is_empty() %}・{{ d.os }}{% endif %}</span>{% if !d.runs_in.is_empty() %}<span>{{ d.runs_in }}</span>{% endif %}{% if let Some((href, host, vm)) = d.vm_host %}<span title="虛擬機名稱：{{ vm }}">執行於 {% if href.is_empty() %}{{ host }}{% else %}<a href="{{ href }}">{{ host }}</a>{% endif %}</span>{% endif %}{% if !d.ip.is_empty() %}<span class="num">{{ d.ip }}</span>{% endif %}<span>最後回報 {{ d.seen_ago }}</span></div></div>
   <div class="actions">
     {% if nav.platform %}
     <form method="post" action="/devices/{{ d.id }}/group">

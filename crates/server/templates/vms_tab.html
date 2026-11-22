@@ -1,0 +1,23 @@
+{% if !loaded %}<p class="muted">尚無虛擬機資料（Agent 還沒上傳這個區段）。</p>{% else %}
+{% if platforms.is_empty() %}<p class="muted">這台沒有偵測到虛擬化平台（Hyper-V、KVM／libvirt、Proxmox VE）。</p>{% else %}
+<h2>虛擬化平台</h2>
+<table>
+  <tr><th>平台</th><th>版本</th><th>狀態</th></tr>
+  {% for p in platforms %}<tr><td>{{ p.kind }}</td><td>{{ p.version }}</td><td>{% if p.error.is_empty() %}<span class="tag ok">正常</span>{% else %}<span class="tag bad">讀取失敗</span> <span class="faint">{{ p.error }}</span>{% endif %}</td></tr>{% endfor %}
+</table>
+{% if truncated %}<p class="warn">虛擬機太多，只列出前 500 台（執行中的優先）。</p>{% endif %}
+<h2>虛擬機（{{ vms.len() }}）</h2>
+{% if vms.is_empty() %}<p class="muted">沒有虛擬機。</p>{% else %}
+<table>
+  <tr><th>名稱</th><th>平台</th><th>狀態</th><th class="num">vCPU</th><th class="num">記憶體</th><th>作業系統</th><th>Agent</th></tr>
+  {% for v in vms %}<tr>
+    <td>{{ v.name }}</td><td>{{ v.platform }}</td>
+    <td>{% if v.state_tone.is_empty() %}{{ v.state }}{% else %}<span class="tag {{ v.state_tone }}">{{ v.state }}</span>{% endif %}</td>
+    <td class="num">{{ v.vcpus }}</td><td class="num">{{ v.memory }}</td><td>{{ v.os }}</td>
+    <td>{% if !v.guest.href.is_empty() %}<a href="{{ v.guest.href }}">{{ v.guest.label }}</a>{% else if v.guest.tone.is_empty() %}<span class="muted">{{ v.guest.label }}</span>{% else %}<span class="tag {{ v.guest.tone }}">{{ v.guest.label }}</span>{% endif %}</td>
+  </tr>{% endfor %}
+</table>
+{% endif %}
+<p class="muted">以虛擬機的 BIOS UUID 對到已註冊的裝置。叢集環境中虛擬機會在主機間搬移，這裡顯示的是這台主機最後回報的清單。</p>
+{% endif %}
+{% endif %}

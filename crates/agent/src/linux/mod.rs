@@ -10,6 +10,7 @@ pub mod network;
 pub mod packages;
 pub mod services;
 pub mod system;
+pub mod vms;
 
 use std::path::{Path, PathBuf};
 

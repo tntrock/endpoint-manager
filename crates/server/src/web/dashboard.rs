@@ -367,6 +367,21 @@ async fn todo(st: &AppState, s: &Session, pending: i64) -> Result<Vec<TodoItem>,
             });
         }
     }
+    // 執行中、卻沒有對到任何已註冊裝置的虛擬機：漏裝 Agent
+    let unmanaged: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(super::vms::unmanaged_sql(SCOPED)))
+        .bind(all)
+        .bind(groups)
+        .fetch_one(&st.pool)
+        .await?;
+    if unmanaged > 0 {
+        out.push(TodoItem {
+            severity: "medium",
+            title: "虛擬機未安裝 Agent".into(),
+            detail: "執行中、沒有對到任何裝置",
+            count: unmanaged,
+            href: "/vms?unmanaged=true".into(),
+        });
+    }
     if pending > 0 {
         out.push(TodoItem {
             severity: "low",

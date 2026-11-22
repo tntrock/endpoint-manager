@@ -34,10 +34,11 @@ pub enum Section {
     Accounts,
     Containers,
     Network,
+    Vms,
 }
 
 impl Section {
-    pub const ALL: [Section; 10] = [
+    pub const ALL: [Section; 11] = [
         Section::Basic,
         Section::Hardware,
         Section::Software,
@@ -48,10 +49,11 @@ impl Section {
         Section::Accounts,
         Section::Containers,
         Section::Network,
+        Section::Vms,
     ];
 
     /// Windows Agent 回報的區段
-    pub const WINDOWS: [Section; 8] = [
+    pub const WINDOWS: [Section; 9] = [
         Section::Basic,
         Section::Hardware,
         Section::Software,
@@ -60,10 +62,11 @@ impl Section {
         Section::Security,
         Section::Registry,
         Section::Network,
+        Section::Vms,
     ];
 
     /// Linux Agent 回報的區段
-    pub const LINUX: [Section; 7] = [
+    pub const LINUX: [Section; 8] = [
         Section::Basic,
         Section::Hardware,
         Section::Software,
@@ -71,6 +74,7 @@ impl Section {
         Section::Accounts,
         Section::Containers,
         Section::Network,
+        Section::Vms,
     ];
 
     /// 第三期以前就有的區段：新版 Agent 在確認伺服器支援前只回報這些
@@ -95,6 +99,7 @@ impl Section {
             Section::Accounts => "accounts",
             Section::Containers => "containers",
             Section::Network => "network",
+            Section::Vms => "vms",
         }
     }
 
@@ -270,7 +275,7 @@ impl CheckinResponse {
 impl Section {
     /// 需要伺服器在 [`CheckinResponse::supported_sections`] 明確列出才回報的區段
     pub fn needs_announcement(self) -> bool {
-        matches!(self, Section::Containers | Section::Network)
+        matches!(self, Section::Containers | Section::Network | Section::Vms)
     }
 }
 
@@ -549,6 +554,77 @@ pub struct AccountsInfo {
     pub sudoers_unparsed: Vec<String>,
 }
 
+/// 每台最多回報的虛擬機數
+pub const MAX_VMS: usize = 500;
+
+/// 虛擬化主機上的虛擬機（Hyper-V、libvirt、Proxmox）
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct VmsInfo {
+    /// 偵測到的虛擬化平台；kind 是 hyperv | libvirt | proxmox
+    pub platforms: Vec<RuntimeInfo>,
+    pub vms: Vec<VmItem>,
+    /// 超過 [`MAX_VMS`] 被截斷
+    #[serde(default)]
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct VmItem {
+    /// 同 RuntimeInfo.kind；Proxmox 的 LXC 容器是 proxmox-lxc
+    pub platform: String,
+    /// 平台上的識別碼：Hyper-V／libvirt 是 UUID，Proxmox 是 VMID
+    pub id: String,
+    pub name: String,
+    /// running | stopped | paused | saved | other
+    pub state: String,
+    /// 客體看到的 SMBIOS UUID（小寫）；讀不到就 None
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bios_uuid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vcpus: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_mb: Option<u64>,
+    /// 平台記錄的客體作業系統類型
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub os_hint: Option<String>,
+}
+
+impl VmItem {
+    pub fn is_running(&self) -> bool {
+        self.state == "running"
+    }
+}
+
+/// SMBIOS UUID 的兩種寫法（小寫）：原樣，以及前三段位元組反轉。
+/// 有些平台在客體裡讀到的前三段是反過來的（SMBIOS 2.6 以前的位元組順序）。
+pub fn uuid_forms(uuid: &str) -> Option<[String; 2]> {
+    let u = uuid.trim().to_ascii_lowercase();
+    let parts: Vec<&str> = u.split('-').collect();
+    let ok = parts.len() == 5
+        && parts
+            .iter()
+            .zip([8, 4, 4, 4, 12])
+            .all(|(p, n)| p.len() == n && p.bytes().all(|b| b.is_ascii_hexdigit()));
+    if !ok {
+        return None;
+    }
+    let swap = |s: &str| {
+        (0..s.len() / 2)
+            .rev()
+            .map(|i| &s[i * 2..i * 2 + 2])
+            .collect::<String>()
+    };
+    let swapped = format!(
+        "{}-{}-{}-{}-{}",
+        swap(parts[0]),
+        swap(parts[1]),
+        swap(parts[2]),
+        parts[3],
+        parts[4]
+    );
+    Some([u, swapped])
+}
+
 /// 每台最多回報的容器數（執行中的優先）
 pub const MAX_CONTAINERS: usize = 500;
 
@@ -696,6 +772,7 @@ pub enum InventoryPayload {
     Accounts(AccountsInfo),
     Containers(ContainersInfo),
     Network(NetworkInfo),
+    Vms(VmsInfo),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -739,6 +816,7 @@ impl InventoryPayload {
             InventoryPayload::Accounts(_) => Section::Accounts,
             InventoryPayload::Containers(_) => Section::Containers,
             InventoryPayload::Network(_) => Section::Network,
+            InventoryPayload::Vms(_) => Section::Vms,
         }
     }
 
@@ -771,6 +849,10 @@ impl InventoryPayload {
                     x.ports.sort();
                     x.host_mounts.sort();
                 }
+            }
+            InventoryPayload::Vms(v) => {
+                v.platforms.sort();
+                v.vms.sort();
             }
             // DNS 的順序有意義（先問哪一台），不排序
             InventoryPayload::Network(n) => {
@@ -819,6 +901,12 @@ impl InventoryPayload {
                         .iter()
                         .map(|x| 1 + x.ports.len() + x.host_mounts.len())
                         .sum::<usize>()
+            }
+            InventoryPayload::Vms(v) => {
+                if v.vms.len() > MAX_VMS {
+                    return Err(ValidationError::TooManyItems { count: v.vms.len() });
+                }
+                v.platforms.len() + v.vms.len()
             }
             InventoryPayload::Network(n) => {
                 if n.interfaces.len() > MAX_INTERFACES {
@@ -1198,6 +1286,35 @@ mod tests {
         let mut down = nic("a", NetInterface::WIFI, true);
         down.up = false;
         assert!(!down.is_uplink());
+    }
+
+    #[test]
+    fn uuid_forms_swap_first_three_groups() {
+        assert_eq!(
+            uuid_forms(" 00112233-4455-6677-8899-AABBCCDDEEFF "),
+            Some([
+                "00112233-4455-6677-8899-aabbccddeeff".to_string(),
+                "33221100-5544-7766-8899-aabbccddeeff".to_string()
+            ])
+        );
+        for bad in [
+            "",
+            "x",
+            "00112233-4455-6677-8899",
+            "0011223g-4455-6677-8899-aabbccddeeff",
+        ] {
+            assert_eq!(uuid_forms(bad), None, "{bad}");
+        }
+        let mut v = InventoryPayload::Vms(VmsInfo {
+            platforms: vec![],
+            vms: vec![],
+            truncated: false,
+        });
+        assert_eq!(v.section(), Section::Vms);
+        assert!(Section::Vms.needs_announcement());
+        assert_eq!(Section::parse("vms"), Some(Section::Vms));
+        v.normalize();
+        assert_eq!(v.validate(), Ok(()));
     }
 
     #[test]

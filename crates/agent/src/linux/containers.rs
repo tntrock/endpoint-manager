@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use super::exec::{CMD_TIMEOUT, is_not_found, run_capture};
+use super::exec::{CMD_TIMEOUT, Run, is_not_found, real_run, run_capture};
 use crate::linux_parse::accounts::uid_min;
 use crate::linux_parse::containers as parse;
 use protocol::{ContainerItem, ContainersInfo, RuntimeInfo};
@@ -82,13 +82,6 @@ fn rootless(items: &mut Vec<ContainerItem>, errors: &mut Vec<String>) {
             Err(e) => errors.push(format!("使用者 {name}：{}", short(&e))),
         }
     }
-}
-
-/// 執行外部指令；測試時換成回傳固定輸出的假指令
-type Run<'a> = &'a dyn Fn(&str, &[&str]) -> anyhow::Result<String>;
-
-fn real_run(program: &str, args: &[&str]) -> anyhow::Result<String> {
-    run_capture(program, args, CMD_TIMEOUT)
 }
 
 /// Kubernetes 節點的 containerd：`crictl`（只有 k8s.io 命名空間）
