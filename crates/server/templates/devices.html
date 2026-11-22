@@ -62,7 +62,7 @@
   <tr>
     {% if nav.manage %}<td class="pick"><input type="checkbox" name="ids" value="{{ d.id }}" aria-label="選取 {{ d.hostname }}"></td>{% endif %}
     <td><a href="/devices/{{ d.id }}">{{ d.hostname }}</a>{% if let Some(g) = d.guest %} <span class="tag info">{{ g }}</span>{% endif %}</td>
-    <td>{{ d.group }}</td><td>{{ d.domain }}</td><td>{{ d.os }}{% if d.linux %} <span class="tag info">Linux</span>{% endif %}</td><td>{{ d.user }}</td><td><span class="num">{{ d.ip }}</span></td>
+    <td>{{ d.group }}</td><td>{{ d.domain }}</td><td>{{ d.os }}{% if d.linux %} <span class="tag info">Linux</span>{% endif %}</td><td>{{ d.user }}</td><td><span class="num"{% if !d.all_ips.is_empty() %} title="{{ d.all_ips }}"{% endif %}>{{ d.ip }}</span></td>
     <td><span class="num">{{ d.last_seen }}</span></td>
     <td><span class="tag {{ d.badge }}">{{ d.badge_label }}</span></td>
   </tr>

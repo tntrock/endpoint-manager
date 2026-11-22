@@ -6,6 +6,7 @@ pub mod commands;
 pub mod containers;
 pub mod exec;
 pub mod install;
+pub mod network;
 pub mod packages;
 pub mod services;
 pub mod system;

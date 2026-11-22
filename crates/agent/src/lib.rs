@@ -10,6 +10,7 @@ pub mod deploy;
 #[cfg(target_os = "linux")]
 pub mod linux;
 pub mod linux_parse;
+pub mod network;
 pub mod regvalue;
 pub mod sanitize;
 pub mod schedule;

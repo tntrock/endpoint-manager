@@ -33,10 +33,11 @@ pub enum Section {
     Registry,
     Accounts,
     Containers,
+    Network,
 }
 
 impl Section {
-    pub const ALL: [Section; 9] = [
+    pub const ALL: [Section; 10] = [
         Section::Basic,
         Section::Hardware,
         Section::Software,
@@ -46,10 +47,11 @@ impl Section {
         Section::Registry,
         Section::Accounts,
         Section::Containers,
+        Section::Network,
     ];
 
     /// Windows Agent 回報的區段
-    pub const WINDOWS: [Section; 7] = [
+    pub const WINDOWS: [Section; 8] = [
         Section::Basic,
         Section::Hardware,
         Section::Software,
@@ -57,16 +59,18 @@ impl Section {
         Section::Services,
         Section::Security,
         Section::Registry,
+        Section::Network,
     ];
 
     /// Linux Agent 回報的區段
-    pub const LINUX: [Section; 6] = [
+    pub const LINUX: [Section; 7] = [
         Section::Basic,
         Section::Hardware,
         Section::Software,
         Section::Services,
         Section::Accounts,
         Section::Containers,
+        Section::Network,
     ];
 
     /// 第三期以前就有的區段：新版 Agent 在確認伺服器支援前只回報這些
@@ -90,6 +94,7 @@ impl Section {
             Section::Registry => "registry",
             Section::Accounts => "accounts",
             Section::Containers => "containers",
+            Section::Network => "network",
         }
     }
 
@@ -222,7 +227,7 @@ impl CheckinResponse {
 impl Section {
     /// 需要伺服器在 [`CheckinResponse::supported_sections`] 明確列出才回報的區段
     pub fn needs_announcement(self) -> bool {
-        matches!(self, Section::Containers)
+        matches!(self, Section::Containers | Section::Network)
     }
 }
 
@@ -573,6 +578,59 @@ impl ContainerItem {
     }
 }
 
+/// 每台最多回報的網卡數
+pub const MAX_INTERFACES: usize = 256;
+
+/// 每張網卡（network 區段）
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct NetworkInfo {
+    pub interfaces: Vec<NetInterface>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct NetInterface {
+    /// Windows 的別名（「乙太網路」）或 Linux 的 eth0
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// [`NetInterface::ETHERNET`] 等。用字串：之後新增種類時舊版伺服器也能解析
+    pub kind: String,
+    pub up: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mac: Option<String>,
+    /// CIDR 寫法：10.1.2.3/24
+    #[serde(default)]
+    pub addresses: Vec<String>,
+    /// 這張網卡上的預設閘道
+    #[serde(default)]
+    pub gateways: Vec<String>,
+    #[serde(default)]
+    pub dns: Vec<String>,
+    /// Wi-Fi 才有，讀不到就 None
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssid: Option<String>,
+}
+
+impl NetInterface {
+    pub const ETHERNET: &'static str = "ethernet";
+    pub const WIFI: &'static str = "wifi";
+    pub const CELLULAR: &'static str = "cellular";
+    pub const VPN: &'static str = "vpn";
+    pub const VIRTUAL: &'static str = "virtual";
+    pub const LOOPBACK: &'static str = "loopback";
+    pub const OTHER: &'static str = "other";
+
+    /// 啟用中、有預設閘道、不是虛擬／VPN／loopback 的網卡（多重連線條件 1 的「對外路徑」）
+    pub fn is_uplink(&self) -> bool {
+        self.up
+            && !self.gateways.is_empty()
+            && !matches!(
+                self.kind.as_str(),
+                Self::VIRTUAL | Self::LOOPBACK | Self::VPN
+            )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "section", content = "data", rename_all = "lowercase")]
 pub enum InventoryPayload {
@@ -585,6 +643,7 @@ pub enum InventoryPayload {
     Registry(Vec<RegistryValue>),
     Accounts(AccountsInfo),
     Containers(ContainersInfo),
+    Network(NetworkInfo),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -627,6 +686,7 @@ impl InventoryPayload {
             InventoryPayload::Registry(_) => Section::Registry,
             InventoryPayload::Accounts(_) => Section::Accounts,
             InventoryPayload::Containers(_) => Section::Containers,
+            InventoryPayload::Network(_) => Section::Network,
         }
     }
 
@@ -658,6 +718,14 @@ impl InventoryPayload {
                 for x in &mut c.containers {
                     x.ports.sort();
                     x.host_mounts.sort();
+                }
+            }
+            // DNS 的順序有意義（先問哪一台），不排序
+            InventoryPayload::Network(n) => {
+                n.interfaces.sort();
+                for i in &mut n.interfaces {
+                    i.addresses.sort();
+                    i.gateways.sort();
                 }
             }
         }
@@ -699,6 +767,17 @@ impl InventoryPayload {
                         .iter()
                         .map(|x| 1 + x.ports.len() + x.host_mounts.len())
                         .sum::<usize>()
+            }
+            InventoryPayload::Network(n) => {
+                if n.interfaces.len() > MAX_INTERFACES {
+                    return Err(ValidationError::TooManyItems {
+                        count: n.interfaces.len(),
+                    });
+                }
+                n.interfaces
+                    .iter()
+                    .map(|i| 1 + i.addresses.len() + i.gateways.len() + i.dns.len())
+                    .sum::<usize>()
             }
         };
         if count > MAX_ITEMS {
@@ -793,8 +872,12 @@ mod tests {
         assert_eq!(Section::parse("accounts"), Some(Section::Accounts));
         assert!(!Section::WINDOWS.contains(&Section::Accounts));
         assert!(!Section::LINUX.contains(&Section::Registry));
-        assert_eq!(Section::ALL.len(), 9);
+        assert_eq!(Section::ALL.len(), 10);
         assert!(!Section::WINDOWS.contains(&Section::Containers));
+        assert!(Section::WINDOWS.contains(&Section::Network));
+        assert!(Section::LINUX.contains(&Section::Network));
+        assert!(Section::Network.needs_announcement());
+        assert_eq!(Section::parse("network"), Some(Section::Network));
     }
 
     fn accounts(rev: bool) -> InventoryPayload {
@@ -987,6 +1070,53 @@ mod tests {
             host_mounts: vec![],
             owner: None,
         }
+    }
+
+    fn nic(name: &str, kind: &str, gw: bool) -> NetInterface {
+        NetInterface {
+            name: name.into(),
+            description: None,
+            kind: kind.into(),
+            up: true,
+            mac: None,
+            addresses: vec!["10.0.0.9/24".into(), "10.0.0.2/24".into()],
+            gateways: if gw { vec!["10.0.0.1".into()] } else { vec![] },
+            dns: vec!["8.8.8.8".into(), "1.1.1.1".into()],
+            ssid: None,
+        }
+    }
+
+    #[test]
+    fn network_normalize_limits_and_uplink() {
+        let p = |v: Vec<NetInterface>| InventoryPayload::Network(NetworkInfo { interfaces: v });
+        let a = p(vec![nic("a", "ethernet", true), nic("b", "wifi", false)]);
+        let mut b0 = nic("a", "ethernet", true);
+        b0.addresses.reverse();
+        let b = p(vec![nic("b", "wifi", false), b0]);
+        assert_eq!(a.canonical_hash(), b.canonical_hash());
+        // DNS 順序不同就是不同的設定
+        let mut c0 = nic("a", "ethernet", true);
+        c0.dns.reverse();
+        let c = p(vec![c0, nic("b", "wifi", false)]);
+        assert_ne!(a.canonical_hash(), c.canonical_hash());
+        assert_eq!(a.section(), Section::Network);
+        assert_eq!(a.validate(), Ok(()));
+        let too_many = p((0..=MAX_INTERFACES)
+            .map(|i| nic(&i.to_string(), "ethernet", false))
+            .collect());
+        assert!(matches!(
+            too_many.validate(),
+            Err(ValidationError::TooManyItems { .. })
+        ));
+
+        assert!(nic("a", NetInterface::ETHERNET, true).is_uplink());
+        assert!(nic("a", NetInterface::CELLULAR, true).is_uplink());
+        assert!(!nic("a", NetInterface::ETHERNET, false).is_uplink());
+        assert!(!nic("a", NetInterface::VPN, true).is_uplink());
+        assert!(!nic("a", NetInterface::VIRTUAL, true).is_uplink());
+        let mut down = nic("a", NetInterface::WIFI, true);
+        down.up = false;
+        assert!(!down.is_uplink());
     }
 
     #[test]

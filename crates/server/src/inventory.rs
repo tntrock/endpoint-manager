@@ -297,6 +297,20 @@ pub async fn load_payload(
                 }
             }
         }
+        Section::Network => {
+            let data: serde_json::Value =
+                sqlx::query_scalar("SELECT data FROM device_network WHERE device_id = $1")
+                    .bind(device_id)
+                    .fetch_one(&mut *conn)
+                    .await?;
+            match serde_json::from_value(data) {
+                Ok(n) => InventoryPayload::Network(n),
+                Err(e) => {
+                    tracing::warn!(%device_id, error = %e, "網路區段 jsonb 無法解析，視為無資料");
+                    return Ok(None);
+                }
+            }
+        }
         Section::Basic => {
             let (hostname, domain, is_domain_joined, os_caption, os_build, os_ubr, runs_in, detail): BasicRow =
                 sqlx::query_as(
@@ -436,6 +450,15 @@ async fn write_payload(
             )
             .bind(device_id)
             .bind(json(c))
+            .execute(&mut *conn)
+            .await?;
+        }
+        InventoryPayload::Network(n) => {
+            sqlx::query(
+                "INSERT INTO device_network (device_id, data) VALUES ($1, $2::jsonb)                  ON CONFLICT (device_id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()",
+            )
+            .bind(device_id)
+            .bind(json(n))
             .execute(&mut *conn)
             .await?;
         }

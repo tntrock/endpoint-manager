@@ -1,7 +1,6 @@
 //! `/etc/os-release`、`/proc/*`、`ip`、`who` 輸出的解析。
 
 use protocol::RunsIn;
-use std::net::IpAddr;
 use std::path::Path;
 
 /// 去掉成對的 `"` 或 `'`
@@ -148,30 +147,6 @@ pub fn real_mounts(proc_mounts: &str) -> Vec<String> {
     out
 }
 
-/// 解析 `ip -o addr show`，回傳非 loopback、非 link-local 的位址
-pub fn ip_addresses(ip_o_addr: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    for line in ip_o_addr.lines() {
-        let f: Vec<&str> = line.split_whitespace().collect();
-        // 格式：<索引>: <介面> inet|inet6 <位址/前綴> ...
-        if f.len() < 4 || f[1].trim_end_matches(':') == "lo" || !matches!(f[2], "inet" | "inet6") {
-            continue;
-        }
-        let addr = f[3].split('/').next().unwrap_or("");
-        let Ok(ip) = addr.parse::<IpAddr>() else {
-            continue;
-        };
-        let skip = match ip {
-            IpAddr::V4(v) => v.is_loopback(),
-            IpAddr::V6(v) => v.is_loopback() || (v.segments()[0] & 0xffc0) == 0xfe80,
-        };
-        if !skip {
-            out.push(addr.to_string());
-        }
-    }
-    out
-}
-
 /// `who` 輸出第一個不是 root 的使用者
 pub fn first_user(who: &str) -> Option<String> {
     who.lines()
@@ -286,16 +261,6 @@ tmpfs /run tmpfs rw 0 0
         assert_eq!(real_mounts(n), ["/d"]);
     }
 
-    #[test]
-    fn ip_addresses_skip_loopback_and_link_local() {
-        let ip = r"1: lo    inet 127.0.0.1/8 scope host lo\       valid_lft forever
-1: lo    inet6 ::1/128 scope host \       valid_lft forever
-2: eth0    inet 10.0.0.5/24 brd 10.0.0.255 scope global eth0\       valid_lft forever
-2: eth0    inet6 fe80::1/64 scope link \       valid_lft forever
-2: eth0    inet6 2001:db8::5/64 scope global \       valid_lft forever
-";
-        assert_eq!(ip_addresses(ip), ["10.0.0.5", "2001:db8::5"]);
-    }
     #[test]
     fn first_user_skips_root() {
         let who = "root     pts/0        2024-10-23 10:00 (1.2.3.4)\nalice    tty2         2024-10-23 10:01\n";

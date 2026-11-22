@@ -71,9 +71,7 @@ pub fn identity() -> anyhow::Result<Identity> {
 pub fn heartbeat() -> anyhow::Result<Heartbeat> {
     let boot_time = parse::boot_time(&read("/proc/stat")?).context("/proc/stat 沒有 btime")?;
     // ip、who 不存在或失敗不影響心跳
-    let ip_addresses = run_capture("ip", &["-o", "addr", "show"], CMD_TIMEOUT)
-        .map(|o| parse::ip_addresses(&o))
-        .unwrap_or_default();
+    let ip_addresses = super::network::heartbeat_ips();
     let logged_on_user = run_capture("who", &[], CMD_TIMEOUT)
         .ok()
         .and_then(|o| parse::first_user(&o));

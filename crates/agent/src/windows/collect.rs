@@ -50,6 +50,8 @@ struct Nic {
     ip_address: Option<Vec<String>>,
     #[serde(rename = "MACAddress")]
     mac_address: Option<String>,
+    #[serde(rename = "DefaultIPGateway")]
+    default_ip_gateway: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -86,8 +88,8 @@ struct Service {
     path_name: Option<String>,
 }
 
-const NICS: &str =
-    "SELECT IPAddress, MACAddress FROM Win32_NetworkAdapterConfiguration WHERE IPEnabled = TRUE";
+const NICS: &str = "SELECT IPAddress, MACAddress, DefaultIPGateway \
+                    FROM Win32_NetworkAdapterConfiguration WHERE IPEnabled = TRUE";
 const FIXED_DISKS: &str =
     "SELECT DeviceID, Size, FreeSpace FROM Win32_LogicalDisk WHERE DriveType = 3";
 
@@ -183,10 +185,21 @@ impl Collector for WindowsCollector {
                 .map(|t| t.0.to_offset(time::UtcOffset::UTC))
                 .unwrap_or_else(time::OffsetDateTime::now_utc),
             logged_on_user: cs.and_then(|c| c.user_name),
-            ip_addresses: nics
-                .into_iter()
-                .flat_map(|n| n.ip_address.unwrap_or_default())
-                .collect(),
+            // 有預設閘道的網卡排前面：伺服器把第一個位址當主要位址
+            ip_addresses: crate::network::primary_first(
+                nics.into_iter()
+                    .map(|n| {
+                        let gw = n.default_ip_gateway.is_some_and(|g| !g.is_empty());
+                        let ips = n
+                            .ip_address
+                            .unwrap_or_default()
+                            .into_iter()
+                            .filter(|a| crate::network::reportable(a))
+                            .collect();
+                        (gw, ips)
+                    })
+                    .collect(),
+            ),
         })
     }
 
@@ -207,6 +220,9 @@ impl Collector for WindowsCollector {
         }
         if section == Section::Security {
             return Ok(InventoryPayload::Security(super::security::collect()));
+        }
+        if section == Section::Network {
+            return Ok(InventoryPayload::Network(super::network::collect()?));
         }
         let con = wmi()?;
         Ok(match section {
@@ -265,8 +281,13 @@ impl Collector for WindowsCollector {
                         .collect(),
                 )
             }
-            // 這幾個區段不經 WMI：Security 在上面另外處理，Registry 走 collect_registry，Accounts 與 Containers 只有 Linux
-            Section::Security | Section::Registry | Section::Accounts | Section::Containers => {
+            // 這幾個區段不經這裡的 WMI 連線：Security、Network 在上面另外處理，
+            // Registry 走 collect_registry，Accounts 與 Containers 只有 Linux
+            Section::Security
+            | Section::Network
+            | Section::Registry
+            | Section::Accounts
+            | Section::Containers => {
                 anyhow::bail!("section {} is not collected via WMI", section.as_str())
             }
             Section::Services => {

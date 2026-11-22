@@ -69,14 +69,33 @@ async fn heartbeat_flush_updates_device(pool: PgPool) {
     let s = TestServer::start(pool).await;
     let tok = s.create_token(1).await;
     let a = s.enroll_ok(&tok, None, None).await;
+    let mut req = body(BTreeMap::new());
+    req.ip_addresses = [
+        "10.0.0.5",
+        "bogus",
+        "2001:db8::1",
+        "10.0.0.5",
+        " 192.168.1.9 ",
+    ]
+    .map(String::from)
+    .to_vec();
     s.client(Some(&a))
         .post(s.url("/v1/checkin"))
-        .json(&body(BTreeMap::new()))
+        .json(&req)
         .send()
         .await
         .unwrap();
 
     assert_eq!(s.state.heartbeat.flush(&s.pool).await.unwrap(), 1);
+    // 全部位址都存下來（格式錯的略過、重複的只留一個），搜尋得到
+    let ips: String = sqlx::query_scalar(
+        "SELECT (SELECT string_agg(host(x), ',') FROM unnest(ips) x) FROM devices WHERE id = $1",
+    )
+    .bind(a.device_id)
+    .fetch_one(&s.pool)
+    .await
+    .unwrap();
+    assert_eq!(ips, "10.0.0.5,2001:db8::1,192.168.1.9");
     let (ip, user, errors): (Option<String>, Option<String>, String) = sqlx::query_as(
         "SELECT last_ip, logged_on_user, section_errors::text FROM devices WHERE id = $1",
     )
@@ -186,6 +205,7 @@ async fn poisoned_row_does_not_block_other_devices(pool: PgPool) {
     let hot = |user: &str| endpoint_server::heartbeat::HotFields {
         seen_at: time::OffsetDateTime::now_utc(),
         ip: None,
+        ips: vec![],
         logged_on_user: Some(user.into()),
         boot_time: time::OffsetDateTime::now_utc(),
         agent_version: "0.1.0".into(),

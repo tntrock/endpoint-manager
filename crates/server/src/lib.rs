@@ -22,6 +22,7 @@ pub mod installer;
 pub mod inventory;
 pub mod metrics;
 pub mod mfa;
+pub mod network;
 pub mod notify;
 pub mod oidc;
 pub mod partitions;

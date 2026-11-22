@@ -307,6 +307,19 @@ impl Collector for Fake {
             Section::Registry => anyhow::bail!("registry is collected via collect_registry"),
             Section::Accounts => anyhow::bail!("accounts is Linux only"),
             Section::Containers => anyhow::bail!("containers is Linux only"),
+            Section::Network => InventoryPayload::Network(protocol::NetworkInfo {
+                interfaces: vec![protocol::NetInterface {
+                    name: "Ethernet".into(),
+                    description: Some("Fake NIC".into()),
+                    kind: "ethernet".into(),
+                    up: true,
+                    mac: Some("00:11:22:33:44:55".into()),
+                    addresses: vec!["10.0.0.5/24".into()],
+                    gateways: vec!["10.0.0.1".into()],
+                    dns: vec!["10.0.0.53".into()],
+                    ssid: None,
+                }],
+            }),
         })
     }
 }
@@ -621,7 +634,9 @@ async fn config_sections_start_after_server_confirms_support(pool: PgPool) {
     next(a.run_cycle().await);
     let s = sections().await;
     assert!(
-        s.contains(&"security".to_string()) && s.contains(&"registry".to_string()),
+        s.contains(&"security".to_string())
+            && s.contains(&"registry".to_string())
+            && s.contains(&"network".to_string()),
         "{s:?}"
     );
 }
