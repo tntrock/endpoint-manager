@@ -7,7 +7,7 @@ use super::matcher::Glob;
 
 pub const MAX_PATTERN_LEN: usize = 256;
 
-pub const KINDS: [&str; 15] = [
+pub const KINDS: [&str; 16] = [
     "forbidden_software",
     "required_software",
     "software_allowlist",
@@ -23,7 +23,15 @@ pub const KINDS: [&str; 15] = [
     "patch_age",
     "reboot_pending",
     "update_policy",
+    "dual_homed",
 ];
+
+/// 多重連線規則：回溯天數上限
+pub const MAX_LOOKBACK_DAYS: u32 = 90;
+/// 多重連線規則：最短持續時間上限（秒）
+pub const MAX_MIN_DURATION_SECS: u32 = 86_400;
+/// 多重連線規則：例外清單各自的上限
+pub const MAX_EXCEPTIONS: usize = 50;
 
 pub fn kind_label(kind: &str) -> &'static str {
     match kind {
@@ -42,6 +50,7 @@ pub fn kind_label(kind: &str) -> &'static str {
         "patch_age" => "太久沒更新",
         "reboot_pending" => "待重開機太久",
         "update_policy" => "更新原則衝突",
+        "dual_homed" => "多重連線",
         _ => "未知類型",
     }
 }
@@ -149,6 +158,22 @@ pub enum Params {
         max_days: u32,
     },
     UpdatePolicy,
+    DualHomed(DualHomedParams),
+}
+
+/// 多重連線規則的參數（網路規格 §5.3）
+#[derive(Debug, Clone, PartialEq)]
+pub struct DualHomedParams {
+    /// 這段期間內出現過一次就算違規
+    pub lookback_days: u32,
+    /// 短於這個值的期間不計
+    pub min_duration_secs: u32,
+    /// 網卡名稱（萬用字元）
+    pub exclude_interfaces: Vec<String>,
+    /// 已正規化的網段
+    pub exclude_cidrs: Vec<String>,
+    /// 只抓「公司網路＋外部網路」（條件 2）
+    pub only_cross_site: bool,
 }
 
 /// 登錄檔值的比對方式
@@ -289,6 +314,32 @@ pub enum Check {
         max_days: u32,
     },
     UpdatePolicy,
+    DualHomed {
+        lookback_days: u32,
+        min_duration_secs: u32,
+        exclude_interfaces: Vec<Glob>,
+        exclude_cidrs: Vec<(std::net::IpAddr, u8)>,
+        only_cross_site: bool,
+    },
+}
+
+fn default_lookback() -> u32 {
+    7
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawDualHomed {
+    #[serde(default = "default_lookback")]
+    lookback_days: u32,
+    #[serde(default)]
+    min_duration_secs: u32,
+    #[serde(default)]
+    exclude_interfaces: Vec<String>,
+    #[serde(default)]
+    exclude_cidrs: Vec<String>,
+    #[serde(default)]
+    only_cross_site: bool,
 }
 
 #[derive(Deserialize)]
@@ -621,6 +672,46 @@ impl Params {
                 let _: RawEmpty = from(v)?;
                 Ok(Params::UpdatePolicy)
             }
+            "dual_homed" => {
+                let r: RawDualHomed = from(v)?;
+                if !(1..=MAX_LOOKBACK_DAYS).contains(&r.lookback_days) {
+                    return Err(format!("回溯天數必須是 1–{MAX_LOOKBACK_DAYS}"));
+                }
+                if r.min_duration_secs > MAX_MIN_DURATION_SECS {
+                    return Err(format!("最短持續時間最多 {MAX_MIN_DURATION_SECS} 秒"));
+                }
+                if r.exclude_interfaces.len() > MAX_EXCEPTIONS
+                    || r.exclude_cidrs.len() > MAX_EXCEPTIONS
+                {
+                    return Err(format!("例外最多 {MAX_EXCEPTIONS} 個"));
+                }
+                let mut exclude_interfaces = vec![];
+                for n in r.exclude_interfaces {
+                    if let Some(n) = opt("例外網卡", Some(n))?
+                        && !exclude_interfaces.contains(&n)
+                    {
+                        exclude_interfaces.push(n);
+                    }
+                }
+                let mut exclude_cidrs = vec![];
+                for c in r.exclude_cidrs {
+                    if c.trim().is_empty() {
+                        continue;
+                    }
+                    let c = crate::branch::sites::parse_cidr(&c).map_err(|e| e.to_string())?;
+                    let c = crate::branch::sites::cidr_string(&c);
+                    if !exclude_cidrs.contains(&c) {
+                        exclude_cidrs.push(c);
+                    }
+                }
+                Ok(Params::DualHomed(DualHomedParams {
+                    lookback_days: r.lookback_days,
+                    min_duration_secs: r.min_duration_secs,
+                    exclude_interfaces,
+                    exclude_cidrs,
+                    only_cross_site: r.only_cross_site,
+                }))
+            }
             _ => Err(format!("未知的規則類型：{kind}")),
         }
     }
@@ -653,6 +744,7 @@ impl Params {
             Params::PatchAge { .. } => "patch_age",
             Params::RebootPending { .. } => "reboot_pending",
             Params::UpdatePolicy => "update_policy",
+            Params::DualHomed(_) => "dual_homed",
         }
     }
 
@@ -786,6 +878,21 @@ impl Params {
                 m.insert("max_days".into(), json!(max_days));
             }
             Params::UpdatePolicy => {}
+            Params::DualHomed(p) => {
+                m.insert("lookback_days".into(), json!(p.lookback_days));
+                if p.min_duration_secs > 0 {
+                    m.insert("min_duration_secs".into(), json!(p.min_duration_secs));
+                }
+                if !p.exclude_interfaces.is_empty() {
+                    m.insert("exclude_interfaces".into(), json!(p.exclude_interfaces));
+                }
+                if !p.exclude_cidrs.is_empty() {
+                    m.insert("exclude_cidrs".into(), json!(p.exclude_cidrs));
+                }
+                if p.only_cross_site {
+                    m.insert("only_cross_site".into(), json!(true));
+                }
+            }
         }
         Value::Object(m)
     }
@@ -886,6 +993,17 @@ impl Params {
                 max_days: *max_days,
             },
             Params::UpdatePolicy => Check::UpdatePolicy,
+            Params::DualHomed(p) => Check::DualHomed {
+                lookback_days: p.lookback_days,
+                min_duration_secs: p.min_duration_secs,
+                exclude_interfaces: p.exclude_interfaces.iter().map(|n| Glob::new(n)).collect(),
+                exclude_cidrs: p
+                    .exclude_cidrs
+                    .iter()
+                    .filter_map(|c| crate::branch::sites::parse_cidr(c).ok())
+                    .collect(),
+                only_cross_site: p.only_cross_site,
+            },
         }
     }
 }
@@ -1071,6 +1189,61 @@ mod tests {
             assert!(KINDS.contains(&k), "{k}");
             assert_ne!(kind_label(k), "未知類型", "{k}");
         }
+    }
+
+    #[test]
+    fn dual_homed_params() {
+        let p = Params::parse(
+            "dual_homed",
+            &json!({
+                "lookback_days": 14,
+                "min_duration_secs": 30,
+                "exclude_interfaces": [" *Npcap* ", "", "*Npcap*"],
+                "exclude_cidrs": ["192.168.56.1/24", " ", "192.168.56.0/24"],
+                "only_cross_site": true
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            p.to_json(),
+            json!({
+                "lookback_days": 14,
+                "min_duration_secs": 30,
+                "exclude_interfaces": ["*Npcap*"],
+                "exclude_cidrs": ["192.168.56.0/24"],
+                "only_cross_site": true
+            })
+        );
+        assert_eq!(p.kind(), "dual_homed");
+        assert_eq!(
+            Params::parse("dual_homed", &p.to_json()).unwrap(),
+            p,
+            "往返"
+        );
+        // 預設 7 天，其他都不設
+        let d = Params::parse("dual_homed", &json!({})).unwrap();
+        assert_eq!(d.to_json(), json!({"lookback_days": 7}));
+        assert!(matches!(
+            d.compile(),
+            Check::DualHomed {
+                lookback_days: 7,
+                ..
+            }
+        ));
+        for bad in [
+            json!({"lookback_days": 0}),
+            json!({"lookback_days": 91}),
+            json!({"min_duration_secs": 86_401}),
+            json!({"exclude_cidrs": ["10.0.0.0/33"]}),
+            json!({"exclude_cidrs": ["nope"]}),
+            json!({"exclude_interfaces": ["x".repeat(MAX_PATTERN_LEN + 1)]}),
+            json!({"exclude_interfaces": vec!["a"; MAX_EXCEPTIONS + 1]}),
+            json!({"unknown": 1}),
+        ] {
+            assert!(Params::parse("dual_homed", &bad).is_err(), "{bad}");
+        }
+        assert!(KINDS.contains(&"dual_homed"));
+        assert_eq!(kind_label("dual_homed"), "多重連線");
     }
 
     #[test]

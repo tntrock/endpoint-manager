@@ -75,6 +75,15 @@ fn env_filter(env: &str) -> &'static str {
     }
 }
 
+/// 多重連線篩選值：now（目前）、recent（7 天內），其他一律當成全部
+fn net_filter(net: &str) -> &'static str {
+    match net {
+        "now" => "now",
+        "recent" => "recent",
+        _ => "",
+    }
+}
+
 /// Linux 裝置沒有資料的分頁
 const WINDOWS_ONLY_TABS: &[&str] = &[
     "compliance",
@@ -195,6 +204,9 @@ pub struct ListQuery {
     /// 執行環境：空白＝全部、physical、vm、container、wsl
     #[serde(default)]
     env: String,
+    /// 多重連線：空白＝全部、now、recent
+    #[serde(default)]
+    net: String,
     #[serde(default)]
     page: i64,
     /// 排序（`web::sort`）
@@ -239,6 +251,7 @@ struct DevicesPage {
     statuses: Vec<SelectOption>,
     oses: Vec<SelectOption>,
     envs: Vec<SelectOption>,
+    nets: Vec<SelectOption>,
     groups: Vec<SelectOption>,
     rows: Vec<DeviceRow>,
     page: i64,
@@ -265,12 +278,13 @@ type ListRow = (
 
 fn page_url(q: &ListQuery, sort: &str, page: i64) -> String {
     format!(
-        "/devices?q={}&status={}&group={}&os={}&env={}&software={}&version={}&sort={}&page={page}",
+        "/devices?q={}&status={}&group={}&os={}&env={}&net={}&software={}&version={}&sort={}&page={page}",
         enc(&q.q),
         enc(&q.status),
         enc(&q.group),
         enc(&q.os),
         enc(&q.env),
+        enc(&q.net),
         enc(&q.software),
         enc(&q.version),
         enc(sort)
@@ -321,6 +335,9 @@ async fn list_page(
                 WHEN 'physical' THEN d.runs_in = 'host' AND d.runs_in_detail = 'none' \
                 WHEN 'vm' THEN d.runs_in = 'host' AND d.runs_in_detail <> 'none' \
                 ELSE d.runs_in = $13 END) IS TRUE \
+           AND ($14 = '' OR EXISTS (SELECT 1 FROM device_dual_homed_periods p \
+                WHERE p.device_id = d.id AND (p.ended_at IS NULL \
+                      OR ($14 = 'recent' AND p.ended_at > now() - interval '7 days')))) \
            AND ($3 = '' OR d.hostname ILIKE $4 OR d.logged_on_user ILIKE $4 OR d.last_ip ILIKE $4 \
                 OR EXISTS (SELECT 1 FROM unnest(d.ips) x WHERE host(x) ILIKE $4)) \
            AND (CASE WHEN $5 = '' THEN d.status <> 'retired' WHEN $5 = 'all' THEN true \
@@ -347,6 +364,7 @@ async fn list_page(
     .bind(page * PAGE_SIZE)
     .bind(os_filter(&q.os))
     .bind(env_filter(&q.env))
+    .bind(net_filter(&q.net))
     .fetch_all(&st.pool)
     .await?;
     let has_next = rows.len() as i64 > PAGE_SIZE;
@@ -434,10 +452,23 @@ async fn list_page(
         selected: env_filter(&q.env) == v,
     })
     .collect();
+    let nets = [
+        ("", "所有網路狀態"),
+        ("now", "多重連線（目前）"),
+        ("recent", "多重連線（7 天內）"),
+    ]
+    .into_iter()
+    .map(|(v, l)| SelectOption {
+        value: v.into(),
+        label: l.into(),
+        selected: net_filter(&q.net) == v,
+    })
+    .collect();
     let headers = sort::headers(&LIST_COLS, sort, |p| page_url(&q, p, 0));
     Ok(render(&DevicesPage {
         oses,
         envs,
+        nets,
         groups: group_options(st, s, &q.group, true).await?,
         move_groups: if s.all_devices() {
             group_options(st, s, "", false).await?
@@ -1247,5 +1278,8 @@ mod tests {
         assert_eq!(l(None, None), None);
         assert_eq!(env_filter("vm"), "vm");
         assert_eq!(env_filter("x'; --"), "");
+        assert_eq!(net_filter("now"), "now");
+        assert_eq!(net_filter("recent"), "recent");
+        assert_eq!(net_filter("x"), "");
     }
 }

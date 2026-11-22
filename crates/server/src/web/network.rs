@@ -45,16 +45,7 @@ pub struct PeriodRow {
 /// 最多列出幾段多重連線紀錄
 const PERIOD_LIMIT: i64 = 20;
 
-/// 持續時間：秒、分鐘、小時、天
-pub fn duration_label(d: time::Duration) -> String {
-    let s = d.whole_seconds().max(0);
-    match s {
-        0..60 => format!("{s} 秒"),
-        60..3600 => format!("{} 分鐘", s / 60),
-        3600..86_400 => format!("{} 小時 {} 分", s / 3600, s % 3600 / 60),
-        _ => format!("{} 天 {} 小時", s / 86_400, s % 86_400 / 3600),
-    }
-}
+pub use crate::network::duration_label;
 
 type Period = (
     time::OffsetDateTime,

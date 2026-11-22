@@ -14,6 +14,9 @@
   <select name="env" aria-label="執行環境">
     {% for o in envs %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}
   </select>
+  <select name="net" aria-label="多重連線">
+    {% for o in nets %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}
+  </select>
   <select name="os" aria-label="作業系統">
     {% for o in oses %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}
   </select>

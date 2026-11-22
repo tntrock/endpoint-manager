@@ -53,6 +53,28 @@ pub fn ago(now: OffsetDateTime, t: Option<OffsetDateTime>) -> String {
     }
 }
 
+/// 多重連線的問題：持續中的優先（高），否則列 7 天內的次數（中）。期間是最近的在前
+pub fn dual_homed_issue(
+    now: OffsetDateTime,
+    periods: &[(OffsetDateTime, Option<OffsetDateTime>, String)],
+) -> Option<Issue> {
+    if let Some((start, _, detail)) = periods.iter().find(|p| p.1.is_none()) {
+        return Some(Issue {
+            severity: "high",
+            title: "目前為多重連線".into(),
+            detail: format!("{detail}；{}開始", ago(now, Some(*start))),
+            tab: Some("network"),
+        });
+    }
+    let (_, end, detail) = periods.first()?;
+    Some(Issue {
+        severity: "medium",
+        title: format!("7 天內曾多重連線 {} 次", periods.len()),
+        detail: format!("最近一次在{}結束：{detail}", ago(now, *end)),
+        tab: Some("network"),
+    })
+}
+
 fn rank(sev: &str) -> u8 {
     match sev {
         "high" => 0,
@@ -118,6 +140,19 @@ pub async fn build(st: &AppState, f: &Facts<'_>) -> Result<(Vec<Card>, Vec<Issue
                 .into(),
             tab: None,
         });
+    }
+
+    // 多重連線：持續中的、或 7 天內出現過的（Windows 與 Linux 都看）
+    let dual: Vec<(OffsetDateTime, Option<OffsetDateTime>, String)> = sqlx::query_as(
+        "SELECT started_at, ended_at, detail FROM device_dual_homed_periods \
+         WHERE device_id = $1 AND (ended_at IS NULL OR ended_at > now() - interval '7 days') \
+         ORDER BY started_at DESC, id DESC",
+    )
+    .bind(f.id)
+    .fetch_all(&st.pool)
+    .await?;
+    if let Some(issue) = dual_homed_issue(now, &dual) {
+        issues.push(issue);
     }
 
     if f.linux {
@@ -348,6 +383,28 @@ async fn windows(
 mod tests {
     use super::*;
     use time::Duration;
+
+    #[test]
+    fn dual_homed_issues() {
+        let now = OffsetDateTime::now_utc();
+        assert!(dual_homed_issue(now, &[]).is_none());
+        let closed = (
+            now - Duration::hours(5),
+            Some(now - Duration::hours(3)),
+            "A".to_string(),
+        );
+        let i = dual_homed_issue(now, &[closed.clone(), closed.clone()]).unwrap();
+        assert_eq!(
+            (i.severity, i.title.as_str()),
+            ("medium", "7 天內曾多重連線 2 次")
+        );
+        assert_eq!(i.detail, "最近一次在3 小時前結束：A");
+        let open = (now - Duration::minutes(10), None, "B".to_string());
+        let i = dual_homed_issue(now, &[closed, open]).unwrap();
+        assert_eq!((i.severity, i.title.as_str()), ("high", "目前為多重連線"));
+        assert_eq!(i.detail, "B；10 分鐘前開始");
+        assert_eq!(i.tab, Some("network"));
+    }
 
     #[test]
     fn relative_time() {

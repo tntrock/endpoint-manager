@@ -59,6 +59,52 @@ pub fn evaluate(state: &NetState, sites: &[SiteNets]) -> Option<DualHomed> {
     dual_homed(&nics, sites)
 }
 
+async fn open_period(
+    conn: &mut PgConnection,
+    device_id: Uuid,
+    at: OffsetDateTime,
+    dh: &DualHomed,
+    names: &[String],
+    state: &NetState,
+    incomplete: bool,
+) -> Result<i64, sqlx::Error> {
+    let nics: Vec<&NetInterface> = state.values().collect();
+    sqlx::query_scalar(
+        "INSERT INTO device_dual_homed_periods \
+             (device_id, started_at, detail, interfaces, incomplete, nics, reason) \
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7) RETURNING id",
+    )
+    .bind(device_id)
+    .bind(at)
+    .bind(dh.describe())
+    .bind(names)
+    .bind(incomplete)
+    .bind(serde_json::to_string(&nics).expect("serializable"))
+    .bind(dh.reason())
+    .fetch_one(conn)
+    .await
+}
+
+/// 結束時間不早於開始時間（端點時鐘可能被往回調）
+async fn close_period(
+    conn: &mut PgConnection,
+    id: i64,
+    at: OffsetDateTime,
+    gap: bool,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE device_dual_homed_periods \
+         SET ended_at = greatest($2, started_at), incomplete = incomplete OR $3 \
+         WHERE id = $1",
+    )
+    .bind(id)
+    .bind(at)
+    .bind(gap)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
 /// 一筆要存的事件
 pub struct Incoming<'a> {
     pub seq: i64,
@@ -132,8 +178,10 @@ pub async fn ingest(
         .into_iter()
         .map(|i| (i.name.clone(), i))
         .collect();
-    let mut open: Option<i64> = sqlx::query_scalar(
-        "SELECT id FROM device_dual_homed_periods WHERE device_id = $1 AND ended_at IS NULL",
+    // 持續中的期間與它涉及的網卡
+    let mut open: Option<(i64, Vec<String>)> = sqlx::query_as(
+        "SELECT id, interfaces FROM device_dual_homed_periods \
+         WHERE device_id = $1 AND ended_at IS NULL",
     )
     .bind(device_id)
     .fetch_optional(&mut *conn)
@@ -142,7 +190,7 @@ pub async fn ingest(
     for e in list.iter().filter(|e| inserted.contains(&e.seq)) {
         if e.event.kind == AgentEvent::JOURNAL_DROPPED {
             gap = true;
-            if let Some(id) = open {
+            if let Some((id, _)) = &open {
                 sqlx::query("UPDATE device_dual_homed_periods SET incomplete = true WHERE id = $1")
                     .bind(id)
                     .execute(&mut *conn)
@@ -153,41 +201,23 @@ pub async fn ingest(
         if !apply(&mut state, &e.event.kind, &e.event.data) {
             continue;
         }
-        match (evaluate(&state, sites), open) {
-            (Some(dh), None) => {
-                let names: Vec<String> = dh.interfaces().iter().map(|s| s.to_string()).collect();
-                open = Some(
-                    sqlx::query_scalar(
-                        "INSERT INTO device_dual_homed_periods \
-                             (device_id, started_at, detail, interfaces, incomplete) \
-                         VALUES ($1, $2, $3, $4, $5) RETURNING id",
-                    )
-                    .bind(device_id)
-                    .bind(e.at)
-                    .bind(dh.describe())
-                    .bind(&names)
-                    .bind(gap)
-                    .fetch_one(&mut *conn)
-                    .await?,
-                );
-                gap = false;
-            }
-            (None, Some(id)) => {
-                // 結束時間不早於開始時間（端點時鐘可能被往回調）
-                sqlx::query(
-                    "UPDATE device_dual_homed_periods \
-                     SET ended_at = greatest($2, started_at), incomplete = incomplete OR $3 \
-                     WHERE id = $1",
-                )
-                .bind(id)
-                .bind(e.at)
-                .bind(gap)
-                .execute(&mut *conn)
-                .await?;
-                open = None;
-                gap = false;
-            }
-            _ => {}
+        let now = evaluate(&state, sites);
+        let names: Option<Vec<String>> = now
+            .as_ref()
+            .map(|d| d.interfaces().iter().map(|s| s.to_string()).collect());
+        // 涉及的網卡改變時，結束這一段、開始新的一段：每段的網卡快照才對得上，
+        // 合規規則的例外設定（排除某張網卡或網段）重新判斷時才準確
+        if let Some((id, current)) = &open
+            && names.as_ref() != Some(current)
+        {
+            close_period(conn, *id, e.at, gap).await?;
+            open = None;
+            gap = false;
+        }
+        if let (Some(dh), Some(names), None) = (&now, names, &open) {
+            let id = open_period(conn, device_id, e.at, dh, &names, &state, gap).await?;
+            open = Some((id, names));
+            gap = false;
         }
     }
 

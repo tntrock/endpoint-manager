@@ -128,10 +128,13 @@ pub async fn checkin(
             )
             .await?;
             tx.commit().await?;
+            // 多重連線期間可能變了：重算這台的合規（多重連線規則）
+            crate::compliance::refresh_after_upload(&st, device.device_id).await?;
             ack
         }
         _ => None,
     };
+
     let deploy = st.deploy.get_throttled(&st.pool).await?;
     let updates = st.updates.get_throttled(&st.pool).await?;
     let branch = st.branch.get_throttled(&st.pool).await?;

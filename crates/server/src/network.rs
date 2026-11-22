@@ -7,14 +7,14 @@ use protocol::NetInterface;
 use crate::branch::sites::{cidr_contains, parse_cidr};
 
 /// 據點與它的網段
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SiteNets {
     pub name: String,
     pub cidrs: Vec<(IpAddr, u8)>,
 }
 
 /// 讀取所有據點的網段
-pub async fn load_sites(pool: &sqlx::PgPool) -> Result<Vec<SiteNets>, sqlx::Error> {
+pub async fn load_sites<'e>(pool: impl sqlx::PgExecutor<'e>) -> Result<Vec<SiteNets>, sqlx::Error> {
     let rows: Vec<(String, Vec<String>)> =
         sqlx::query_as("SELECT name, cidrs::text[] FROM sites ORDER BY id")
             .fetch_all(pool)
@@ -41,6 +41,17 @@ pub fn site_of<'a>(sites: &'a [SiteNets], addr: &str) -> Option<&'a str> {
         .map(|s| s.name.as_str())
 }
 
+/// 持續時間：秒、分鐘、小時、天
+pub fn duration_label(d: time::Duration) -> String {
+    let s = d.whole_seconds().max(0);
+    match s {
+        0..60 => format!("{s} 秒"),
+        60..3600 => format!("{} 分鐘", s / 60),
+        3600..86_400 => format!("{} 小時 {} 分", s / 3600, s % 3600 / 60),
+        _ => format!("{} 天 {} 小時", s / 86_400, s % 86_400 / 3600),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DualHomed {
     /// 條件 1：兩張以上有預設閘道的實體網卡
@@ -58,6 +69,14 @@ impl DualHomed {
             DualHomed::CrossesSite { inside, outside } => {
                 format!("{inside} 在公司據點網段內，同時 {outside} 經由據點以外的閘道連線")
             }
+        }
+    }
+
+    /// 存進資料庫的原因代碼
+    pub fn reason(&self) -> &'static str {
+        match self {
+            DualHomed::TwoUplinks(_) => "two_uplinks",
+            DualHomed::CrossesSite { .. } => "crosses_site",
         }
     }
 
@@ -151,6 +170,7 @@ mod tests {
         let d = dual_homed(&[nic("a", "wifi", "", true), lte], &[]).unwrap();
         assert!(d.describe().contains("a、lte"));
         assert_eq!(d.interfaces(), ["a", "lte"]);
+        assert_eq!(d.reason(), "two_uplinks");
     }
 
     #[test]
@@ -168,6 +188,7 @@ mod tests {
         );
         assert!(d.describe().contains("據點以外"));
         assert_eq!(d.interfaces(), ["eth", "wifi"]);
+        assert_eq!(d.reason(), "crosses_site");
         // 沒設定據點時不用條件 2
         assert_eq!(dual_homed(&[eth.clone(), hotspot.clone()], &[]), None);
         // 在家連 VPN 回公司：VPN 的位址在據點網段內，但 VPN 不算

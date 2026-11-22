@@ -124,6 +124,29 @@ pub async fn recompute_step_with(pool: &PgPool, concurrency: usize) -> Result<bo
     Ok(true)
 }
 
+/// 多重連線違規的裝置：期間超過回溯天數後要恢復符合，但這段時間可能沒有任何上傳觸發重算，
+/// 所以定期重算一次。回傳重算的台數
+pub async fn refresh_dual_homed(pool: &PgPool) -> Result<usize, sqlx::Error> {
+    let ids: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT DISTINCT v.device_id FROM device_violations v \
+         JOIN compliance_rules r ON r.id = v.rule_id \
+         WHERE r.kind = 'dual_homed' AND v.status = 'violating'",
+    )
+    .fetch_all(pool)
+    .await?;
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let rules = {
+        let mut conn = pool.acquire().await?;
+        load_ruleset(&mut conn).await?
+    };
+    for id in &ids {
+        refresh_device(pool, &rules, *id).await?;
+    }
+    Ok(ids.len())
+}
+
 pub async fn recompute_all(pool: &PgPool) -> Result<(), sqlx::Error> {
     while recompute_step(pool).await? {
         tokio::task::yield_now().await;
@@ -264,6 +287,9 @@ pub fn spawn(pool: PgPool) {
                 }
                 if let Err(e) = cleanup_history(&pool, today).await {
                     tracing::error!(error = %e, "violation history cleanup failed");
+                }
+                if let Err(e) = refresh_dual_homed(&pool).await {
+                    tracing::error!(error = %e, "dual-homed compliance refresh failed");
                 }
             }
         }
