@@ -16,6 +16,30 @@ pub const CONFIG_AGENT_VERSION: &str = "0.3.0";
 /// 細節中最多列出的軟體數
 pub const MAX_LISTED: usize = 50;
 
+/// 支援 network 區段與本機事件的最低 Agent 版本
+pub const NETWORK_AGENT_VERSION: &str = "0.12.0";
+
+/// 細節中最多列出的多重連線期間數
+pub const MAX_PERIODS_LISTED: usize = 5;
+
+/// 一段多重連線期間（`device_dual_homed_periods`）
+#[derive(Debug, Clone, PartialEq)]
+pub struct PeriodFact {
+    pub started_at: time::OffsetDateTime,
+    pub ended_at: Option<time::OffsetDateTime>,
+    /// 期間開始時的網卡狀態：套用例外設定後重新判斷
+    pub nics: Vec<protocol::NetInterface>,
+    pub incomplete: bool,
+}
+
+/// 多重連線規則用的事實
+#[derive(Debug, Clone, PartialEq)]
+pub struct NetFacts {
+    /// 最近的在前
+    pub periods: Vec<PeriodFact>,
+    pub sites: std::sync::Arc<Vec<crate::network::SiteNets>>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SoftwareFact {
     pub name: String,
@@ -41,6 +65,8 @@ pub struct DeviceFacts {
     pub agent_version: Option<String>,
     /// Agent 回報的 Windows Update 狀態（None：從未回報）
     pub update_status: Option<UpdateFact>,
+    /// network 區段與多重連線期間（None：從未上傳 network 區段）
+    pub network: Option<NetFacts>,
     /// 評估時的「現在」（病毒碼天數用）：由呼叫端提供，評估本身維持純函式
     pub now: time::OffsetDateTime,
     /// 管理網頁時區的今天：修補的安裝日期是裝置本地日期，「太久沒更新」用它計算天數
@@ -238,6 +264,94 @@ fn registry_check(
     Some((Status::Violating, d))
 }
 
+/// 去掉例外的網卡；位址全在例外網段內的網卡也去掉
+fn filter_nics(
+    nics: &[protocol::NetInterface],
+    names: &[Glob],
+    cidrs: &[(std::net::IpAddr, u8)],
+) -> Vec<protocol::NetInterface> {
+    let excluded = |addr: &str| {
+        addr.split('/')
+            .next()
+            .and_then(|ip| ip.parse::<std::net::IpAddr>().ok())
+            .is_some_and(|ip| {
+                cidrs
+                    .iter()
+                    .any(|c| crate::branch::sites::cidr_contains(c, &ip))
+            })
+    };
+    nics.iter()
+        .filter(|i| !names.iter().any(|g| g.is_match(&i.name)))
+        .filter_map(|i| {
+            let mut i = i.clone();
+            let had = !i.addresses.is_empty();
+            i.addresses.retain(|a| !excluded(a));
+            (!had || !i.addresses.is_empty()).then_some(i)
+        })
+        .collect()
+}
+
+fn check_dual_homed(
+    f: &DeviceFacts,
+    lookback_days: u32,
+    min_duration_secs: u32,
+    names: &[Glob],
+    cidrs: &[(std::net::IpAddr, u8)],
+    only_cross_site: bool,
+) -> Option<(Status, Value)> {
+    let Some(n) = &f.network else {
+        let outdated = f
+            .agent_version
+            .as_deref()
+            .is_none_or(|v| cmp_version(v, NETWORK_AGENT_VERSION) == Ordering::Less);
+        return if outdated {
+            Some((Status::Unknown, json!({"reason": "agent_outdated"})))
+        } else {
+            no_data()
+        };
+    };
+    let cutoff = f.now - time::Duration::days(i64::from(lookback_days));
+    let hits: Vec<Value> = n
+        .periods
+        .iter()
+        .filter(|p| p.ended_at.is_none_or(|e| e >= cutoff))
+        .filter(|p| {
+            (p.ended_at.unwrap_or(f.now) - p.started_at).whole_seconds()
+                >= i64::from(min_duration_secs)
+        })
+        .filter_map(|p| {
+            let dh = crate::network::dual_homed(&filter_nics(&p.nics, names, cidrs), &n.sites)?;
+            if only_cross_site && !matches!(dh, crate::network::DualHomed::CrossesSite { .. }) {
+                return None;
+            }
+            let mut v = json!({
+                "started": super::display_time(p.started_at),
+                "detail": dh.describe(),
+            });
+            // 持續中的不記長度：每次評估都會變，細節一直更新沒有意義
+            match p.ended_at {
+                Some(e) => v["duration_secs"] = json!((e - p.started_at).whole_seconds()),
+                None => v["ongoing"] = json!(true),
+            }
+            if p.incomplete {
+                v["incomplete"] = json!(true);
+            }
+            Some(v)
+        })
+        .collect();
+    if hits.is_empty() {
+        return None;
+    }
+    Some((
+        Status::Violating,
+        json!({
+            "dual_homed": hits.iter().take(MAX_PERIODS_LISTED).collect::<Vec<_>>(),
+            "count": hits.len(),
+            "lookback_days": lookback_days,
+        }),
+    ))
+}
+
 fn check_one(c: &Check, f: &DeviceFacts) -> Option<(Status, Value)> {
     match c {
         Check::PatchAge { max_days } => {
@@ -269,6 +383,20 @@ fn check_one(c: &Check, f: &DeviceFacts) -> Option<(Status, Value)> {
                 )
             })
         }
+        Check::DualHomed {
+            lookback_days,
+            min_duration_secs,
+            exclude_interfaces,
+            exclude_cidrs,
+            only_cross_site,
+        } => check_dual_homed(
+            f,
+            *lookback_days,
+            *min_duration_secs,
+            exclude_interfaces,
+            exclude_cidrs,
+            *only_cross_site,
+        ),
         Check::UpdatePolicy => {
             let Some(u) = &f.update_status else {
                 return no_update_status();
@@ -651,6 +779,25 @@ pub fn summarize(d: &Value) -> String {
         }
         _ => {}
     }
+    if let Some(first) = d["dual_homed"].as_array().and_then(|a| a.first()) {
+        let when = if first["ongoing"].as_bool() == Some(true) {
+            format!("{} 起持續中", first["started"].as_str().unwrap_or(""))
+        } else {
+            format!(
+                "{}，持續 {}",
+                first["started"].as_str().unwrap_or(""),
+                crate::network::duration_label(time::Duration::seconds(
+                    first["duration_secs"].as_i64().unwrap_or_default()
+                ))
+            )
+        };
+        return format!(
+            "{} 天內多重連線 {} 次，最近一次：{when}（{}）",
+            d["lookback_days"].as_u64().unwrap_or_default(),
+            d["count"].as_u64().unwrap_or_default(),
+            first["detail"].as_str().unwrap_or("")
+        );
+    }
     let days = d["days"].as_i64().unwrap_or_default();
     if d.get("last_patch_date").is_some() {
         return format!("最後裝更新：{}（{days} 天前）", s("last_patch_date"));
@@ -856,6 +1003,7 @@ mod tests {
             services: None,
             agent_version: Some("0.3.0".into()),
             update_status: None,
+            network: None,
             now: time::OffsetDateTime::now_utc(),
             today: time::OffsetDateTime::now_utc().date(),
         }
@@ -1663,6 +1811,132 @@ mod tests {
                 "{kind}"
             );
         }
+    }
+
+    fn net(name: &str, kind: &str, addr: &str, gw: bool) -> protocol::NetInterface {
+        protocol::NetInterface {
+            name: name.into(),
+            description: None,
+            kind: kind.into(),
+            up: true,
+            mac: None,
+            addresses: vec![addr.into()],
+            gateways: if gw { vec!["x".into()] } else { vec![] },
+            dns: vec![],
+            ssid: None,
+        }
+    }
+
+    #[test]
+    fn dual_homed_rule() {
+        let now = time::macros::datetime!(2026-11-22 12:00 UTC);
+        let hq = std::sync::Arc::new(vec![crate::network::SiteNets {
+            name: "總部".into(),
+            cidrs: vec![crate::branch::sites::parse_cidr("10.1.0.0/16").unwrap()],
+        }]);
+        let two = vec![
+            net("eth", "ethernet", "10.1.2.3/24", true),
+            net("Npcap Loopback", "ethernet", "192.168.56.1/24", true),
+        ];
+        let cross = vec![
+            net("eth", "ethernet", "10.1.2.3/24", false),
+            net("Wi-Fi", "wifi", "192.168.43.5/24", true),
+        ];
+        let period =
+            |start_h: i64, end_h: Option<i64>, nics: &Vec<protocol::NetInterface>| PeriodFact {
+                started_at: now - time::Duration::hours(start_h),
+                ended_at: end_h.map(|h| now - time::Duration::hours(h)),
+                nics: nics.clone(),
+                incomplete: false,
+            };
+        let mut f = facts(vec![]);
+        f.now = now;
+
+        // 沒有 network 區段：Agent 太舊或還沒上傳
+        let (st, d) = one(&f, "dual_homed", json!({})).unwrap();
+        assert_eq!(
+            (st, d["reason"].as_str()),
+            (Status::Unknown, Some("agent_outdated"))
+        );
+        f.agent_version = Some("0.12.0".into());
+        assert_eq!(
+            one(&f, "dual_homed", json!({})).unwrap().1["reason"],
+            "no_data"
+        );
+
+        f.network = Some(NetFacts {
+            periods: vec![
+                period(1, None, &two),
+                period(30, Some(29), &cross),
+                period(24 * 10, Some(24 * 10 - 1), &cross),
+            ],
+            sites: hq.clone(),
+        });
+        // 預設 7 天：10 天前那段不算；持續中的不記長度
+        let (st, d) = one(&f, "dual_homed", json!({})).unwrap();
+        assert_eq!(st, Status::Violating);
+        assert_eq!(d["count"], 2);
+        assert_eq!(d["dual_homed"][0]["ongoing"], true);
+        assert!(d["dual_homed"][0].get("duration_secs").is_none());
+        assert_eq!(d["dual_homed"][1]["duration_secs"], 3600);
+        let s = summarize(&d);
+        assert!(s.starts_with("7 天內多重連線 2 次，最近一次："), "{s}");
+        assert!(s.contains("起持續中") && s.contains("兩條對外路徑"), "{s}");
+
+        // 回溯 14 天：三段都算
+        assert_eq!(
+            one(&f, "dual_homed", json!({"lookback_days": 14}))
+                .unwrap()
+                .1["count"],
+            3
+        );
+        // 例外網卡：Npcap 那段不算
+        let d = one(&f, "dual_homed", json!({"exclude_interfaces": ["*npcap*"]}))
+            .unwrap()
+            .1;
+        assert_eq!(d["count"], 1);
+        let s = summarize(&d);
+        assert!(
+            s.contains("持續 1 小時 0 分") && s.contains("據點以外"),
+            "{s}"
+        );
+        // 例外網段：同樣排除 Npcap（它的位址都在例外網段內）
+        let d = one(
+            &f,
+            "dual_homed",
+            json!({"exclude_cidrs": ["192.168.56.0/24"]}),
+        )
+        .unwrap()
+        .1;
+        assert_eq!(d["count"], 1);
+        // 只看條件 2
+        let d = one(&f, "dual_homed", json!({"only_cross_site": true}))
+            .unwrap()
+            .1;
+        assert_eq!(d["count"], 1);
+        // 最短持續時間：持續中的那段（已 1 小時）與 1 小時那段都算；設 2 小時就都不算
+        assert!(one(&f, "dual_homed", json!({"min_duration_secs": 7200})).is_none());
+        // 兩個例外一起：沒有違規
+        assert!(
+            one(
+                &f,
+                "dual_homed",
+                json!({"exclude_interfaces": ["*npcap*"], "exclude_cidrs": ["192.168.43.0/24"]})
+            )
+            .is_none()
+        );
+        // 可能不完整的期間有註記
+        if let Some(n) = f.network.as_mut() {
+            n.periods[0].incomplete = true;
+        }
+        let d = one(&f, "dual_homed", json!({})).unwrap().1;
+        assert_eq!(d["dual_homed"][0]["incomplete"], true);
+        // 沒有期間：符合
+        f.network = Some(NetFacts {
+            periods: vec![],
+            sites: hq,
+        });
+        assert!(one(&f, "dual_homed", json!({})).is_none());
     }
 
     #[test]

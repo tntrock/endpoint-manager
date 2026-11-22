@@ -63,6 +63,27 @@ pub struct ParamFields {
     pub admins_allowed: String,
     /// 太久沒更新／待重開機太久的天數
     pub max_days: String,
+    /// 多重連線：回溯天數、最短持續秒數、例外網卡與網段（每行一個）、只看條件 2
+    pub dh_lookback: String,
+    pub dh_min_secs: String,
+    pub dh_exclude_nics: String,
+    pub dh_exclude_cidrs: String,
+    pub dh_cross_only: bool,
+}
+
+fn lines(v: &str) -> Vec<&str> {
+    v.lines().map(str::trim).filter(|l| !l.is_empty()).collect()
+}
+
+fn joined(v: &Value, k: &str) -> String {
+    v[k].as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
 }
 
 pub fn parse_form(raw: &[u8]) -> RuleForm {
@@ -105,6 +126,11 @@ pub fn parse_form(raw: &[u8]) -> RuleForm {
             "p_pw_max_lockout" => f.p.pw_max_lockout = v,
             "p_admins_allowed" => f.p.admins_allowed = v,
             "p_max_days" => f.p.max_days = v,
+            "p_dh_lookback" => f.p.dh_lookback = v,
+            "p_dh_min_secs" => f.p.dh_min_secs = v,
+            "p_dh_exclude_nics" => f.p.dh_exclude_nics = v,
+            "p_dh_exclude_cidrs" => f.p.dh_exclude_cidrs = v,
+            "p_dh_cross_only" => f.p.dh_cross_only = v == "1",
             _ => {}
         }
     }
@@ -194,6 +220,22 @@ pub fn form_to_input(f: &RuleForm) -> Result<RuleInput, String> {
         }),
         "patch_age" | "reboot_pending" => json!({ "max_days": num("天數", &p.max_days)? }),
         "update_policy" => json!({}),
+        "dual_homed" => {
+            let mut m = serde_json::Map::new();
+            if let Some(n) = num("回溯天數", &p.dh_lookback)? {
+                m.insert("lookback_days".into(), json!(n));
+            }
+            if let Some(n) = num("最短持續秒數", &p.dh_min_secs)? {
+                m.insert("min_duration_secs".into(), json!(n));
+            }
+            m.insert(
+                "exclude_interfaces".into(),
+                json!(lines(&p.dh_exclude_nics)),
+            );
+            m.insert("exclude_cidrs".into(), json!(lines(&p.dh_exclude_cidrs)));
+            m.insert("only_cross_site".into(), json!(p.dh_cross_only));
+            Value::Object(m)
+        }
         "local_admins" => {
             let allowed: Vec<&str> = p
                 .admins_allowed
@@ -258,6 +300,11 @@ pub fn params_to_form(kind: &str, v: &Value) -> ParamFields {
         pw_max_age: s("max_age_days"),
         pw_max_lockout: s("max_lockout_threshold"),
         max_days: s("max_days"),
+        dh_lookback: s("lookback_days"),
+        dh_min_secs: s("min_duration_secs"),
+        dh_exclude_nics: joined(v, "exclude_interfaces"),
+        dh_exclude_cidrs: joined(v, "exclude_cidrs"),
+        dh_cross_only: b("only_cross_site"),
         admins_allowed: v["allowed"]
             .as_array()
             .map(|a| {
@@ -868,6 +915,13 @@ mod tests {
             ("patch_age", json!({"max_days": 30})),
             ("reboot_pending", json!({"max_days": 7})),
             ("update_policy", json!({})),
+            ("dual_homed", json!({"lookback_days": 7})),
+            (
+                "dual_homed",
+                json!({"lookback_days": 30, "min_duration_secs": 60,
+                       "exclude_interfaces": ["*Npcap*", "vEthernet*"],
+                       "exclude_cidrs": ["192.168.56.0/24"], "only_cross_site": true}),
+            ),
             (
                 "defender",
                 json!({"realtime": true, "max_signature_age_days": 7}),
@@ -896,6 +950,27 @@ mod tests {
             let back = Params::parse(kind, &input.params).unwrap().to_json();
             assert_eq!(back, params, "{kind}");
         }
+    }
+
+    #[test]
+    fn dual_homed_form_fields_parse() {
+        let i = form_to_input(&form(
+            "dual_homed",
+            &[
+                ("p_dh_lookback", ""),
+                ("p_dh_min_secs", "30"),
+                ("p_dh_exclude_nics", " *Npcap* \r\n\r\n"),
+                ("p_dh_exclude_cidrs", "10.9.0.0/16\n"),
+                ("p_dh_cross_only", "1"),
+            ],
+        ))
+        .unwrap();
+        assert_eq!(
+            i.params,
+            json!({"min_duration_secs": 30, "exclude_interfaces": ["*Npcap*"],
+                   "exclude_cidrs": ["10.9.0.0/16"], "only_cross_site": true})
+        );
+        assert!(form_to_input(&form("dual_homed", &[("p_dh_lookback", "x")])).is_err());
     }
 
     /// 表單送出的原始欄位（核取方塊、多行）能正確解析

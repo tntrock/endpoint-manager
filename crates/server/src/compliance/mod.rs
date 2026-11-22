@@ -45,13 +45,25 @@ pub fn set_display_offset(o: time::UtcOffset) {
     let _ = DISPLAY_OFFSET.set(o);
 }
 
-/// 管理網頁時區的今天；沒設定時用 +8（與 AppState 的預設相同）
-pub fn today(now: time::OffsetDateTime) -> time::Date {
-    let o = DISPLAY_OFFSET
+fn display_offset() -> time::UtcOffset {
+    DISPLAY_OFFSET
         .get()
         .copied()
-        .unwrap_or_else(|| time::UtcOffset::from_whole_seconds(8 * 3600).expect("valid offset"));
-    now.to_offset(o).date()
+        .unwrap_or_else(|| time::UtcOffset::from_whole_seconds(8 * 3600).expect("valid offset"))
+}
+
+/// 管理網頁時區的今天；沒設定時用 +8（與 AppState 的預設相同）
+pub fn today(now: time::OffsetDateTime) -> time::Date {
+    now.to_offset(display_offset()).date()
+}
+
+/// 違規細節裡給人看的時間（管理網頁時區，到分鐘）
+pub fn display_time(t: time::OffsetDateTime) -> String {
+    t.to_offset(display_offset())
+        .format(time::macros::format_description!(
+            "[year]-[month]-[day] [hour]:[minute]"
+        ))
+        .unwrap_or_default()
 }
 
 /// 會影響合規結果的區段
@@ -64,6 +76,7 @@ pub fn affects_compliance(section: Section) -> bool {
             | Section::Services
             | Section::Security
             | Section::Registry
+            | Section::Network
     )
 }
 

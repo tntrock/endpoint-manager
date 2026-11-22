@@ -104,8 +104,15 @@ fn validate(i: &SiteInput) -> anyhow::Result<Valid> {
 
 async fn bump(conn: &mut PgConnection) -> Result<(), sqlx::Error> {
     sqlx::query("UPDATE branch_state SET generation = generation + 1")
-        .execute(conn)
+        .execute(&mut *conn)
         .await?;
+    // 據點網段會影響多重連線的判斷：有啟用中的多重連線規則時重算全部裝置
+    sqlx::query(
+        "UPDATE compliance_state SET generation = generation + 1 \
+         WHERE EXISTS (SELECT 1 FROM compliance_rules WHERE kind = 'dual_homed' AND enabled)",
+    )
+    .execute(conn)
+    .await?;
     Ok(())
 }
 

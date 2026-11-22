@@ -7,7 +7,8 @@ use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
 use super::evaluate::{
-    DeviceFacts, Outcome, ServiceFact, SoftwareFact, UpdateFact, evaluate, registry_key,
+    DeviceFacts, NetFacts, Outcome, PeriodFact, ServiceFact, SoftwareFact, UpdateFact, evaluate,
+    registry_key,
 };
 use super::rules::{Params, Rule, RuleSet, Severity};
 
@@ -146,6 +147,49 @@ async fn load_config(conn: &mut PgConnection, ids: &[Uuid]) -> Result<ConfigFact
     }
     Ok(out)
 }
+type PeriodDbRow = (
+    Uuid,
+    time::OffsetDateTime,
+    Option<time::OffsetDateTime>,
+    Value,
+    bool,
+);
+
+/// 多重連線規則用的期間（最長回溯範圍內，最近的在前）與據點網段
+async fn load_network(
+    conn: &mut PgConnection,
+    ids: &[Uuid],
+) -> Result<
+    (
+        HashMap<Uuid, Vec<PeriodFact>>,
+        std::sync::Arc<Vec<crate::network::SiteNets>>,
+    ),
+    sqlx::Error,
+> {
+    let rows: Vec<PeriodDbRow> = sqlx::query_as(
+        "SELECT device_id, started_at, ended_at, nics, incomplete \
+         FROM device_dual_homed_periods \
+         WHERE device_id = ANY($1) \
+           AND (ended_at IS NULL OR ended_at > now() - make_interval(days => $2)) \
+         ORDER BY started_at DESC, id DESC",
+    )
+    .bind(ids)
+    .bind(super::rules::MAX_LOOKBACK_DAYS as i32)
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut out: HashMap<Uuid, Vec<PeriodFact>> = HashMap::new();
+    for (id, started_at, ended_at, nics, incomplete) in rows {
+        out.entry(id).or_default().push(PeriodFact {
+            started_at,
+            ended_at,
+            nics: serde_json::from_value(nics).unwrap_or_default(),
+            incomplete,
+        });
+    }
+    let sites = crate::network::load_sites(&mut *conn).await?;
+    Ok((out, std::sync::Arc::new(sites)))
+}
+
 type SoftwareRow = (String, Option<String>, Option<String>);
 
 pub async fn load_facts(
@@ -205,8 +249,18 @@ pub async fn load_facts(
     .fetch_all(&mut *conn)
     .await?;
     let mut cfg = load_config(conn, &[id]).await?;
+    let network = if has("network") {
+        let (mut periods, sites) = load_network(conn, &[id]).await?;
+        Some(NetFacts {
+            periods: periods.remove(&id).unwrap_or_default(),
+            sites,
+        })
+    } else {
+        None
+    };
     let now = time::OffsetDateTime::now_utc();
     Ok(Some(DeviceFacts {
+        network,
         active,
         group_id,
         os_build: has("basic").then(|| os_build.unwrap_or_default()),
@@ -473,6 +527,7 @@ pub async fn load_facts_bulk(
         kbs.entry(d).or_default().push(kb);
     }
     let mut cfg = load_config(conn, ids).await?;
+    let (mut periods, sites) = load_network(conn, ids).await?;
     let now = time::OffsetDateTime::now_utc();
     let mut has: std::collections::HashSet<(Uuid, String)> = std::collections::HashSet::new();
     has.extend(sections);
@@ -495,6 +550,10 @@ pub async fn load_facts_bulk(
                 services: has(id, "services").then(|| cfg.services.remove(&id).unwrap_or_default()),
                 agent_version,
                 update_status: cfg.updates.remove(&id),
+                network: has(id, "network").then(|| NetFacts {
+                    periods: periods.remove(&id).unwrap_or_default(),
+                    sites: sites.clone(),
+                }),
                 now,
                 today: super::today(now),
             };

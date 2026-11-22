@@ -96,7 +96,7 @@ async fn device_list_sorts(pool: PgPool) {
 
     let (_, html) = s.page(&c, "/devices").await;
     assert_eq!(order(&html, &names), vec![0, 1, 2]);
-    assert!(html.contains(r#"aria-sort="ascending"><a class="sort" href="/devices?q=&#38;status=&#38;group=&#38;os=&#38;env=&#38;software=&#38;version=&#38;sort=-hostname&#38;page=0">電腦名稱 ▲</a>"#), "{html}");
+    assert!(html.contains(r#"aria-sort="ascending"><a class="sort" href="/devices?q=&#38;status=&#38;group=&#38;os=&#38;env=&#38;net=&#38;software=&#38;version=&#38;sort=-hostname&#38;page=0">電腦名稱 ▲</a>"#), "{html}");
     let (_, html) = s.page(&c, "/devices?sort=-hostname").await;
     assert_eq!(order(&html, &names), vec![2, 1, 0]);
     // 最後報到：新到舊
