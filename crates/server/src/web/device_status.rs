@@ -29,6 +29,8 @@ pub struct Issue {
 pub struct Facts<'a> {
     pub id: Uuid,
     pub linux: bool,
+    /// Linux 裝置有容器執行環境：容器合規規則適用，顯示合規卡片
+    pub containers: bool,
     pub status: &'a str,
     pub last_seen: Option<OffsetDateTime>,
     pub online: bool,
@@ -156,6 +158,9 @@ pub async fn build(st: &AppState, f: &Facts<'_>) -> Result<(Vec<Card>, Vec<Issue
     }
 
     if f.linux {
+        if f.containers {
+            compliance(st, f, now, &mut cards, &mut issues).await?;
+        }
         cards.push(Card {
             label: "開機時間",
             value: f.boot.clone(),
@@ -210,7 +215,7 @@ pub async fn build(st: &AppState, f: &Facts<'_>) -> Result<(Vec<Card>, Vec<Issue
     Ok((cards, issues))
 }
 
-async fn windows(
+async fn compliance(
     st: &AppState,
     f: &Facts<'_>,
     now: OffsetDateTime,
@@ -273,6 +278,17 @@ async fn windows(
             tab: Some("compliance"),
         });
     }
+    Ok(())
+}
+
+async fn windows(
+    st: &AppState,
+    f: &Facts<'_>,
+    now: OffsetDateTime,
+    cards: &mut Vec<Card>,
+    issues: &mut Vec<Issue>,
+) -> Result<(), sqlx::Error> {
+    compliance(st, f, now, cards, issues).await?;
 
     let update: Option<UpdateRow> = sqlx::query_as(
         "SELECT state, detail, reboot_pending, reboot_pending_since, last_patch_date \

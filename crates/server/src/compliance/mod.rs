@@ -77,6 +77,7 @@ pub fn affects_compliance(section: Section) -> bool {
             | Section::Security
             | Section::Registry
             | Section::Network
+            | Section::Containers
     )
 }
 

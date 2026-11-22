@@ -58,7 +58,24 @@ type FactRow = (
     Option<String>,
     Option<i32>,
     Option<String>,
+    bool,
 );
+
+/// containers 區段（一次讀一批裝置）；jsonb 壞掉的當成沒有資料
+async fn load_containers(
+    conn: &mut PgConnection,
+    ids: &[Uuid],
+) -> Result<HashMap<Uuid, protocol::ContainersInfo>, sqlx::Error> {
+    let rows: Vec<(Uuid, Value)> =
+        sqlx::query_as("SELECT device_id, data FROM device_containers WHERE device_id = ANY($1)")
+            .bind(ids)
+            .fetch_all(&mut *conn)
+            .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(id, v)| serde_json::from_value(v).ok().map(|c| (id, c)))
+        .collect())
+}
 
 /// security／registry／services 的事實（一次讀一批裝置）
 #[derive(Default)]
@@ -197,14 +214,14 @@ pub async fn load_facts(
     id: Uuid,
 ) -> Result<Option<DeviceFacts>, sqlx::Error> {
     let row: Option<FactRow> = sqlx::query_as(
-        // 合規只管 Windows：Linux 裝置視同非使用中，評估不產生任何結果
-        "SELECT (status = 'active' AND os_family = 'windows'), group_id, os_build, os_ubr, \
-         agent_version FROM devices WHERE id = $1",
+        // Linux 裝置只評估容器規則（evaluate 依規則類型篩選）
+        "SELECT (status = 'active' AND os_family IN ('windows', 'linux')), group_id, os_build, os_ubr, \
+         agent_version, os_family = 'linux' FROM devices WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(&mut *conn)
     .await?;
-    let Some((active, group_id, os_build, os_ubr, agent_version)) = row else {
+    let Some((active, group_id, os_build, os_ubr, agent_version, linux)) = row else {
         return Ok(None);
     };
     let sections: Vec<String> =
@@ -258,9 +275,16 @@ pub async fn load_facts(
     } else {
         None
     };
+    let containers = if has("containers") {
+        load_containers(conn, &[id]).await?.remove(&id)
+    } else {
+        None
+    };
     let now = time::OffsetDateTime::now_utc();
     Ok(Some(DeviceFacts {
         network,
+        containers,
+        linux,
         active,
         group_id,
         os_build: has("basic").then(|| os_build.unwrap_or_default()),
@@ -482,6 +506,7 @@ type BulkDeviceRow = (
     Option<String>,
     Option<i32>,
     Option<String>,
+    bool,
 );
 type BulkSoftwareRow = (Uuid, String, Option<String>, Option<String>);
 
@@ -491,8 +516,9 @@ pub async fn load_facts_bulk(
     ids: &[Uuid],
 ) -> Result<Vec<(Uuid, DeviceFacts)>, sqlx::Error> {
     let devices: Vec<BulkDeviceRow> = sqlx::query_as(
-        "SELECT id, (status = 'active' AND os_family = 'windows'), group_id, os_build, os_ubr, \
-         agent_version FROM devices WHERE id = ANY($1) ORDER BY id",
+        "SELECT id, (status = 'active' AND os_family IN ('windows', 'linux')), group_id, os_build, os_ubr, \
+         agent_version, os_family = 'linux' \
+         FROM devices WHERE id = ANY($1) ORDER BY id",
     )
     .bind(ids)
     .fetch_all(&mut *conn)
@@ -528,36 +554,45 @@ pub async fn load_facts_bulk(
     }
     let mut cfg = load_config(conn, ids).await?;
     let (mut periods, sites) = load_network(conn, ids).await?;
+    let mut containers = load_containers(conn, ids).await?;
     let now = time::OffsetDateTime::now_utc();
     let mut has: std::collections::HashSet<(Uuid, String)> = std::collections::HashSet::new();
     has.extend(sections);
     let has = |d: Uuid, s: &str| has.contains(&(d, s.to_string()));
     Ok(devices
         .into_iter()
-        .map(|(id, active, group_id, os_build, os_ubr, agent_version)| {
-            let facts = DeviceFacts {
-                active,
-                group_id,
-                os_build: has(id, "basic").then(|| os_build.unwrap_or_default()),
-                os_ubr: os_ubr.and_then(|u| u32::try_from(u).ok()),
-                software: has(id, "software").then(|| sw.remove(&id).unwrap_or_default()),
-                kbs: has(id, "patches").then(|| kbs.remove(&id).unwrap_or_default()),
-                exempt: vec![],
-                security: has(id, "security")
-                    .then(|| cfg.security.remove(&id))
-                    .flatten(),
-                registry: has(id, "registry").then(|| cfg.registry.remove(&id).unwrap_or_default()),
-                services: has(id, "services").then(|| cfg.services.remove(&id).unwrap_or_default()),
-                agent_version,
-                update_status: cfg.updates.remove(&id),
-                network: has(id, "network").then(|| NetFacts {
-                    periods: periods.remove(&id).unwrap_or_default(),
-                    sites: sites.clone(),
-                }),
-                now,
-                today: super::today(now),
-            };
-            (id, facts)
-        })
+        .map(
+            |(id, active, group_id, os_build, os_ubr, agent_version, linux)| {
+                let facts = DeviceFacts {
+                    active,
+                    linux,
+                    containers: has(id, "containers")
+                        .then(|| containers.remove(&id))
+                        .flatten(),
+                    group_id,
+                    os_build: has(id, "basic").then(|| os_build.unwrap_or_default()),
+                    os_ubr: os_ubr.and_then(|u| u32::try_from(u).ok()),
+                    software: has(id, "software").then(|| sw.remove(&id).unwrap_or_default()),
+                    kbs: has(id, "patches").then(|| kbs.remove(&id).unwrap_or_default()),
+                    exempt: vec![],
+                    security: has(id, "security")
+                        .then(|| cfg.security.remove(&id))
+                        .flatten(),
+                    registry: has(id, "registry")
+                        .then(|| cfg.registry.remove(&id).unwrap_or_default()),
+                    services: has(id, "services")
+                        .then(|| cfg.services.remove(&id).unwrap_or_default()),
+                    agent_version,
+                    update_status: cfg.updates.remove(&id),
+                    network: has(id, "network").then(|| NetFacts {
+                        periods: periods.remove(&id).unwrap_or_default(),
+                        sites: sites.clone(),
+                    }),
+                    now,
+                    today: super::today(now),
+                };
+                (id, facts)
+            },
+        )
         .collect())
 }

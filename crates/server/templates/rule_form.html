@@ -82,6 +82,21 @@
        <textarea name="p_dh_exclude_cidrs" rows="4" cols="30" placeholder="192.168.56.0/24">{{ p.dh_exclude_cidrs }}</textarea></label></div>
     <p class="checks"><label><input type="checkbox" name="p_dh_cross_only" value="1" {% if p.dh_cross_only %}checked{% endif %}> 只抓「公司網路＋外部網路」（需要在據點設定網段）</label></p>
     <p class="muted">回溯期間內出現過一次多重連線就算違規，期間結束並超過回溯天數後自動恢復。短於最短持續時間的期間（例如切換網路時的瞬間重疊）不計。只套用到 Windows 裝置（合規目前只管 Windows）；Linux 裝置可在「網路」分頁與裝置清單篩選查看。</p>
+  {% else if kind == "forbidden_image" %}
+    <label class="field">映像（可用 <code>*</code>）<input name="p_img_image" value="{{ p.img_image }}" required maxlength="256" size="40" placeholder="*xmrig*"></label>
+    <p class="checks"><label><input type="checkbox" name="p_img_running" value="1" {% if p.img_running_only %}checked{% endif %}> 只看執行中的容器</label></p>
+    <p class="muted">不寫版本標籤就比對所有版本：<code>nginx</code> 符合 <code>nginx:1.27</code> 與 <code>docker.io/library/nginx:1.27</code>；<code>nginx:1.1*</code> 只符合 1.1 開頭的版本。只套用到 Linux 裝置；沒有回報容器資料的裝置不適用。</p>
+  {% else if kind == "container_privilege" %}
+    <p class="checks"><label><input type="checkbox" name="p_pv_privileged" value="1" {% if p.pv_privileged %}checked{% endif %}> 特權容器（privileged）</label>
+       <label><input type="checkbox" name="p_pv_host_network" value="1" {% if p.pv_host_network %}checked{% endif %}> 使用主機網路</label>
+       <label><input type="checkbox" name="p_pv_socket" value="1" {% if p.pv_socket %}checked{% endif %}> 掛載容器執行環境的 socket（docker.sock、podman.sock、containerd.sock、crio.sock）</label></p>
+    <div class="row"><label class="field">例外映像（每行一個，可用 <code>*</code>）
+       <textarea name="p_img_except" rows="4" cols="40" placeholder="portainer/*">{{ p.img_except }}</textarea></label></div>
+    <p class="muted">執行中的容器符合任一勾選條件就算違規。Kubernetes 的容器讀不到特權與主機網路設定，不計入檢查，違規細節會註明幾個無法判斷。只套用到 Linux 裝置。</p>
+  {% else if kind == "unpinned_image" %}
+    <div class="row"><label class="field">例外映像（每行一個，可用 <code>*</code>）
+       <textarea name="p_img_except" rows="4" cols="40" placeholder="*pause*">{{ p.img_except }}</textarea></label></div>
+    <p class="muted">執行中的容器使用的映像沒有版本標籤、或標籤是 <code>latest</code>，而且沒有用 digest（<code>@sha256:…</code>）固定時算違規。LXC／Incus 系統容器不檢查。只套用到 Linux 裝置。</p>
   {% else if kind == "update_policy" %}
 
     <p class="muted">裝置的更新原則被改動（例如 GPO 覆蓋）或套用失敗時算違規；不受管的裝置算符合。</p>

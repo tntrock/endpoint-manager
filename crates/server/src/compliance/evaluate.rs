@@ -22,6 +22,9 @@ pub const NETWORK_AGENT_VERSION: &str = "0.12.0";
 /// 細節中最多列出的多重連線期間數
 pub const MAX_PERIODS_LISTED: usize = 5;
 
+/// 細節中最多列出的容器數
+pub const MAX_CONTAINERS_LISTED: usize = 20;
+
 /// 一段多重連線期間（`device_dual_homed_periods`）
 #[derive(Debug, Clone, PartialEq)]
 pub struct PeriodFact {
@@ -51,6 +54,8 @@ pub struct SoftwareFact {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DeviceFacts {
     pub active: bool,
+    /// Linux 裝置只評估容器規則，Windows 裝置只評估其他規則
+    pub linux: bool,
     pub group_id: Option<i64>,
     pub os_build: Option<String>,
     pub os_ubr: Option<u32>,
@@ -67,6 +72,8 @@ pub struct DeviceFacts {
     pub update_status: Option<UpdateFact>,
     /// network 區段與多重連線期間（None：從未上傳 network 區段）
     pub network: Option<NetFacts>,
+    /// containers 區段（None：從未上傳，容器規則不適用）
+    pub containers: Option<protocol::ContainersInfo>,
     /// 評估時的「現在」（病毒碼天數用）：由呼叫端提供，評估本身維持純函式
     pub now: time::OffsetDateTime,
     /// 管理網頁時區的今天：修補的安裝日期是裝置本地日期，「太久沒更新」用它計算天數
@@ -352,8 +359,196 @@ fn check_dual_homed(
     ))
 }
 
+/// 映像參照拆成倉庫、版本標籤與是否帶 digest
+struct ImageRef<'a> {
+    repo: &'a str,
+    tag: Option<&'a str>,
+    digest: bool,
+}
+
+fn image_ref(image: &str) -> ImageRef<'_> {
+    let (name, digest) = match image.split_once('@') {
+        Some((n, _)) => (n, true),
+        None => (image, false),
+    };
+    // 冒號在最後一個斜線之後才是版本標籤（registry:5000/app 的冒號是連接埠）
+    let slash = name.rfind('/').map_or(0, |i| i + 1);
+    match name[slash..].rfind(':') {
+        Some(i) => ImageRef {
+            repo: &name[..slash + i],
+            tag: Some(&name[slash + i + 1..]),
+            digest,
+        },
+        None => ImageRef {
+            repo: name,
+            tag: None,
+            digest,
+        },
+    }
+}
+
+/// Docker Hub 的完整寫法去掉前綴：containerd 回報 `docker.io/library/nginx:1`，Docker 回報 `nginx:1`
+fn short_image(image: &str) -> &str {
+    [
+        "docker.io/library/",
+        "index.docker.io/library/",
+        "docker.io/",
+        "index.docker.io/",
+    ]
+    .iter()
+    .find_map(|p| image.strip_prefix(p))
+    .unwrap_or(image)
+}
+
+/// 映像樣式比對完整寫法、去掉 Docker Hub 前綴的寫法，以及兩者不含版本標籤的倉庫名稱：
+/// `nginx` 符合 `nginx:1.27` 與 `docker.io/library/nginx:1.27`
+pub fn image_matches(g: &Glob, image: &str) -> bool {
+    let short = short_image(image);
+    [image, short, image_ref(image).repo, image_ref(short).repo]
+        .iter()
+        .any(|s| g.is_match(s))
+}
+
+/// 沒有版本標籤或標籤是 latest，而且沒有 digest。以映像 ID 參照（`sha256:…`）算固定。
+fn unpinned(image: &str) -> bool {
+    let is_id = image.starts_with("sha256:")
+        || (image.len() == 64 && image.bytes().all(|b| b.is_ascii_hexdigit()));
+    let r = image_ref(image);
+    !is_id && !image.is_empty() && !r.digest && r.tag.is_none_or(|t| t == "latest")
+}
+
+/// 掛載的是容器執行環境的 socket：等於可以控制主機上所有容器
+fn runtime_socket(path: &str) -> bool {
+    let file = path.rsplit('/').next().unwrap_or(path);
+    matches!(
+        file,
+        "docker.sock" | "podman.sock" | "containerd.sock" | "crio.sock"
+    )
+}
+
+fn container_entry(c: &protocol::ContainerItem, issues: &[&str]) -> Value {
+    let name = match &c.k8s {
+        Some(k) => format!("{}/{}", k.namespace, c.name),
+        None => c.name.clone(),
+    };
+    let mut v = json!({"name": name, "image": c.image});
+    if !issues.is_empty() {
+        v["issues"] = json!(issues);
+    }
+    v
+}
+
+/// 容器規則的共同流程：沒有 containers 區段不適用；有符合的容器就違規；
+/// 都沒有但有執行環境讀取失敗就是未知（失敗的那個環境可能有符合的容器）
+fn check_containers(
+    f: &DeviceFacts,
+    check: &str,
+    hit: impl Fn(&protocol::ContainerItem) -> Option<Vec<&'static str>>,
+    undetermined: usize,
+) -> Option<(Status, Value)> {
+    let info = f.containers.as_ref()?;
+    let hits: Vec<Value> = info
+        .containers
+        .iter()
+        .filter_map(|c| hit(c).map(|issues| container_entry(c, &issues)))
+        .collect();
+    if !hits.is_empty() {
+        let mut d = json!({
+            "check": check,
+            "containers": hits.iter().take(MAX_CONTAINERS_LISTED).collect::<Vec<_>>(),
+            "total": hits.len(),
+        });
+        if undetermined > 0 {
+            d["undetermined"] = json!(undetermined);
+        }
+        return Some((Status::Violating, d));
+    }
+    let errors: Vec<String> = info
+        .runtimes
+        .iter()
+        .filter_map(|r| r.error.as_ref().map(|e| format!("{}：{e}", r.kind)))
+        .collect();
+    (!errors.is_empty()).then(|| {
+        (
+            Status::Unknown,
+            json!({"reason": "probe_error", "error": errors.join("；")}),
+        )
+    })
+}
+
+fn excepted(except: &[Glob], image: &str) -> bool {
+    except.iter().any(|g| image_matches(g, image))
+}
+
+fn privilege_issues(
+    c: &protocol::ContainerItem,
+    privileged: bool,
+    host_network: bool,
+    socket: bool,
+) -> Vec<&'static str> {
+    let mut v = vec![];
+    if privileged && c.privileged == Some(true) {
+        v.push("特權");
+    }
+    if host_network && c.host_network == Some(true) {
+        v.push("主機網路");
+    }
+    if socket && c.host_mounts.iter().any(|m| runtime_socket(m)) {
+        v.push("掛載容器 socket");
+    }
+    v
+}
+
 fn check_one(c: &Check, f: &DeviceFacts) -> Option<(Status, Value)> {
     match c {
+        Check::ForbiddenImage {
+            image,
+            running_only,
+        } => check_containers(
+            f,
+            "forbidden",
+            |c| {
+                ((!running_only || c.is_running()) && image_matches(image, &c.image)).then(Vec::new)
+            },
+            0,
+        ),
+        Check::ContainerPrivilege {
+            privileged,
+            host_network,
+            runtime_socket: socket,
+            except_images,
+        } => {
+            let (p, h, s) = (*privileged, *host_network, *socket);
+            let in_scope =
+                |c: &protocol::ContainerItem| c.is_running() && !excepted(except_images, &c.image);
+            // 讀不到特權或主機網路、其他勾選條件也沒命中的容器：不計入，細節註明數量
+            let undetermined = f.containers.as_ref().map_or(0, |i| {
+                i.containers
+                    .iter()
+                    .filter(|c| in_scope(c) && privilege_issues(c, p, h, s).is_empty())
+                    .filter(|c| (p && c.privileged.is_none()) || (h && c.host_network.is_none()))
+                    .count()
+            });
+            check_containers(
+                f,
+                "privilege",
+                |c| Some(privilege_issues(c, p, h, s)).filter(|v| in_scope(c) && !v.is_empty()),
+                undetermined,
+            )
+        }
+        Check::UnpinnedImage { except_images } => check_containers(
+            f,
+            "unpinned",
+            |c| {
+                // 系統容器（LXC／Incus）的映像沒有版本標籤的概念
+                (c.is_running()
+                    && !matches!(c.runtime.as_str(), "lxc" | "incus")
+                    && unpinned(&c.image)
+                    && !excepted(except_images, &c.image))
+                .then(Vec::new)
+            },
+            0,
+        ),
         Check::PatchAge { max_days } => {
             let Some(u) = &f.update_status else {
                 return no_update_status();
@@ -752,6 +947,40 @@ fn software_list(d: &Value) -> String {
     s
 }
 
+fn container_summary(d: &Value, items: &[Value]) -> String {
+    let list = items
+        .iter()
+        .map(|c| {
+            let name = c["name"].as_str().unwrap_or("");
+            let image = c["image"].as_str().unwrap_or("");
+            match c["issues"].as_array() {
+                Some(i) => {
+                    let i: Vec<&str> = i.iter().filter_map(Value::as_str).collect();
+                    format!("{name}（{image}：{}）", i.join("、"))
+                }
+                None => format!("{name}（{image}）"),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("、");
+    let total = d["total"].as_u64().unwrap_or_default();
+    let more = if total as usize > items.len() {
+        format!(" 等 {total} 個")
+    } else {
+        String::new()
+    };
+    let head = match d["check"].as_str() {
+        Some("forbidden") => "使用禁止的映像",
+        Some("unpinned") => "映像未固定版本",
+        _ => "權限過大",
+    };
+    let mut s = format!("{head}：{list}{more}");
+    if let Some(n) = d["undetermined"].as_u64() {
+        s.push_str(&format!("；另有 {n} 個容器無法判斷"));
+    }
+    s
+}
+
 /// 給人看的一行摘要（網頁、CSV、通知共用）。
 pub fn summarize(d: &Value) -> String {
     let s = |k: &str| d[k].as_str().unwrap_or("").to_string();
@@ -778,6 +1007,9 @@ pub fn summarize(d: &Value) -> String {
             return "Agent 尚未回報更新狀態（需要 Agent 0.5.0 以上）".into();
         }
         _ => {}
+    }
+    if let Some(items) = d["containers"].as_array() {
+        return container_summary(d, items);
     }
     if let Some(first) = d["dual_homed"].as_array().and_then(|a| a.first()) {
         let when = if first["ongoing"].as_bool() == Some(true) {
@@ -929,6 +1161,8 @@ pub fn evaluate(facts: &DeviceFacts, rules: &RuleSet) -> Vec<Outcome> {
         .rules
         .iter()
         .filter(|r| r.applies_to(facts.group_id))
+        // 參數壞掉的規則不知道類型，跟舊版一樣只對 Windows 顯示
+        .filter(|r| r.check.as_ref().is_ok_and(Check::linux_only) == facts.linux)
         .filter_map(|r| {
             let (status, detail) = match &r.check {
                 Ok(c) => check_one(c, facts)?,
@@ -1004,6 +1238,8 @@ mod tests {
             agent_version: Some("0.3.0".into()),
             update_status: None,
             network: None,
+            linux: false,
+            containers: None,
             now: time::OffsetDateTime::now_utc(),
             today: time::OffsetDateTime::now_utc().date(),
         }
@@ -1975,5 +2211,229 @@ mod tests {
             ..facts(vec![])
         };
         assert!(evaluate(&inactive, &set("required_kb", json!({"kb": "KB5031455"}))).is_empty());
+    }
+
+    fn ctr(name: &str, image: &str, state: &str) -> protocol::ContainerItem {
+        protocol::ContainerItem {
+            runtime: "docker".into(),
+            id: "0123456789ab".into(),
+            name: name.into(),
+            image: image.into(),
+            image_id: None,
+            state: state.into(),
+            health: None,
+            created_at: None,
+            started_at: None,
+            finished_at: None,
+            restart_policy: None,
+            privileged: Some(false),
+            host_network: Some(false),
+            ports: vec![],
+            host_mounts: vec![],
+            owner: None,
+            k8s: None,
+        }
+    }
+
+    fn linux(containers: Vec<protocol::ContainerItem>) -> DeviceFacts {
+        DeviceFacts {
+            linux: true,
+            containers: Some(protocol::ContainersInfo {
+                runtimes: vec![protocol::RuntimeInfo {
+                    kind: "docker".into(),
+                    version: None,
+                    error: None,
+                }],
+                containers,
+                truncated: false,
+            }),
+            ..facts(vec![])
+        }
+    }
+
+    #[test]
+    fn image_refs() {
+        let r = image_ref("registry.local:5000/team/app:1.2@sha256:ab");
+        assert_eq!(
+            (r.repo, r.tag, r.digest),
+            ("registry.local:5000/team/app", Some("1.2"), true)
+        );
+        let r = image_ref("registry.local:5000/app");
+        assert_eq!(
+            (r.repo, r.tag, r.digest),
+            ("registry.local:5000/app", None, false)
+        );
+        assert_eq!(short_image("docker.io/library/nginx:1"), "nginx:1");
+        assert_eq!(short_image("docker.io/bitnami/redis"), "bitnami/redis");
+        assert_eq!(short_image("ghcr.io/x/y"), "ghcr.io/x/y");
+
+        let g = Glob::new("nginx");
+        assert!(image_matches(&g, "nginx:1.27"));
+        assert!(image_matches(&g, "docker.io/library/nginx:1.27"));
+        assert!(image_matches(&g, "nginx@sha256:ab"));
+        assert!(!image_matches(&g, "nginx-proxy:1"));
+        assert!(image_matches(
+            &Glob::new("nginx:1.1*"),
+            "docker.io/library/nginx:1.18"
+        ));
+        assert!(!image_matches(&Glob::new("nginx:1.1*"), "nginx:1.27"));
+
+        for (image, want) in [
+            ("nginx", true),
+            ("nginx:latest", true),
+            ("docker.io/library/nginx:LATEST", false),
+            ("registry.local:5000/app", true),
+            ("nginx:1.27", false),
+            ("nginx@sha256:ab", false),
+            ("nginx:latest@sha256:ab", false),
+            ("sha256:0123", false),
+            (&"a".repeat(64), false),
+            ("", false),
+        ] {
+            assert_eq!(unpinned(image), want, "{image}");
+        }
+        assert!(runtime_socket("/var/run/docker.sock"));
+        assert!(runtime_socket("/run/k3s/containerd/containerd.sock"));
+        assert!(!runtime_socket("/var/run/docker.sock.d/x"));
+        assert!(!runtime_socket("/srv/data"));
+    }
+
+    #[test]
+    fn container_rules_platform_and_applicability() {
+        // Windows 裝置不跑容器規則；Linux 裝置不跑其他規則
+        assert!(one(&facts(vec![]), "unpinned_image", json!({})).is_none());
+        let f = linux(vec![ctr("web", "nginx", "running")]);
+        assert!(one(&f, "required_kb", json!({"kb": "KB5031455"})).is_none());
+        // 沒有回報容器：不適用
+        let none = DeviceFacts {
+            containers: None,
+            ..f.clone()
+        };
+        assert!(one(&none, "unpinned_image", json!({})).is_none());
+        // 參數壞掉的規則只對 Windows
+        let mut rs = set("unpinned_image", json!({}));
+        rs.rules[0].check = Err("壞掉".into());
+        assert!(evaluate(&f, &rs).is_empty());
+        assert_eq!(evaluate(&facts(vec![]), &rs).len(), 1);
+    }
+
+    #[test]
+    fn forbidden_and_unpinned_images() {
+        let f = linux(vec![
+            ctr("a", "xmrig/xmrig:6", "running"),
+            ctr("b", "xmrig/xmrig:5", "exited"),
+            ctr("c", "nginx:1.27", "running"),
+        ]);
+        let (st, d) = one(&f, "forbidden_image", json!({"image": "xmrig/*"})).unwrap();
+        assert_eq!(st, Status::Violating);
+        assert_eq!(d["total"], 1);
+        let (_, d) = one(
+            &f,
+            "forbidden_image",
+            json!({"image": "xmrig/*", "running_only": false}),
+        )
+        .unwrap();
+        assert_eq!(d["total"], 2);
+        assert_eq!(
+            summarize(&d),
+            "使用禁止的映像：a（xmrig/xmrig:6）、b（xmrig/xmrig:5）"
+        );
+        assert!(one(&f, "unpinned_image", json!({})).is_none());
+
+        let mut sys = ctr("lxd", "ubuntu", "running");
+        sys.runtime = "lxc".into();
+        let many: Vec<_> = (0..25)
+            .map(|i| ctr(&format!("w{i}"), "busybox", "running"))
+            .chain([sys, ctr("pause", "registry.k8s.io/pause", "running")])
+            .collect();
+        let (st, d) = one(
+            &linux(many),
+            "unpinned_image",
+            json!({"except_images": ["*pause*"]}),
+        )
+        .unwrap();
+        assert_eq!(st, Status::Violating);
+        assert_eq!(d["total"], 25, "系統容器與例外不算");
+        assert_eq!(
+            d["containers"].as_array().unwrap().len(),
+            MAX_CONTAINERS_LISTED
+        );
+        assert!(summarize(&d).starts_with("映像未固定版本：w0（busybox）、"));
+        assert!(summarize(&d).ends_with(" 等 25 個"));
+    }
+
+    #[test]
+    fn container_privilege() {
+        let mut p = ctr("p", "app:1", "running");
+        p.privileged = Some(true);
+        p.host_network = Some(true);
+        let mut stopped = ctr("s", "app:1", "exited");
+        stopped.privileged = Some(true);
+        let mut k8s = ctr("k", "app:1", "running");
+        k8s.privileged = None;
+        k8s.host_network = None;
+        k8s.k8s = Some(protocol::K8sRef {
+            namespace: "ns".into(),
+            pod: "pod".into(),
+        });
+        let mut sock = k8s.clone();
+        sock.name = "sock".into();
+        sock.host_mounts = vec!["/var/run/docker.sock".into()];
+        let f = linux(vec![p, stopped, k8s, sock]);
+
+        let (st, d) = one(
+            &f,
+            "container_privilege",
+            json!({"privileged": true, "host_network": true, "runtime_socket": true}),
+        )
+        .unwrap();
+        assert_eq!(st, Status::Violating);
+        assert_eq!(
+            d,
+            json!({"check": "privilege", "total": 2, "undetermined": 1, "containers": [
+                {"name": "p", "image": "app:1", "issues": ["特權", "主機網路"]},
+                {"name": "ns/sock", "image": "app:1", "issues": ["掛載容器 socket"]},
+            ]})
+        );
+        assert_eq!(
+            summarize(&d),
+            "權限過大：p（app:1：特權、主機網路）、ns/sock（app:1：掛載容器 socket）；另有 1 個容器無法判斷"
+        );
+        // 只檢查主機網路、而且有例外
+        let r = one(
+            &f,
+            "container_privilege",
+            json!({"host_network": true, "except_images": ["app"]}),
+        );
+        assert_eq!(r, None, "全部都在例外");
+        // 只檢查 socket：讀不到特權的容器不算無法判斷
+        let (_, d) = one(&f, "container_privilege", json!({"runtime_socket": true})).unwrap();
+        assert_eq!(d.get("undetermined"), None);
+    }
+
+    #[test]
+    fn container_runtime_errors_are_unknown() {
+        let mut f = linux(vec![]);
+        let info = f.containers.as_mut().unwrap();
+        info.runtimes[0].error = Some("daemon down".into());
+        info.runtimes.push(protocol::RuntimeInfo {
+            kind: "podman".into(),
+            version: None,
+            error: Some("denied".into()),
+        });
+        let (st, d) = one(&f, "forbidden_image", json!({"image": "x"})).unwrap();
+        assert_eq!(st, Status::Unknown);
+        assert_eq!(
+            summarize(&d),
+            "收集失敗：docker：daemon down；podman：denied"
+        );
+        // 有命中就算違規，不因為另一個環境失敗變成未知
+        f.containers
+            .as_mut()
+            .unwrap()
+            .containers
+            .push(ctr("x", "x", "running"));
+        let (st, _) = one(&f, "forbidden_image", json!({"image": "x"})).unwrap();
+        assert_eq!(st, Status::Violating);
     }
 }
