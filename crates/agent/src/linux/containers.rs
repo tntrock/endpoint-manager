@@ -84,12 +84,15 @@ fn rootless(items: &mut Vec<ContainerItem>, errors: &mut Vec<String>) {
     }
 }
 
-fn run(program: &str, args: &[&str]) -> anyhow::Result<String> {
+/// 執行外部指令；測試時換成回傳固定輸出的假指令
+type Run<'a> = &'a dyn Fn(&str, &[&str]) -> anyhow::Result<String>;
+
+fn real_run(program: &str, args: &[&str]) -> anyhow::Result<String> {
     run_capture(program, args, CMD_TIMEOUT)
 }
 
 /// Kubernetes 節點的 containerd：`crictl`（只有 k8s.io 命名空間）
-fn crictl() -> anyhow::Result<Vec<ContainerItem>> {
+fn crictl(run: Run) -> anyhow::Result<Vec<ContainerItem>> {
     let ps = run("crictl", &["ps", "-a", "-o", "json"])?;
     // inspect 要完整的 ID；從 ps 的輸出取
     let full: Vec<String> = serde_json::from_str::<serde_json::Value>(&ps)?["containers"]
@@ -110,7 +113,7 @@ fn crictl() -> anyhow::Result<Vec<ContainerItem>> {
 
 /// 非 Kubernetes 的 containerd：`nerdctl`，逐一命名空間。`moby` 是 Docker 自己的（已由 docker 讀過），
 /// `k8s.io` 有 crictl 時已經讀過
-fn nerdctl(skip_k8s: bool) -> anyhow::Result<Vec<ContainerItem>> {
+fn nerdctl(run: Run, skip_k8s: bool) -> anyhow::Result<Vec<ContainerItem>> {
     let namespaces = run("nerdctl", &["namespace", "ls", "-q"])?;
     let mut out = Vec::new();
     for ns in namespaces.split_whitespace() {
@@ -137,11 +140,11 @@ fn nerdctl(skip_k8s: bool) -> anyhow::Result<Vec<ContainerItem>> {
 }
 
 /// containerd：crictl 與 nerdctl 有哪個用哪個，合成一個執行環境。都沒有就回 None
-fn containerd(items: &mut Vec<ContainerItem>) -> Option<RuntimeInfo> {
+fn containerd(run: Run, items: &mut Vec<ContainerItem>) -> Option<RuntimeInfo> {
     let mut errors = Vec::new();
     let mut found = false;
     let mut version = None;
-    match crictl() {
+    match crictl(run) {
         Ok(v) => {
             found = true;
             items.extend(v);
@@ -158,7 +161,7 @@ fn containerd(items: &mut Vec<ContainerItem>) -> Option<RuntimeInfo> {
             .ok()
             .and_then(|o| parse::crictl_runtime_version(&o));
     }
-    match nerdctl(had_crictl && errors.is_empty()) {
+    match nerdctl(run, had_crictl && errors.is_empty()) {
         Ok(v) => {
             found = true;
             items.extend(v);
@@ -184,7 +187,7 @@ fn containerd(items: &mut Vec<ContainerItem>) -> Option<RuntimeInfo> {
 }
 
 /// 系統容器：Incus，沒有時 LXD（`lxc`）
-fn system_containers(items: &mut Vec<ContainerItem>) -> Option<RuntimeInfo> {
+fn system_containers(run: Run, items: &mut Vec<ContainerItem>) -> Option<RuntimeInfo> {
     for runtime in ["incus", "lxc"] {
         let listed = run(runtime, &["list", "--all-projects", "--format", "json"])
             .or_else(|_| run(runtime, &["list", "--format", "json"]));
@@ -237,8 +240,8 @@ pub fn collect() -> ContainersInfo {
             error,
         });
     }
-    runtimes.extend(containerd(&mut items));
-    runtimes.extend(system_containers(&mut items));
+    runtimes.extend(containerd(&real_run, &mut items));
+    runtimes.extend(system_containers(&real_run, &mut items));
 
     let (containers, truncated) = parse::select(items, time::OffsetDateTime::now_utc());
     ContainersInfo {
@@ -251,6 +254,131 @@ pub fn collect() -> ContainersInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::linux::exec::not_found;
+
+    /// 假的指令：依「程式 參數…」查表；查不到的程式當成不存在
+    fn fake(
+        table: Vec<(&'static str, anyhow::Result<&'static str>)>,
+    ) -> impl Fn(&str, &[&str]) -> anyhow::Result<String> {
+        move |program: &str, args: &[&str]| {
+            let cmd = format!("{program} {}", args.join(" "));
+            for (k, v) in &table {
+                if cmd.starts_with(k) {
+                    return match v {
+                        Ok(s) => Ok(s.to_string()),
+                        Err(e) => Err(anyhow::anyhow!("{e}")),
+                    };
+                }
+            }
+            Err(not_found(program))
+        }
+    }
+
+    const PS: &str = r#"{"containers": [{"id": "aaaabbbbccccdddd", "metadata": {"name": "nginx"},
+        "image": {"image": "nginx:1.27"}, "state": "CONTAINER_RUNNING",
+        "labels": {"io.kubernetes.pod.name": "web", "io.kubernetes.pod.namespace": "shop"}}]}"#;
+    const NERD: &str = r#"[{"Id": "1111222233334444", "Name": "job", "Image": "busybox:1",
+        "State": {"Status": "exited"}, "Created": "2026-11-21T00:00:00Z"}]"#;
+
+    #[test]
+    fn containerd_via_crictl_and_nerdctl() {
+        let run = fake(vec![
+            ("crictl ps", Ok(PS)),
+            ("crictl inspect", Err(anyhow::anyhow!("boom"))),
+            ("crictl version", Ok("RuntimeVersion: v1.7.22\n")),
+            ("nerdctl namespace", Ok("default\nk8s.io\nmoby\n")),
+            ("nerdctl --namespace default ps", Ok("1111222233334444\n")),
+            ("nerdctl --namespace default inspect", Ok(NERD)),
+        ]);
+        let mut items = vec![];
+        let r = containerd(&run, &mut items).unwrap();
+        assert_eq!(
+            (r.kind.as_str(), r.version.as_deref(), r.error.as_deref()),
+            ("containerd", Some("1.7.22"), None)
+        );
+        let names: Vec<&str> = items.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["nginx", "job"],
+            "k8s.io 與 moby 略過；inspect 失敗仍有 ps 的資料"
+        );
+        assert!(items.iter().all(|c| c.runtime == "containerd"));
+    }
+
+    #[test]
+    fn containerd_errors_and_absence() {
+        // 兩個指令都沒有：這台沒有 containerd
+        assert!(containerd(&fake(vec![]), &mut vec![]).is_none());
+        // crictl 設定錯誤、只有 nerdctl 而且沒有容器；版本改讀 containerd --version
+        let run = fake(vec![
+            ("crictl ps", Err(anyhow::anyhow!("no runtime endpoint"))),
+            ("nerdctl namespace", Ok("default\nk8s.io\n")),
+            ("nerdctl --namespace default ps", Ok("")),
+            ("nerdctl --namespace k8s.io ps", Ok("")),
+            (
+                "containerd --version",
+                Ok("containerd github.com/containerd/containerd v1.6.9 abc\n"),
+            ),
+        ]);
+        let mut items = vec![];
+        let r = containerd(&run, &mut items).unwrap();
+        assert!(items.is_empty());
+        assert_eq!(r.version.as_deref(), Some("1.6.9"));
+        assert!(r.error.unwrap().starts_with("crictl：no runtime endpoint"));
+        // crictl 沒有容器、nerdctl 失敗
+        let run = fake(vec![
+            ("crictl ps", Ok(r#"{"containers": []}"#)),
+            (
+                "nerdctl namespace",
+                Err(anyhow::anyhow!("permission denied")),
+            ),
+        ]);
+        let r = containerd(&run, &mut vec![]).unwrap();
+        assert!(r.error.unwrap().starts_with("nerdctl：permission denied"));
+    }
+
+    const INCUS: &str = r#"[{"name": "db", "type": "container", "status": "Running"}]"#;
+
+    #[test]
+    fn system_containers_prefers_incus() {
+        let run = fake(vec![
+            ("incus list --all-projects", Ok(INCUS)),
+            ("incus --version", Ok("6.0.1\n")),
+            ("lxc list", Ok("[]")),
+        ]);
+        let mut items = vec![];
+        let r = system_containers(&run, &mut items).unwrap();
+        assert_eq!(
+            (r.kind.as_str(), r.version.as_deref()),
+            ("incus", Some("6.0.1"))
+        );
+        assert_eq!(items[0].runtime, "incus");
+
+        // 沒有 incus：LXD；舊版不支援 --all-projects 時改用不加的
+        let run = fake(vec![
+            (
+                "lxc list --all-projects",
+                Err(anyhow::anyhow!("unknown flag")),
+            ),
+            ("lxc list --format", Ok(INCUS)),
+        ]);
+        let mut items = vec![];
+        let r = system_containers(&run, &mut items).unwrap();
+        assert_eq!((r.kind.as_str(), r.version, r.error), ("lxc", None, None));
+        assert_eq!(items.len(), 1);
+
+        // 指令存在但失敗、輸出壞掉
+        let r = system_containers(
+            &fake(vec![("incus list", Err(anyhow::anyhow!("not running")))]),
+            &mut vec![],
+        )
+        .unwrap();
+        assert_eq!(r.error.as_deref(), Some("not running"));
+        let r = system_containers(&fake(vec![("incus list", Ok("{}"))]), &mut vec![]).unwrap();
+        assert!(r.error.is_some());
+        // 都沒有
+        assert!(system_containers(&fake(vec![]), &mut vec![]).is_none());
+    }
 
     /// 有 Docker 而且有權限的機器（CI）才真的跑一個容器；其他機器略過
     #[test]

@@ -21,6 +21,12 @@ impl std::fmt::Display for NotFound {
 impl std::error::Error for NotFound {}
 
 /// 錯誤是否為「這台機器沒有這個指令」
+/// 測試用：模擬「指令不存在」
+#[cfg(test)]
+pub fn not_found(program: &str) -> anyhow::Error {
+    anyhow::Error::new(NotFound(program.into()))
+}
+
 pub fn is_not_found(e: &anyhow::Error) -> bool {
     e.downcast_ref::<NotFound>().is_some()
 }
