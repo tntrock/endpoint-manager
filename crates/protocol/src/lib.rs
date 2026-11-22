@@ -612,6 +612,15 @@ pub struct ContainerItem {
     /// rootless Podman 的使用者
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,
+    /// Kubernetes 的 Pod（containerd 經 crictl 讀到的容器才有）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub k8s: Option<K8sRef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct K8sRef {
+    pub namespace: String,
+    pub pod: String,
 }
 
 impl ContainerItem {
@@ -1140,6 +1149,7 @@ mod tests {
             ports: vec!["b".into(), "a".into()],
             host_mounts: vec![],
             owner: None,
+            k8s: None,
         }
     }
 

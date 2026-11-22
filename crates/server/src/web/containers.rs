@@ -19,6 +19,8 @@ pub struct ContainerRow {
     pub name: String,
     pub id: String,
     pub owner: String,
+    /// Kubernetes 的「Namespace／Pod」
+    pub pod: String,
     pub image: String,
     pub state: &'static str,
     pub state_tone: &'static str,
@@ -40,18 +42,18 @@ struct ContainersTab {
     truncated: bool,
 }
 
-fn runtime_label(kind: &str) -> &'static str {
+pub fn runtime_label(kind: &str) -> &'static str {
     match kind {
         "docker" => "Docker",
         "podman" => "Podman",
         "containerd" => "containerd",
-        "lxc" => "LXC",
+        "lxc" => "LXD",
         "incus" => "Incus",
         _ => "其他",
     }
 }
 
-fn state_label(state: &str) -> (&'static str, &'static str) {
+pub fn state_label(state: &str) -> (&'static str, &'static str) {
     match state {
         "running" => ("執行中", "ok"),
         "paused" => ("已暫停", "warn"),
@@ -104,6 +106,10 @@ fn row(st: &AppState, c: ContainerItem) -> ContainerRow {
         name: c.name,
         id: c.id,
         owner: c.owner.unwrap_or_default(),
+        pod: c
+            .k8s
+            .map(|k| format!("{}／{}", k.namespace, k.pod))
+            .unwrap_or_default(),
         image: c.image,
         state,
         state_tone,
@@ -185,7 +191,7 @@ mod tests {
             ("docker", "Docker"),
             ("podman", "Podman"),
             ("containerd", "containerd"),
-            ("lxc", "LXC"),
+            ("lxc", "LXD"),
             ("incus", "Incus"),
             ("x", "其他"),
         ] {

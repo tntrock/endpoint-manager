@@ -2,7 +2,7 @@
 //!
 //! 只取規格列出的欄位；環境變數、啟動參數、標籤一律不讀（常含密碼）。
 
-use protocol::{ContainerItem, MAX_CONTAINERS};
+use protocol::{ContainerItem, K8sRef, MAX_CONTAINERS};
 use serde_json::Value;
 use time::format_description::well_known::Rfc3339;
 use time::{Duration, OffsetDateTime};
@@ -24,10 +24,10 @@ fn text(v: &Value, path: &[&str]) -> Option<String> {
         .map(str::to_string)
 }
 
-/// RFC 3339 時間轉 UTC；Docker 用 `0001-01-01T00:00:00Z` 表示「沒有」
+/// RFC 3339 時間轉 UTC。Docker 用 `0001-01-01T00:00:00Z`、CRI 用 `1970-01-01T00:00:00Z` 表示「沒有」
 fn time_at(v: &Value, path: &[&str]) -> Option<OffsetDateTime> {
     let t = OffsetDateTime::parse(&text(v, path)?, &Rfc3339).ok()?;
-    (t.year() >= 1970).then(|| t.to_offset(time::UtcOffset::UTC))
+    (t.unix_timestamp() > 0).then(|| t.to_offset(time::UtcOffset::UTC))
 }
 
 /// `NetworkSettings.Ports`：`{"80/tcp": [{"HostIp": "0.0.0.0", "HostPort": "8080"}]}`；
@@ -101,6 +101,7 @@ fn item(runtime: &str, v: &Value, owner: Option<&str>) -> Option<ContainerItem> 
         ports: ports(v),
         host_mounts: host_mounts(v),
         owner: owner.map(str::to_string),
+        k8s: None,
     })
 }
 
@@ -115,6 +116,181 @@ pub fn parse_inspect(
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("{runtime} inspect 的輸出不是陣列"))?;
     Ok(arr.iter().filter_map(|c| item(runtime, c, owner)).collect())
+}
+
+fn cri_state(s: &str) -> &'static str {
+    match s {
+        "CONTAINER_RUNNING" => "running",
+        "CONTAINER_EXITED" => "exited",
+        "CONTAINER_CREATED" => "created",
+        _ => "unknown",
+    }
+}
+
+/// `crictl ps -a -o json` 與 `crictl inspect <ID…>`（多個 JSON 物件接在一起）。
+/// 標籤只讀 Pod 名稱與 Namespace，其他標籤與環境變數不讀
+pub fn parse_crictl(ps: &str, inspect: &str) -> anyhow::Result<Vec<ContainerItem>> {
+    let ps: Value = serde_json::from_str(ps)?;
+    let details: Vec<Value> = serde_json::Deserializer::from_str(inspect)
+        .into_iter::<Value>()
+        .filter_map(Result::ok)
+        .collect();
+    let detail = |id: &str| {
+        details
+            .iter()
+            .find(|d| text(d, &["status", "id"]).as_deref() == Some(id))
+    };
+    let mut out = Vec::new();
+    for c in at(&ps, &["containers"])
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let Some(full_id) = text(c, &["id"]) else {
+            continue;
+        };
+        let d = detail(&full_id);
+        let label = |k: &str| text(c, &["labels", k]);
+        let k8s = match (
+            label("io.kubernetes.pod.namespace"),
+            label("io.kubernetes.pod.name"),
+        ) {
+            (Some(namespace), Some(pod)) => Some(K8sRef { namespace, pod }),
+            _ => None,
+        };
+        let sec = d.and_then(|d| at(d, &["info", "config", "linux", "security_context"]));
+        // NamespaceMode：2 = NODE（與主機共用網路）；不同版本可能輸出數字或名稱
+        let host_network = sec
+            .and_then(|s| at(s, &["namespace_options", "network"]))
+            .map(|n| n.as_i64() == Some(2) || n.as_str() == Some("NODE"));
+        let mut mounts: Vec<String> = d
+            .and_then(|d| at(d, &["status", "mounts"]))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|m| text(m, &["hostPath"]))
+            .collect();
+        mounts.sort();
+        mounts.dedup();
+        mounts.truncate(MAX_MOUNTS);
+        let created = text(c, &["createdAt"])
+            .and_then(|n| n.parse::<i128>().ok())
+            .and_then(|n| OffsetDateTime::from_unix_timestamp_nanos(n).ok())
+            .filter(|t| t.unix_timestamp() > 0);
+        out.push(ContainerItem {
+            runtime: "containerd".into(),
+            id: full_id.chars().take(12).collect(),
+            name: text(c, &["metadata", "name"]).unwrap_or_else(|| full_id.clone()),
+            // inspect 有人看得懂的映像名稱；ps 的常常只是映像 ID
+            image: d
+                .and_then(|d| text(d, &["status", "image", "image"]))
+                .or_else(|| text(c, &["image", "image"]))
+                .unwrap_or_default(),
+            image_id: text(c, &["imageRef"]),
+            state: cri_state(&text(c, &["state"]).unwrap_or_default()).into(),
+            health: None,
+            created_at: created,
+            started_at: d.and_then(|d| time_at(d, &["status", "startedAt"])),
+            finished_at: d.and_then(|d| time_at(d, &["status", "finishedAt"])),
+            restart_policy: None,
+            privileged: sec
+                .and_then(|s| at(s, &["privileged"]))
+                .and_then(Value::as_bool),
+            host_network,
+            ports: vec![],
+            host_mounts: mounts,
+            owner: None,
+            k8s,
+        });
+    }
+    Ok(out)
+}
+
+/// `incus list --format json`（LXD 的 `lxc list` 格式相同）。只取系統容器，虛擬機不在這裡
+pub fn parse_incus(runtime: &str, json: &str) -> anyhow::Result<Vec<ContainerItem>> {
+    let v: Value = serde_json::from_str(json)?;
+    let arr = v
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("{runtime} list 的輸出不是陣列"))?;
+    let mut out = Vec::new();
+    for c in arr {
+        if text(c, &["type"])
+            .as_deref()
+            .is_some_and(|t| t != "container")
+        {
+            continue;
+        }
+        let Some(name) = text(c, &["name"]) else {
+            continue;
+        };
+        // 不同專案可以有同名的容器
+        let name = match text(c, &["project"]) {
+            Some(p) if p != "default" => format!("{p}/{name}"),
+            _ => name,
+        };
+        let cfg = |k: &str| text(c, &["expanded_config", k]).or_else(|| text(c, &["config", k]));
+        let image = cfg("image.description").unwrap_or_else(|| {
+            [cfg("image.os"), cfg("image.release")]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" ")
+        });
+        let state = text(c, &["status"])
+            .unwrap_or_else(|| "unknown".into())
+            .to_ascii_lowercase();
+        let last_used = time_at(c, &["last_used_at"]);
+        let mut mounts: Vec<String> = at(c, &["expanded_devices"])
+            .and_then(Value::as_object)
+            .into_iter()
+            .flat_map(|m| m.values())
+            .filter(|d| text(d, &["type"]).as_deref() == Some("disk"))
+            .filter(|d| text(d, &["path"]).as_deref() != Some("/"))
+            .filter_map(|d| text(d, &["source"]))
+            .filter(|s| s.starts_with('/'))
+            .collect();
+        mounts.sort();
+        mounts.dedup();
+        mounts.truncate(MAX_MOUNTS);
+        let running = state == "running";
+        out.push(ContainerItem {
+            runtime: runtime.to_string(),
+            id: name.chars().take(64).collect(),
+            image,
+            image_id: cfg("volatile.base_image"),
+            health: None,
+            created_at: time_at(c, &["created_at"]),
+            // 只有「最後啟動時間」：執行中的當成啟動時間，停止的當成大約的結束時間
+            started_at: last_used.filter(|_| running),
+            finished_at: last_used.filter(|_| !running),
+            restart_policy: (cfg("boot.autostart").as_deref() == Some("true"))
+                .then(|| "autostart".to_string()),
+            privileged: Some(cfg("security.privileged").as_deref() == Some("true")),
+            host_network: None,
+            ports: vec![],
+            host_mounts: mounts,
+            owner: None,
+            k8s: None,
+            state,
+            name,
+        });
+    }
+    Ok(out)
+}
+
+/// `crictl version` 的 RuntimeVersion（containerd 的版本）
+pub fn crictl_runtime_version(out: &str) -> Option<String> {
+    out.lines()
+        .find_map(|l| l.trim().strip_prefix("RuntimeVersion:"))
+        .map(|v| v.trim().trim_start_matches('v').to_string())
+        .filter(|v| !v.is_empty())
+}
+
+/// `--version` 的最後一個詞：`nerdctl version 1.7.6` → 1.7.6；`6.0.0` → 6.0.0
+pub fn last_word(out: &str) -> Option<String> {
+    out.split_whitespace()
+        .last()
+        .map(|v| v.trim_start_matches('v').to_string())
 }
 
 /// 一般使用者（可能有 rootless Podman 容器）：UID ≥ `uid_min`、不是 nobody。回 (名稱, UID, 家目錄)
@@ -214,6 +390,146 @@ mod tests {
         "NetworkSettings": {"Ports": {"8000/tcp": [{"HostIp": "", "HostPort": "8000"}]}}
       }
     ]"#;
+
+    /// `crictl ps -a -o json`（刪減）：createdAt 是奈秒；標籤含 Pod 以外的資料也不能讀出來
+    const CRICTL_PS: &str = r#"{"containers": [
+      {"id": "aaaabbbbccccddddeeee", "podSandboxId": "p1",
+       "metadata": {"name": "nginx", "attempt": 0},
+       "image": {"image": "sha256:1111"}, "imageRef": "docker.io/library/nginx@sha256:2222",
+       "state": "CONTAINER_RUNNING", "createdAt": "1795305600000000000",
+       "labels": {"io.kubernetes.pod.name": "web-7d9f", "io.kubernetes.pod.namespace": "shop",
+                  "secret-token": "hunter2"}},
+      {"id": "ffff00001111222233334444", "metadata": {"name": "migrate"},
+       "image": {"image": "registry.example.com/tools:1"}, "imageRef": "sha256:3333",
+       "state": "CONTAINER_EXITED", "createdAt": "0", "labels": {}},
+      {"metadata": {"name": "no-id"}}
+    ]}"#;
+
+    /// `crictl inspect` 兩個 ID：兩個 JSON 物件接在一起
+    const CRICTL_INSPECT: &str = r#"{"status": {"id": "aaaabbbbccccddddeeee",
+        "image": {"image": "docker.io/library/nginx:1.27"},
+        "startedAt": "2026-11-21T01:02:03.5Z", "finishedAt": "1970-01-01T00:00:00Z",
+        "mounts": [{"containerPath": "/data", "hostPath": "/srv/data"},
+                   {"containerPath": "/run", "hostPath": "/run/containerd/x"}]},
+      "info": {"config": {"envs": [{"key": "PASSWORD", "value": "s3cret"}],
+               "linux": {"security_context": {"privileged": true,
+                         "namespace_options": {"network": 2}}}}}}
+    {"status": {"id": "ffff00001111222233334444", "startedAt": "2026-11-20T00:00:00Z",
+        "finishedAt": "2026-11-20T00:05:00Z", "mounts": []},
+      "info": {"config": {"linux": {"security_context": {"namespace_options": {"network": "POD"}}}}}}"#;
+
+    #[test]
+    fn parses_crictl() {
+        let v = parse_crictl(CRICTL_PS, CRICTL_INSPECT).unwrap();
+        assert_eq!(v.len(), 2, "沒有 id 的略過");
+        let n = &v[0];
+        assert_eq!(
+            (n.runtime.as_str(), n.id.as_str(), n.name.as_str()),
+            ("containerd", "aaaabbbbcccc", "nginx")
+        );
+        assert_eq!(
+            n.image, "docker.io/library/nginx:1.27",
+            "inspect 的名稱優先"
+        );
+        assert_eq!(
+            n.image_id.as_deref(),
+            Some("docker.io/library/nginx@sha256:2222")
+        );
+        assert_eq!(n.state, "running");
+        assert_eq!(
+            n.k8s,
+            Some(K8sRef {
+                namespace: "shop".into(),
+                pod: "web-7d9f".into()
+            })
+        );
+        assert_eq!(n.created_at, Some(datetime!(2026-11-22 00:00 UTC)));
+        assert_eq!(n.started_at, Some(datetime!(2026-11-21 01:02:03.5 UTC)));
+        assert_eq!(n.finished_at, None, "1970 表示沒有");
+        assert_eq!((n.privileged, n.host_network), (Some(true), Some(true)));
+        assert_eq!(n.host_mounts, ["/run/containerd/x", "/srv/data"]);
+        let m = &v[1];
+        assert_eq!(
+            m.image, "registry.example.com/tools:1",
+            "沒有 inspect 名稱時用 ps 的"
+        );
+        assert_eq!((m.state.as_str(), m.created_at), ("exited", None));
+        assert_eq!(m.finished_at, Some(datetime!(2026-11-20 00:05 UTC)));
+        assert_eq!(
+            (m.privileged, m.host_network, m.k8s.clone()),
+            (None, Some(false), None)
+        );
+        let all = format!("{v:?}");
+        assert!(!all.contains("hunter2") && !all.contains("s3cret"), "{all}");
+
+        // inspect 失敗或缺漏：仍有 ps 的基本資料
+        let v = parse_crictl(CRICTL_PS, "").unwrap();
+        assert_eq!(v[0].image, "sha256:1111");
+        assert_eq!(v[0].privileged, None);
+        assert!(parse_crictl("not json", "").is_err());
+        assert_eq!(cri_state("CONTAINER_UNKNOWN"), "unknown");
+        assert_eq!(cri_state("CONTAINER_CREATED"), "created");
+    }
+
+    /// `incus list --format json`（刪減）：一個系統容器、一個停止的、一個虛擬機
+    const INCUS: &str = r#"[
+      {"name": "db", "project": "default", "type": "container", "status": "Running",
+       "created_at": "2025-01-01T00:00:00Z", "last_used_at": "2026-11-21T08:00:00Z",
+       "config": {"image.os": "Debian", "image.release": "bookworm"},
+       "expanded_config": {"security.privileged": "true", "boot.autostart": "true",
+                           "volatile.base_image": "abc123", "environment.PASSWORD": "x"},
+       "expanded_devices": {"root": {"type": "disk", "path": "/", "pool": "default"},
+                            "data": {"type": "disk", "source": "/srv/db", "path": "/var/lib/db"},
+                            "eth0": {"type": "nic", "network": "incusbr0"}}},
+      {"name": "old", "project": "lab", "type": "container", "status": "Stopped",
+       "created_at": "2024-01-01T00:00:00Z", "last_used_at": "2026-11-20T00:00:00Z",
+       "config": {"image.description": "Ubuntu noble amd64 (20240101_07:42)"},
+       "expanded_config": {}, "expanded_devices": {}},
+      {"name": "win", "type": "virtual-machine", "status": "Running"},
+      {"type": "container"}
+    ]"#;
+
+    #[test]
+    fn parses_incus() {
+        let v = parse_incus("incus", INCUS).unwrap();
+        assert_eq!(v.len(), 2, "虛擬機與沒有名稱的略過");
+        let db = &v[0];
+        assert_eq!(
+            (db.id.as_str(), db.name.as_str(), db.image.as_str()),
+            ("db", "db", "Debian bookworm")
+        );
+        assert_eq!(db.state, "running");
+        assert_eq!(db.started_at, Some(datetime!(2026-11-21 08:00 UTC)));
+        assert_eq!(db.finished_at, None);
+        assert_eq!(db.privileged, Some(true));
+        assert_eq!(db.restart_policy.as_deref(), Some("autostart"));
+        assert_eq!(db.image_id.as_deref(), Some("abc123"));
+        assert_eq!(db.host_mounts, ["/srv/db"]);
+        assert!(!format!("{db:?}").contains("PASSWORD"));
+        let old = &v[1];
+        assert_eq!(old.name, "lab/old", "非預設專案加上專案名稱");
+        assert_eq!(old.image, "Ubuntu noble amd64 (20240101_07:42)");
+        assert_eq!((old.state.as_str(), old.started_at), ("stopped", None));
+        assert_eq!(old.finished_at, Some(datetime!(2026-11-20 00:00 UTC)));
+        assert_eq!(
+            (old.privileged, old.restart_policy.clone()),
+            (Some(false), None)
+        );
+        assert!(parse_incus("lxc", "{}").is_err());
+    }
+
+    #[test]
+    fn versions() {
+        let out = "Version:  0.1.0\nRuntimeName:  containerd\nRuntimeVersion:  v1.7.22\nRuntimeApiVersion:  v1\n";
+        assert_eq!(crictl_runtime_version(out).as_deref(), Some("1.7.22"));
+        assert_eq!(crictl_runtime_version("garbage"), None);
+        assert_eq!(
+            last_word("nerdctl version 1.7.6\n").as_deref(),
+            Some("1.7.6")
+        );
+        assert_eq!(last_word("6.0.0").as_deref(), Some("6.0.0"));
+        assert_eq!(last_word(""), None);
+    }
 
     #[test]
     fn parses_docker() {
@@ -323,6 +639,7 @@ mod tests {
             ports: vec![],
             host_mounts: vec![],
             owner: None,
+            k8s: None,
         }
     }
 

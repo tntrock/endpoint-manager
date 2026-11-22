@@ -2,7 +2,7 @@
 <table>
   <tr><th>名稱</th><th>映像</th><th>狀態</th><th>健康</th><th>時間</th><th>連接埠</th></tr>
   {% for c in list %}<tr>
-    <td>{{ c.name }}{% for w in c.warnings %} <span class="tag bad">{{ w }}</span>{% endfor %}<span class="faint">{{ c.id }}{% if !c.owner.is_empty() %}・使用者 {{ c.owner }}{% endif %}</span></td>
+    <td>{{ c.name }}{% for w in c.warnings %} <span class="tag bad">{{ w }}</span>{% endfor %}<span class="faint">{{ c.id }}{% if !c.owner.is_empty() %}・使用者 {{ c.owner }}{% endif %}{% if !c.pod.is_empty() %}・Pod {{ c.pod }}{% endif %}</span></td>
     <td><code>{{ c.image }}</code></td>
     <td><span class="tag {{ c.state_tone }}">{{ c.state }}</span></td>
     <td>{% if !c.health.is_empty() %}<span class="tag {{ c.health_tone }}">{{ c.health }}</span>{% endif %}</td>
@@ -12,7 +12,7 @@
 </table>
 {% endmacro %}
 {% if !loaded %}<p class="muted">尚無容器資料（Agent 還沒上傳這個區段）。</p>{% else %}
-{% if runtimes.is_empty() %}<p class="muted">這台沒有偵測到 Docker 或 Podman。</p>{% else %}
+{% if runtimes.is_empty() %}<p class="muted">這台沒有偵測到容器執行環境（Docker、Podman、containerd、Incus／LXD）。</p>{% else %}
 <h2>執行環境</h2>
 <table>
   <tr><th>種類</th><th>版本</th><th>狀態</th></tr>

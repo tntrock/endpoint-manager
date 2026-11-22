@@ -165,10 +165,16 @@ pub fn items_of(p: &InventoryPayload) -> BTreeMap<String, String> {
         InventoryPayload::Containers(c) => {
             // 只記容器的新增、移除與映像改變；狀態（執行中、停止）不記，排程工作會一直起停
             for x in &c.containers {
+                // Kubernetes 的 Pod 名稱每次部署都會換：以「Namespace／容器名稱」為鍵，
+                // 才不會每次滾動更新都記一堆新增與移除
+                let name = match &x.k8s {
+                    Some(k) => format!("{}/{}", k.namespace, x.name),
+                    None => x.name.clone(),
+                };
                 pairs.push((
                     format!(
                         "{}|{}|{}",
-                        x.name,
+                        name,
                         x.runtime,
                         x.owner.as_deref().unwrap_or("")
                     ),

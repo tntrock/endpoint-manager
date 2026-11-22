@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block content %}
+<div class="page-head"><div><div class="crumb"><a href="/containers">容器映像</a></div><h1><code>{{ repo }}</code></h1><div class="sub">{{ hosts }} 台主機、{{ rows.len() }} 個容器</div></div></div>
+{% if rows.is_empty() %}<p class="muted">範圍內沒有使用這個映像的容器。</p>{% else %}
+<table>
+  <tr>{% call m::sort_head(headers) %}{% endcall %}</tr>
+  {% for r in rows %}<tr>
+    <td><a href="/devices/{{ r.device }}">{{ r.hostname }}</a></td>
+    <td>{{ r.name }}{% if !r.pod.is_empty() %}<span class="faint">Pod {{ r.pod }}</span>{% endif %}</td>
+    <td><span class="tag">{{ r.tag }}</span></td>
+    <td>{{ r.runtime }}</td>
+    <td><span class="tag {{ r.state_tone }}">{{ r.state }}</span></td>
+    <td><span class="num">{{ r.started }}</span></td>
+  </tr>{% endfor %}
+</table>
+{% if truncated %}<p class="muted">只列出前 2,000 個容器。</p>{% endif %}
+{% endif %}
+{% endblock %}

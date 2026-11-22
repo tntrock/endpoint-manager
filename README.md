@@ -288,14 +288,23 @@ Agent 會回報自己在哪裡執行，裝置頁與裝置清單會顯示，裝�
 - **容器**：不建議把 Agent 裝在應用程式容器（Docker、Kubernetes 的 Pod）裡。容器重建時 Agent 的狀態目錄也會消失，除非 `/var/lib/endpoint-manager` 是持久卷，否則每次重建都會註冊成一台新裝置；裝置頁會提示這一點。請改把 Agent 裝在跑容器的主機上。LXC 這類系統容器有完整的作業系統，可以照一般 Linux 安裝。
 - 容器與 WSL 讀到的 BIOS UUID 與序號屬於所在的主機，所以在容器與 WSL 裡的 Agent 註冊時不送這兩個值，不會被誤判成主機的重新註冊或疑似重複。
 
-**主機上的容器**：Linux Agent 會列出主機上的 Docker 與 Podman 容器，裝置頁出現「容器」分頁（有偵測到 Docker 或 Podman 才顯示）。
+**主機上的容器**：Linux Agent 會列出主機上的容器，裝置頁出現「容器」分頁（有偵測到容器執行環境才顯示）。
+
+| 執行環境 | 讀取方式 |
+|---|---|
+| Docker、Podman | `docker`／`podman` 的 `ps` 與 `inspect` |
+| containerd（Kubernetes 節點） | `crictl ps` 與 `crictl inspect`，附上 Namespace 與 Pod |
+| containerd（非 Kubernetes） | `nerdctl`，逐一命名空間（略過 Docker 自己的 `moby`） |
+| Incus、LXD 系統容器 | `incus list`，沒有時 `lxc list`；虛擬機不列 |
 
 - 列出名稱、映像、狀態、健康檢查、啟動時間、對外連接埠；特權容器、使用主機網路、掛載 docker.sock 或根目錄的容器會標示警示。
 - 執行中的全部列出；已停止的只列 7 天內結束的；每台最多 500 個。
 - 一般使用者的 rootless Podman 容器：只在該使用者有登入工作階段（`/run/user/<UID>` 存在）時看得到，最多讀 50 個使用者。
 - **不收集**容器的環境變數、啟動參數與標籤（常含密碼）。
 - 變更歷史與時間軸記錄容器的新增、移除與映像更換；啟動、停止不記。
-- 看不到的情況：containerd（Kubernetes 節點）、LXC／Incus 之後才支援；以一般使用者執行的 rootless Docker 看不到。
+- 看不到的情況：containerd 主機沒有裝 `crictl` 或 `nerdctl`；以一般使用者執行的 rootless Docker；`systemd-nspawn`、Firecracker 等其他執行環境。
+- Kubernetes 的容器在變更歷史裡以「Namespace／容器名稱」記錄，Pod 名稱每次部署都會換，不會因為滾動更新記一堆新增與移除。
+- **容器映像頁**（`/containers`，側欄「資產」）：依映像（不含版本標籤）統計主機數與執行中的容器數，可依名稱、執行環境、群組、只看執行中篩選；點進去列出每台主機上的容器，可排序。群組管理員只看得到範圍內的主機。
 - 伺服器要先升級到支援的版本，Agent 才會開始回報容器（舊版伺服器不認得這個區段）。
 
 ### 4. 分點快取（選用）

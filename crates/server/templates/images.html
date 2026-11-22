@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head"><div><h1>容器映像</h1><div class="sub">Linux 主機上的容器依映像分組；主機數與執行中的容器數</div></div></div>
+<form class="filters" method="get" action="/containers">
+  <input name="q" value="{{ q }}" placeholder="映像名稱（例如 nginx）" aria-label="映像名稱">
+  <select name="runtime" aria-label="執行環境">{% for o in runtimes %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}</select>
+  <select name="group" aria-label="群組">{% for o in groups %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}</select>
+  <label><input type="checkbox" name="running" value="true" {% if running_only %}checked{% endif %}> 只看執行中</label>
+  <button class="btn primary">篩選</button>
+</form>
+{% if rows.is_empty() %}<p class="muted">沒有符合的容器。Linux Agent 會回報主機上的 Docker、Podman、containerd 與 Incus／LXD 容器。</p>{% else %}
+<table>
+  <tr><th>映像</th><th>版本標籤</th><th class="num">主機數</th><th class="num">執行中</th></tr>
+  {% for r in rows %}<tr>
+    <td><a href="{{ r.url }}"><code>{{ r.repo }}</code></a></td>
+    <td>{% for t in r.tags %}<span class="tag">{{ t }}</span> {% endfor %}{% if r.more_tags > 0 %}<span class="muted">另 {{ r.more_tags }} 個</span>{% endif %}</td>
+    <td class="num">{{ r.hosts }}</td>
+    <td class="num">{{ r.running }}</td>
+  </tr>{% endfor %}
+</table>
+{% if truncated %}<p class="muted">結果過多，只顯示前 500 個映像，請縮小篩選範圍。</p>{% endif %}
+{% endif %}
+{% endblock %}

@@ -29,6 +29,7 @@ fn ctr(name: &str, image: &str, state: &str) -> ContainerItem {
         ports: vec![],
         host_mounts: vec![],
         owner: None,
+        k8s: None,
     }
 }
 
@@ -230,7 +231,7 @@ async fn upload_tab_and_changes(pool: PgPool) {
     let (_, html) = s.page(&admin, &dev).await;
     assert!(!html.contains("/tab/containers"));
     let (_, html) = s.page(&admin, &format!("{dev}/tab/containers")).await;
-    assert!(html.contains("沒有偵測到 Docker 或 Podman"), "{html}");
+    assert!(html.contains("沒有偵測到容器執行環境"), "{html}");
 
     // Windows 裝置沒有這個分頁；範圍外的群組管理員看不到
     let (st, _) = s
