@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head"><div><h1>報到與收集</h1><div class="sub">所有裝置共用；各 Agent 下一次報到後生效</div></div></div>
+{% if saved %}<div class="notice ok" role="status">已儲存。各 Agent 下一次報到後生效。</div>{% endif %}
+{% if let Some(e) = error %}<div class="notice error" role="alert">{{ e }}</div>{% endif %}
+<form class="card" method="post" action="/settings" aria-label="報到與收集間隔">
+  <input type="hidden" name="csrf" value="{{ nav.csrf }}">
+  <table>
+    <tr><th>項目</th><th>間隔</th><th>預設</th><th>估算</th></tr>
+    {% for f in fields %}<tr>
+      <td><label for="f-{{ f.key }}">{{ f.label }}</label></td>
+      <td><input id="f-{{ f.key }}" class="num" type="number" name="{{ f.key }}" value="{{ f.value }}" min="{{ f.min }}" max="{{ f.max }}" required> {{ f.unit }}</td>
+      <td class="muted">{{ f.default }}</td>
+      <td class="muted">{{ f.estimate }}</td>
+    </tr>{% endfor %}
+  </table>
+  <div class="actions"><button class="btn primary">儲存</button></div>
+  <p class="muted">報到最短 30 秒，收集最短 5 分鐘，最長都是 7 天。收集到的內容沒有變就不會上傳，所以縮短收集間隔主要增加的是端點的負擔。網卡的即時變化由 Agent 在本機監看並暫存，不需要為了抓短暫狀況而縮短間隔。</p>
+</form>
+{% endblock %}

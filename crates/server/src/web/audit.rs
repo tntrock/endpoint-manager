@@ -43,6 +43,7 @@ pub(super) fn label(action: &str) -> &str {
         "compliance_export" => "匯出違規清單",
         "notify_settings" => "修改通知設定",
         "setting_retention" => "修改資料保留",
+        "setting_intervals" => "修改報到與收集間隔",
         "retention_purge" => "清除過期資料",
         "oidc_linked" => "綁定單一登入",
         "oidc_unlinked" => "解除單一登入綁定",
