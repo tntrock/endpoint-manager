@@ -219,6 +219,57 @@ pub async fn events(
         tab: Some("deployments"),
     }));
 
+    // Agent 上傳的網路事件（啟動時的完整清單只是重播起點，不顯示）
+    let net: Vec<(OffsetDateTime, String, serde_json::Value)> = sqlx::query_as(
+        "SELECT at, kind, data FROM device_events \
+         WHERE device_id = $1 AND at < $2 AND kind <> 'net.snapshot' \
+         ORDER BY at DESC LIMIT $3",
+    )
+    .bind(id)
+    .bind(before)
+    .bind(LIMIT)
+    .fetch_all(&st.pool)
+    .await?;
+    full(net.len(), net.last().map(|r| r.0));
+    out.extend(net.into_iter().filter_map(|(at, kind, data)| {
+        let (kind, title, detail) = net_event(&kind, &data)?;
+        Some(Event {
+            at,
+            kind,
+            title,
+            detail,
+            tab: Some("network"),
+        })
+    }));
+
+    // 多重連線的開始與結束各一筆
+    let periods: Vec<(OffsetDateTime, bool, String)> = sqlx::query_as(
+        "SELECT * FROM ( \
+           SELECT started_at, true, detail FROM device_dual_homed_periods \
+           WHERE device_id = $1 AND started_at < $2 \
+           UNION ALL \
+           SELECT ended_at, false, detail FROM device_dual_homed_periods \
+           WHERE device_id = $1 AND ended_at < $2) p \
+         ORDER BY 1 DESC LIMIT $3",
+    )
+    .bind(id)
+    .bind(before)
+    .bind(LIMIT)
+    .fetch_all(&st.pool)
+    .await?;
+    full(periods.len(), periods.last().map(|r| r.0));
+    out.extend(periods.into_iter().map(|(at, start, detail)| Event {
+        at,
+        kind: if start { "bad" } else { "ok" },
+        title: if start {
+            "開始多重連線".into()
+        } else {
+            "多重連線結束".into()
+        },
+        detail,
+        tab: Some("network"),
+    }));
+
     let audit: Vec<(OffsetDateTime, String, String)> = sqlx::query_as(
         "SELECT at, actor, action FROM audit_log WHERE target = $1 AND at < $2 \
          ORDER BY at DESC LIMIT $3",
@@ -259,6 +310,35 @@ pub async fn events(
 }
 
 /// 依管理網頁時區的日期分組
+/// 網路事件的類別、標題與說明；不顯示的事件回 None
+fn net_event(kind: &str, data: &serde_json::Value) -> Option<(&'static str, String, String)> {
+    let name = data.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+    let addrs = data
+        .get("addresses")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str())
+                .collect::<Vec<_>>()
+                .join("、")
+        })
+        .unwrap_or_default();
+    Some(match kind {
+        "net.up" => ("info", format!("網卡「{name}」已連線"), addrs),
+        "net.down" => ("info", format!("網卡「{name}」已中斷"), String::new()),
+        "net.changed" => ("change", format!("網卡「{name}」的設定改變"), addrs),
+        "journal.dropped" => (
+            "bad",
+            "Agent 的本機事件日誌已滿".into(),
+            format!(
+                "刪除了 {} 筆最舊的事件，這段期間的紀錄可能不完整",
+                data.get("count").and_then(|v| v.as_u64()).unwrap_or(0)
+            ),
+        ),
+        _ => return None,
+    })
+}
+
 fn group_days(st: &AppState, events: Vec<Event>) -> Vec<Day> {
     let mut days: Vec<Day> = vec![];
     for e in events {
@@ -344,6 +424,25 @@ pub async fn more(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn net_titles() {
+        let d = serde_json::json!({"name": "Wi-Fi", "addresses": ["192.168.43.5/24", "fe::1/64"]});
+        let (k, t, detail) = net_event("net.up", &d).unwrap();
+        assert_eq!((k, t.as_str()), ("info", "網卡「Wi-Fi」已連線"));
+        assert_eq!(detail, "192.168.43.5/24、fe::1/64");
+        assert_eq!(net_event("net.down", &d).unwrap().1, "網卡「Wi-Fi」已中斷");
+        assert_eq!(net_event("net.changed", &d).unwrap().0, "change");
+        let (k, _, detail) =
+            net_event("journal.dropped", &serde_json::json!({"count": 12})).unwrap();
+        assert_eq!(k, "bad");
+        assert!(detail.contains("12 筆"));
+        assert!(net_event("net.snapshot", &d).is_none());
+        assert_eq!(
+            net_event("net.down", &serde_json::json!({})).unwrap().1,
+            "網卡「?」已中斷"
+        );
+    }
 
     #[test]
     fn titles() {

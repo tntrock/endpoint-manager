@@ -57,6 +57,8 @@ async fn checkin(s: &TestServer, a: &TestAgent) -> protocol::CheckinResponse {
         .json(&protocol::CheckinRequest {
             os_family: None,
             signing_keys: vec![],
+            journal_id: None,
+            events: vec![],
             schema_version: SCHEMA_VERSION,
             agent_version: "0.3.0".into(),
             boot_time: time::OffsetDateTime::now_utc(),
@@ -286,6 +288,8 @@ async fn filtered_upload_is_requested_again(pool: PgPool) {
         .json(&protocol::CheckinRequest {
             os_family: None,
             signing_keys: vec![],
+            journal_id: None,
+            events: vec![],
             schema_version: SCHEMA_VERSION,
             agent_version: "0.3.0".into(),
             boot_time: time::OffsetDateTime::now_utc(),

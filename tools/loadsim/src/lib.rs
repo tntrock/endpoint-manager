@@ -83,6 +83,8 @@ fn checkin_req(ip: &str, section_hashes: BTreeMap<Section, String>) -> CheckinRe
     CheckinRequest {
         os_family: None,
         signing_keys: vec![],
+        journal_id: None,
+        events: vec![],
         schema_version: SCHEMA_VERSION,
         // 模擬支援組態區段的 Agent（組態規則要求 0.3.0 以上）
         agent_version: "0.3.0".into(),

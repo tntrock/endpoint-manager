@@ -39,6 +39,9 @@ pub async fn checkin(
         return Err(AppError::BadRequest("unsupported schema_version".into()));
     }
     validate_strings(&req)?;
+    if req.events.len() > protocol::MAX_EVENTS_PER_CHECKIN {
+        return Err(AppError::BadRequest("too many events".into()));
+    }
     let now = time::OffsetDateTime::now_utc();
     let earliest = time::macros::datetime!(2000-01-01 00:00 UTC);
     // 端點時鐘可能不準：夾限而不拒絕，避免該電腦永遠報到失敗
@@ -110,6 +113,25 @@ pub async fn checkin(
         let mut conn = st.pool.acquire().await?;
         crate::compliance::store::refresh_device_fresh(&mut conn, device.device_id).await?;
     }
+    // 事件：存下並重播；同一個交易內完成，失敗時 Agent 沒收到確認、下次重送
+    let events_ack = match req.journal_id {
+        Some(journal_id) if !req.events.is_empty() => {
+            let sites = crate::network::load_sites(&st.pool).await?;
+            let mut tx = st.pool.begin().await?;
+            let ack = crate::events::ingest(
+                &mut tx,
+                device.device_id,
+                journal_id,
+                &req.events,
+                now,
+                &sites,
+            )
+            .await?;
+            tx.commit().await?;
+            ack
+        }
+        _ => None,
+    };
     let deploy = st.deploy.get_throttled(&st.pool).await?;
     let updates = st.updates.get_throttled(&st.pool).await?;
     let branch = st.branch.get_throttled(&st.pool).await?;
@@ -151,6 +173,8 @@ pub async fn checkin(
             .iter()
             .map(|s| s.as_str().to_string())
             .collect(),
+        supports_events: true,
+        events_ack,
     }))
 }
 

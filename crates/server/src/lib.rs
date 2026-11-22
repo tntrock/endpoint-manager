@@ -14,6 +14,7 @@ pub mod devices;
 pub mod diff;
 pub mod enroll;
 pub mod error;
+pub mod events;
 pub mod gencache;
 pub mod groups;
 pub mod heartbeat;

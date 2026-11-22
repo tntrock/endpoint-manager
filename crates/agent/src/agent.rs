@@ -2,8 +2,8 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
@@ -19,6 +19,7 @@ use crate::collector::{Collector, Heartbeat};
 use crate::commands::worker::CommandWork;
 use crate::config::AgentConfig;
 use crate::deploy::worker::Work;
+use crate::journal::Journal;
 use crate::sanitize::{clean, sanitize};
 use crate::schedule::{DEFAULT_INTERVALS, Schedule};
 use crate::state::AgentState;
@@ -93,6 +94,10 @@ pub struct Agent<C: Collector> {
     server_supports_config: bool,
     /// 伺服器在報到回應中列出的區段（`supported_sections`）
     server_sections: Vec<String>,
+    /// 本機事件日誌（網卡監看寫入，報到時上傳）
+    journal: Arc<Mutex<Journal>>,
+    /// 伺服器在上一次報到回應中表明接受事件
+    server_supports_events: bool,
     /// 伺服器下發的登錄檔查詢清單與它的雜湊
     registry_queries: Vec<RegistryQuery>,
     registry_hash: Option<String>,
@@ -157,6 +162,8 @@ impl<C: Collector> Agent<C> {
             heartbeat_error: None,
             server_supports_config: false,
             server_sections: vec![],
+            journal: Arc::new(Mutex::new(Journal::open(dir))),
+            server_supports_events: false,
             registry_queries: vec![],
             registry_hash: None,
             unsupported_error: None,
@@ -190,6 +197,20 @@ impl<C: Collector> Agent<C> {
 
     pub fn state(&self) -> &AgentState {
         &self.state
+    }
+
+    /// 給網卡監看共用的收集器
+    pub fn collector(&self) -> Arc<C> {
+        self.collector.clone()
+    }
+
+    /// 給網卡監看寫入的事件日誌
+    pub fn journal(&self) -> Arc<Mutex<Journal>> {
+        self.journal.clone()
+    }
+
+    fn lock_journal(&self) -> std::sync::MutexGuard<'_, Journal> {
+        self.journal.lock().unwrap_or_else(|p| p.into_inner())
     }
 
     /// 停止回報 security／registry：清掉快取與查詢清單，等伺服器再次表明支援。
@@ -399,6 +420,14 @@ impl<C: Collector> Agent<C> {
             .filter(|(s, _)| allowed.contains(s))
             .map(|(s, p)| (*s, p.canonical_hash()))
             .collect();
+        // 伺服器表明接受事件後才送：最舊的在前，一次最多 MAX_EVENTS_PER_CHECKIN 筆
+        let (journal_id, events) = if self.server_supports_events {
+            let j = self.lock_journal();
+            (Some(j.id()), j.pending(protocol::MAX_EVENTS_PER_CHECKIN))
+        } else {
+            (None, vec![])
+        };
+        let sent_events = !events.is_empty();
         let req = CheckinRequest {
             schema_version: SCHEMA_VERSION,
             agent_version: AGENT_VERSION.into(),
@@ -414,6 +443,8 @@ impl<C: Collector> Agent<C> {
                 .collect(),
             os_family: self.collector.os_family(),
             signing_keys: self.config.signing_keys.clone(),
+            journal_id,
+            events,
         };
         let resp = match client.checkin(&req).await {
             Ok(r) => r,
@@ -439,6 +470,18 @@ impl<C: Collector> Agent<C> {
         self.backoff.reset();
         self.backing_off = false;
         self.intervals = resp.collection_intervals.clone();
+        self.server_supports_events = resp.supports_events;
+        // 伺服器確認收到才刪除；報到失敗（上面已返回）就留著下次重送
+        let more_events = match resp.events_ack {
+            Some(ack) => {
+                let mut j = self.lock_journal();
+                if let Err(e) = j.ack(ack) {
+                    tracing::warn!(error = %e, "cannot update event journal");
+                }
+                sent_events && !j.is_empty()
+            }
+            None => false,
+        };
         if let Some(tx) = &self.deploy_tx {
             // 伺服器沒有 deployments_hash（舊版）：停止派送。只在指派或下載來源變動時喚醒 worker，
             // 連線資訊（憑證可能已更新）則每次都更新
@@ -554,12 +597,19 @@ impl<C: Collector> Agent<C> {
         {
             tracing::error!(error = %e, "saving state failed");
         }
+        // 離線很久後回來：還有沒送完的事件時很快再報到一次，直到補齊
+        if more_events {
+            return Cycle::Next(EVENTS_FOLLOW_UP);
+        }
         Cycle::Next(with_jitter(
             Duration::from_secs(resp.next_checkin_seconds.into()),
             jitter(),
         ))
     }
 }
+
+/// 還有未送的事件時，多久後再報到
+pub const EVENTS_FOLLOW_UP: Duration = Duration::from_secs(5);
 
 /// 等到下一個週期。收到變更觸發時記下；可中斷（正常等待）時先等 DEBOUNCE 合併短時間內的
 /// 多次變更再提早結束，退避中則繼續等到原本的時間。回傳 false 表示要停止。

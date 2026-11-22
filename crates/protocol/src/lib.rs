@@ -162,6 +162,43 @@ pub struct CheckinRequest {
     /// Agent 本機設定的信任簽章公鑰（Base64）。伺服器只用來顯示與預先檢查
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub signing_keys: Vec<String>,
+    /// 本機事件日誌的 ID：重新安裝或日誌損毀時換新，伺服器用它分辨「序號歸零」與重送
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub journal_id: Option<Uuid>,
+    /// 本機暫存的事件，最舊的在前，最多 [`MAX_EVENTS_PER_CHECKIN`] 筆。
+    /// 只在伺服器表明支援（[`CheckinResponse::supports_events`]）後才送
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<AgentEvent>,
+}
+
+/// 每次報到最多送幾筆事件
+pub const MAX_EVENTS_PER_CHECKIN: usize = 200;
+
+/// Agent 在本機記下的事件（網路規格 §4.2）
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentEvent {
+    /// 同一個日誌內遞增
+    pub seq: u64,
+    /// 端點的時間
+    #[serde(with = "timefmt::rfc3339")]
+    pub at: OffsetDateTime,
+    /// [`AgentEvent::NET_UP`] 等
+    pub kind: String,
+    #[serde(default)]
+    pub data: serde_json::Value,
+}
+
+impl AgentEvent {
+    /// Agent 啟動時的完整網卡清單（data 是 [`NetworkInfo`]）：伺服器以它為重播的起點
+    pub const NET_SNAPSHOT: &'static str = "net.snapshot";
+    /// 網卡啟用或新出現（data 是 [`NetInterface`]）
+    pub const NET_UP: &'static str = "net.up";
+    /// 網卡停用或消失（data 只有 name 與 kind）
+    pub const NET_DOWN: &'static str = "net.down";
+    /// 位址、閘道等改變（data 是 [`NetInterface`]）
+    pub const NET_CHANGED: &'static str = "net.changed";
+    /// 本機日誌超過上限刪掉了最舊的事件（data 是 `{"count": n}`）
+    pub const JOURNAL_DROPPED: &'static str = "journal.dropped";
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -215,6 +252,12 @@ pub struct CheckinResponse {
     /// 第三期以後新增的區段（containers 起），Agent 只在這裡列出時才回報。
     #[serde(default)]
     pub supported_sections: Vec<String>,
+    /// 伺服器接受報到請求裡的 `events`；舊版伺服器沒有這個欄位
+    #[serde(default)]
+    pub supports_events: bool,
+    /// 伺服器已存下的最大事件序號：Agent 收到後才刪除本機日誌中序號不大於它的事件
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub events_ack: Option<u64>,
 }
 
 impl CheckinResponse {
@@ -855,7 +898,35 @@ mod tests {
             section_errors: BTreeMap::new(),
             os_family,
             signing_keys: vec![],
+            journal_id: None,
+            events: vec![],
         }
+    }
+
+    #[test]
+    fn events_are_optional_on_the_wire() {
+        // 沒有事件時不序列化，舊版伺服器看到的請求與以前相同
+        let v = serde_json::to_value(checkin(None)).unwrap();
+        assert!(v.get("events").is_none() && v.get("journal_id").is_none());
+        let mut r = checkin(None);
+        r.journal_id = Some(Uuid::nil());
+        r.events = vec![AgentEvent {
+            seq: 7,
+            at: OffsetDateTime::UNIX_EPOCH,
+            kind: AgentEvent::NET_UP.into(),
+            data: serde_json::json!({"name": "eth0"}),
+        }];
+        let back: CheckinRequest =
+            serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
+        assert_eq!(back, r);
+        // 舊版伺服器的回應：不支援事件，沒有確認
+        let resp: CheckinResponse = serde_json::from_value(serde_json::json!({
+            "next_checkin_seconds": 60, "request_sections": [], "renew_certificate": false,
+            "collection_intervals": {"software_secs": 1, "patches_secs": 1,
+                                     "services_secs": 1, "hardware_secs": 1}
+        }))
+        .unwrap();
+        assert!(!resp.supports_events && resp.events_ack.is_none());
     }
 
     #[test]

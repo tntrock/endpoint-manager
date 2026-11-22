@@ -756,6 +756,8 @@ async fn checkin_switching_to_linux_clears_violations(pool: PgPool) {
         .json(&protocol::CheckinRequest {
             os_family: Some(protocol::OsFamily::Linux),
             signing_keys: vec![],
+            journal_id: None,
+            events: vec![],
             schema_version: SCHEMA_VERSION,
             agent_version: "0.1.0".into(),
             boot_time: time::OffsetDateTime::now_utc(),

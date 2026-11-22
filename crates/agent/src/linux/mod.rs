@@ -34,10 +34,22 @@ pub async fn run(dir: &Path, shutdown: watch::Receiver<bool>) -> anyhow::Result<
     tokio::spawn(run_command_worker(
         CommandWorker::new(
             dir,
-            std::sync::Arc::new(commands::LinuxHost { triggers: tx }),
+            std::sync::Arc::new(commands::LinuxHost {
+                triggers: tx.clone(),
+            }),
         )
         .with_signing_keys(signing_keys),
         commands_rx,
+        shutdown.clone(),
+    ));
+    // Linux 沒有通知：每 15 秒讀一次（規格 §4.1）
+    let (_wake_tx, wake_rx) = mpsc::channel(1);
+    tokio::spawn(crate::netwatch::run(
+        agent.collector(),
+        agent.journal(),
+        tx.clone(),
+        wake_rx,
+        std::time::Duration::from_secs(15),
         shutdown.clone(),
     ));
     run_agent(agent, shutdown, rx).await;

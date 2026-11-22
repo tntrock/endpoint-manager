@@ -50,6 +50,8 @@ async fn checkin(s: &TestServer, a: &TestAgent, keys: Vec<String>) -> protocol::
         .json(&protocol::CheckinRequest {
             os_family: None,
             signing_keys: keys,
+            journal_id: None,
+            events: vec![],
             schema_version: protocol::SCHEMA_VERSION,
             agent_version: "0.9.0".into(),
             boot_time: time::OffsetDateTime::now_utc(),

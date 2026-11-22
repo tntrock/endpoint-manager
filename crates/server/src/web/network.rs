@@ -32,9 +32,66 @@ pub struct NicRow {
     pub ssid: String,
 }
 
+pub struct PeriodRow {
+    pub started: String,
+    /// 空字串表示還在持續
+    pub ended: String,
+    pub duration: String,
+    pub interfaces: String,
+    pub detail: String,
+    pub incomplete: bool,
+}
+
+/// 最多列出幾段多重連線紀錄
+const PERIOD_LIMIT: i64 = 20;
+
+/// 持續時間：秒、分鐘、小時、天
+pub fn duration_label(d: time::Duration) -> String {
+    let s = d.whole_seconds().max(0);
+    match s {
+        0..60 => format!("{s} 秒"),
+        60..3600 => format!("{} 分鐘", s / 60),
+        3600..86_400 => format!("{} 小時 {} 分", s / 3600, s % 3600 / 60),
+        _ => format!("{} 天 {} 小時", s / 86_400, s % 86_400 / 3600),
+    }
+}
+
+type Period = (
+    time::OffsetDateTime,
+    Option<time::OffsetDateTime>,
+    String,
+    Vec<String>,
+    bool,
+);
+
+async fn periods(st: &AppState, id: Uuid) -> Result<Vec<PeriodRow>, sqlx::Error> {
+    let rows: Vec<Period> = sqlx::query_as(
+        "SELECT started_at, ended_at, detail, interfaces, incomplete \
+         FROM device_dual_homed_periods WHERE device_id = $1 \
+         ORDER BY started_at DESC, id DESC LIMIT $2",
+    )
+    .bind(id)
+    .bind(PERIOD_LIMIT)
+    .fetch_all(&st.pool)
+    .await?;
+    let now = time::OffsetDateTime::now_utc();
+    Ok(rows
+        .into_iter()
+        .map(|(start, end, detail, names, incomplete)| PeriodRow {
+            started: fmt_time(st, Some(start)),
+            ended: end.map(|e| fmt_time(st, Some(e))).unwrap_or_default(),
+            duration: duration_label(end.unwrap_or(now) - start),
+            interfaces: names.join("、"),
+            detail,
+            incomplete,
+        })
+        .collect())
+}
+
 #[derive(Template)]
 #[template(path = "network_tab.html")]
 struct NetworkTab {
+    periods: Vec<PeriodRow>,
     loaded: bool,
     updated: String,
     /// 多重連線的說明；None 表示不是
@@ -99,6 +156,7 @@ pub async fn device_tab(st: &AppState, id: Uuid) -> Result<Response, AppError> {
             .map(|n| (n, t))
     }) else {
         return Ok(render(&NetworkTab {
+            periods: periods(st, id).await?,
             loaded: false,
             updated: String::new(),
             dual_homed: None,
@@ -119,6 +177,7 @@ pub async fn device_tab(st: &AppState, id: Uuid) -> Result<Response, AppError> {
         .map(|i| row(i, &sites, &involved))
         .collect();
     Ok(render(&NetworkTab {
+        periods: periods(st, id).await?,
         loaded: true,
         updated: fmt_time(st, Some(updated)),
         dual_homed: dh.as_ref().map(|d| d.describe()),
@@ -143,5 +202,11 @@ mod tests {
         assert_eq!(gateway_label("0.0.0.0"), "直接連線");
         assert_eq!(gateway_label("::"), "直接連線");
         assert_eq!(gateway_label("10.0.0.1"), "10.0.0.1");
+        let d = time::Duration::seconds;
+        assert_eq!(duration_label(d(-5)), "0 秒");
+        assert_eq!(duration_label(d(42)), "42 秒");
+        assert_eq!(duration_label(d(125)), "2 分鐘");
+        assert_eq!(duration_label(d(3 * 3600 + 7 * 60)), "3 小時 7 分");
+        assert_eq!(duration_label(d(2 * 86_400 + 5 * 3600)), "2 天 5 小時");
     }
 }

@@ -17,3 +17,17 @@
 </table>
 <p class="muted">資料時間：{{ updated }}。「對外」是有預設閘道的實體網卡；VPN 與虛擬網卡不算。{% if !has_sites %}尚未設定據點網段，只依「兩張以上網卡都有預設閘道」判斷多重連線。{% endif %}</p>
 {% endif %}
+<h2>多重連線紀錄</h2>
+{% if periods.is_empty() %}<p class="muted">沒有紀錄。Agent 會在本機監看網卡變化，短暫插上又拔掉的網卡也記得到（需要 Agent 0.12.0 以上）。</p>{% else %}
+<table>
+  <tr><th>開始</th><th>結束</th><th>持續</th><th>網卡</th><th>原因</th></tr>
+  {% for p in periods %}<tr>
+    <td><span class="num">{{ p.started }}</span></td>
+    <td>{% if p.ended.is_empty() %}<span class="tag bad">持續中</span>{% else %}<span class="num">{{ p.ended }}</span>{% endif %}</td>
+    <td>{{ p.duration }}</td>
+    <td>{{ p.interfaces }}</td>
+    <td>{{ p.detail }}{% if p.incomplete %} <span class="tag warn">可能不完整</span>{% endif %}</td>
+  </tr>{% endfor %}
+</table>
+<p class="muted">只列出最近 20 段。「可能不完整」表示 Agent 離線太久，本機暫存的事件超過上限被刪掉了一部分。</p>
+{% endif %}

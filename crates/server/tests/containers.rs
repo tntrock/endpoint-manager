@@ -75,6 +75,8 @@ async fn checkin(
         .json(&CheckinRequest {
             os_family: Some(OsFamily::Linux),
             signing_keys: vec![],
+            journal_id: None,
+            events: vec![],
             schema_version: SCHEMA_VERSION,
             agent_version: "0.12.0".into(),
             boot_time: time::OffsetDateTime::now_utc(),
