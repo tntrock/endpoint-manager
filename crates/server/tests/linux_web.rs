@@ -86,13 +86,9 @@ async fn linux_device_page_shows_only_linux_tabs(pool: PgPool) {
     for t in ["commands", "software", "services", "accounts", "changes"] {
         assert!(html.contains(&format!("/tab/{t}\"")), "{t}: {html}");
     }
-    for t in [
-        "compliance",
-        "security",
-        "deployments",
-        "updates",
-        "patches",
-    ] {
+    // 合規分頁只在有容器執行環境時顯示（容器規則）
+    assert!(!html.contains("/tab/compliance\""), "{html}");
+    for t in ["security", "deployments", "updates", "patches"] {
         assert!(!html.contains(&format!("/tab/{t}\"")), "{t}: {html}");
         let (st, _) = s.page(&c, &format!("/devices/{linux}/tab/{t}")).await;
         assert_eq!(st, 404, "{t}");

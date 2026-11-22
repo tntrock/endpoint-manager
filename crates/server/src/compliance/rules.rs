@@ -7,7 +7,7 @@ use super::matcher::Glob;
 
 pub const MAX_PATTERN_LEN: usize = 256;
 
-pub const KINDS: [&str; 16] = [
+pub const KINDS: [&str; 19] = [
     "forbidden_software",
     "required_software",
     "software_allowlist",
@@ -24,6 +24,9 @@ pub const KINDS: [&str; 16] = [
     "reboot_pending",
     "update_policy",
     "dual_homed",
+    "forbidden_image",
+    "container_privilege",
+    "unpinned_image",
 ];
 
 /// 多重連線規則：回溯天數上限
@@ -51,6 +54,9 @@ pub fn kind_label(kind: &str) -> &'static str {
         "reboot_pending" => "待重開機太久",
         "update_policy" => "更新原則衝突",
         "dual_homed" => "多重連線",
+        "forbidden_image" => "禁止映像",
+        "container_privilege" => "容器權限",
+        "unpinned_image" => "映像未固定版本",
         _ => "未知類型",
     }
 }
@@ -159,6 +165,22 @@ pub enum Params {
     },
     UpdatePolicy,
     DualHomed(DualHomedParams),
+    ForbiddenImage {
+        /// 映像（萬用字元）
+        image: String,
+        running_only: bool,
+    },
+    ContainerPrivilege {
+        privileged: bool,
+        host_network: bool,
+        /// 掛載容器執行環境的 socket（docker.sock 等）
+        runtime_socket: bool,
+        /// 例外映像（萬用字元）
+        except_images: Vec<String>,
+    },
+    UnpinnedImage {
+        except_images: Vec<String>,
+    },
 }
 
 /// 多重連線規則的參數（網路規格 §5.3）
@@ -321,6 +343,79 @@ pub enum Check {
         exclude_cidrs: Vec<(std::net::IpAddr, u8)>,
         only_cross_site: bool,
     },
+    ForbiddenImage {
+        image: Glob,
+        running_only: bool,
+    },
+    ContainerPrivilege {
+        privileged: bool,
+        host_network: bool,
+        runtime_socket: bool,
+        except_images: Vec<Glob>,
+    },
+    UnpinnedImage {
+        except_images: Vec<Glob>,
+    },
+}
+
+impl Check {
+    /// 只評估 Linux 裝置的規則（容器）；其他規則只評估 Windows 裝置
+    pub fn linux_only(&self) -> bool {
+        matches!(
+            self,
+            Check::ForbiddenImage { .. }
+                | Check::ContainerPrivilege { .. }
+                | Check::UnpinnedImage { .. }
+        )
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawForbiddenImage {
+    image: Option<String>,
+    #[serde(default = "default_true")]
+    running_only: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawPrivilege {
+    #[serde(default)]
+    privileged: bool,
+    #[serde(default)]
+    host_network: bool,
+    #[serde(default)]
+    runtime_socket: bool,
+    #[serde(default)]
+    except_images: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawUnpinned {
+    #[serde(default)]
+    except_images: Vec<String>,
+}
+
+/// 例外映像：去空白、去重；最多 MAX_EXCEPTIONS 個
+fn image_exceptions(v: Vec<String>) -> Result<Vec<String>, String> {
+    if v.len() > MAX_EXCEPTIONS {
+        return Err(format!("例外最多 {MAX_EXCEPTIONS} 個"));
+    }
+    let mut out = vec![];
+    for i in v {
+        if let Some(i) = opt("例外映像", Some(i))?
+            && !out.contains(&i)
+        {
+            out.push(i);
+        }
+    }
+    Ok(out)
 }
 
 fn default_lookback() -> u32 {
@@ -712,6 +807,31 @@ impl Params {
                     only_cross_site: r.only_cross_site,
                 }))
             }
+            "forbidden_image" => {
+                let r: RawForbiddenImage = from(v)?;
+                Ok(Params::ForbiddenImage {
+                    image: required("映像", r.image)?,
+                    running_only: r.running_only,
+                })
+            }
+            "container_privilege" => {
+                let r: RawPrivilege = from(v)?;
+                if !r.privileged && !r.host_network && !r.runtime_socket {
+                    return Err("容器權限規則至少要勾選一項".into());
+                }
+                Ok(Params::ContainerPrivilege {
+                    privileged: r.privileged,
+                    host_network: r.host_network,
+                    runtime_socket: r.runtime_socket,
+                    except_images: image_exceptions(r.except_images)?,
+                })
+            }
+            "unpinned_image" => {
+                let r: RawUnpinned = from(v)?;
+                Ok(Params::UnpinnedImage {
+                    except_images: image_exceptions(r.except_images)?,
+                })
+            }
             _ => Err(format!("未知的規則類型：{kind}")),
         }
     }
@@ -745,6 +865,9 @@ impl Params {
             Params::RebootPending { .. } => "reboot_pending",
             Params::UpdatePolicy => "update_policy",
             Params::DualHomed(_) => "dual_homed",
+            Params::ForbiddenImage { .. } => "forbidden_image",
+            Params::ContainerPrivilege { .. } => "container_privilege",
+            Params::UnpinnedImage { .. } => "unpinned_image",
         }
     }
 
@@ -893,6 +1016,37 @@ impl Params {
                     m.insert("only_cross_site".into(), json!(true));
                 }
             }
+            Params::ForbiddenImage {
+                image,
+                running_only,
+            } => {
+                m.insert("image".into(), json!(image));
+                m.insert("running_only".into(), json!(running_only));
+            }
+            Params::ContainerPrivilege {
+                privileged,
+                host_network,
+                runtime_socket,
+                except_images,
+            } => {
+                for (k, on) in [
+                    ("privileged", privileged),
+                    ("host_network", host_network),
+                    ("runtime_socket", runtime_socket),
+                ] {
+                    if *on {
+                        m.insert(k.into(), json!(true));
+                    }
+                }
+                if !except_images.is_empty() {
+                    m.insert("except_images".into(), json!(except_images));
+                }
+            }
+            Params::UnpinnedImage { except_images } => {
+                if !except_images.is_empty() {
+                    m.insert("except_images".into(), json!(except_images));
+                }
+            }
         }
         Value::Object(m)
     }
@@ -1003,6 +1157,27 @@ impl Params {
                     .filter_map(|c| crate::branch::sites::parse_cidr(c).ok())
                     .collect(),
                 only_cross_site: p.only_cross_site,
+            },
+            Params::ForbiddenImage {
+                image,
+                running_only,
+            } => Check::ForbiddenImage {
+                image: Glob::new(image),
+                running_only: *running_only,
+            },
+            Params::ContainerPrivilege {
+                privileged,
+                host_network,
+                runtime_socket,
+                except_images,
+            } => Check::ContainerPrivilege {
+                privileged: *privileged,
+                host_network: *host_network,
+                runtime_socket: *runtime_socket,
+                except_images: except_images.iter().map(|i| Glob::new(i)).collect(),
+            },
+            Params::UnpinnedImage { except_images } => Check::UnpinnedImage {
+                except_images: except_images.iter().map(|i| Glob::new(i)).collect(),
             },
         }
     }
@@ -1244,6 +1419,61 @@ mod tests {
         }
         assert!(KINDS.contains(&"dual_homed"));
         assert_eq!(kind_label("dual_homed"), "多重連線");
+    }
+
+    #[test]
+    fn container_params() {
+        let p = Params::parse("forbidden_image", &json!({"image": " *xmrig* "})).unwrap();
+        assert_eq!(
+            p.to_json(),
+            json!({"image": "*xmrig*", "running_only": true})
+        );
+        assert_eq!(p.kind(), "forbidden_image");
+        assert!(p.compile().linux_only());
+        let p = Params::parse(
+            "container_privilege",
+            &json!({"privileged": true, "except_images": [" portainer/* ", "", "portainer/*"]}),
+        )
+        .unwrap();
+        assert_eq!(
+            p.to_json(),
+            json!({"privileged": true, "except_images": ["portainer/*"]})
+        );
+        assert_eq!(Params::parse(p.kind(), &p.to_json()).unwrap(), p, "往返");
+        assert!(p.compile().linux_only());
+        let p = Params::parse("unpinned_image", &json!({})).unwrap();
+        assert_eq!((p.kind(), p.to_json()), ("unpinned_image", json!({})));
+        assert!(p.compile().linux_only());
+        assert!(
+            !Params::parse("dual_homed", &json!({}))
+                .unwrap()
+                .compile()
+                .linux_only()
+        );
+        for (kind, bad) in [
+            ("forbidden_image", json!({})),
+            ("forbidden_image", json!({"image": "  "})),
+            ("container_privilege", json!({})),
+            (
+                "container_privilege",
+                json!({"privileged": false, "host_network": false}),
+            ),
+            (
+                "container_privilege",
+                json!({"privileged": true, "except_images": vec!["a"; MAX_EXCEPTIONS + 1]}),
+            ),
+            (
+                "unpinned_image",
+                json!({"except_images": ["x".repeat(MAX_PATTERN_LEN + 1)]}),
+            ),
+            ("unpinned_image", json!({"tag": "latest"})),
+        ] {
+            assert!(Params::parse(kind, &bad).is_err(), "{kind} {bad}");
+        }
+        for k in ["forbidden_image", "container_privilege", "unpinned_image"] {
+            assert!(KINDS.contains(&k));
+            assert_ne!(kind_label(k), "未知類型");
+        }
     }
 
     #[test]

@@ -84,14 +84,8 @@ fn net_filter(net: &str) -> &'static str {
     }
 }
 
-/// Linux 裝置沒有資料的分頁
-const WINDOWS_ONLY_TABS: &[&str] = &[
-    "compliance",
-    "security",
-    "deployments",
-    "updates",
-    "patches",
-];
+/// Linux 裝置沒有資料的分頁（合規分頁在 Linux 只放容器規則的結果）
+const WINDOWS_ONLY_TABS: &[&str] = &["security", "deployments", "updates", "patches"];
 
 /// `containers`：這台有偵測到容器執行環境（才顯示「容器」分頁）
 fn tabs_for(os_family: &str, containers: bool) -> Vec<(&'static str, &'static str)> {
@@ -104,6 +98,7 @@ fn tabs_for(os_family: &str, containers: bool) -> Vec<(&'static str, &'static st
             ("network", "網路"),
         ];
         if containers {
+            tabs.insert(1, ("compliance", "合規"));
             tabs.push(("containers", "容器"));
         }
         tabs.extend([("accounts", "帳號與權限"), ("changes", "變更歷史")]);
@@ -757,6 +752,7 @@ pub async fn detail(
         .map(|(k, v)| (super::timeline::section_label(&k).to_string(), v))
         .collect();
     let linux = os_family == "linux";
+    let containers = linux && super::containers::has_runtimes(&st, id).await?;
     let boot = fmt_time(&st, boot);
     let agent = o(agent);
     let (cards, issues) = super::device_status::build(
@@ -764,6 +760,7 @@ pub async fn detail(
         &super::device_status::Facts {
             id,
             linux,
+            containers,
             status: &status,
             last_seen,
             online: last_seen.is_some_and(|t| t > cutoff),
@@ -811,10 +808,7 @@ pub async fn detail(
             runs_in: runs_in_label(runs_in.as_deref(), runs_in_detail.as_deref())
                 .unwrap_or_default(),
         },
-        tabs: tabs_for(
-            &os_family,
-            linux && super::containers::has_runtimes(&st, id).await?,
-        ),
+        tabs: tabs_for(&os_family, containers),
     }))
 }
 

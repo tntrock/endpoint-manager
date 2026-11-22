@@ -17,13 +17,15 @@ pub struct PreviewCount {
 }
 
 pub async fn preview(pool: &PgPool, rule: Rule) -> Result<PreviewCount, sqlx::Error> {
+    // 「檢查幾台」只算規則適用的作業系統
+    let linux = rule.check.as_ref().is_ok_and(|c| c.linux_only());
     let set = RuleSet::new(0, vec![rule]);
     let mut count = PreviewCount::default();
     let mut cursor: Option<Uuid> = None;
     let mut conn = pool.acquire().await?;
     loop {
         let ids: Vec<Uuid> = sqlx::query_scalar(
-            "SELECT id FROM devices WHERE status = 'active' AND os_family = 'windows' \
+            "SELECT id FROM devices WHERE status = 'active' AND os_family IN ('windows', 'linux') \
              AND ($1::uuid IS NULL OR id > $1) \
              ORDER BY id LIMIT $2",
         )
@@ -35,6 +37,9 @@ pub async fn preview(pool: &PgPool, rule: Rule) -> Result<PreviewCount, sqlx::Er
             break;
         };
         for (_, facts) in load_facts_bulk(&mut conn, &ids).await? {
+            if facts.linux != linux {
+                continue;
+            }
             count.devices += 1;
             for o in evaluate(&facts, &set) {
                 match o.status {

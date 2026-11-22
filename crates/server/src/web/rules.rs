@@ -69,6 +69,15 @@ pub struct ParamFields {
     pub dh_exclude_nics: String,
     pub dh_exclude_cidrs: String,
     pub dh_cross_only: bool,
+    /// 禁止映像：映像樣式、只看執行中
+    pub img_image: String,
+    pub img_running_only: bool,
+    /// 容器權限：檢查特權／主機網路／掛載容器 socket
+    pub pv_privileged: bool,
+    pub pv_host_network: bool,
+    pub pv_socket: bool,
+    /// 容器權限、映像未固定版本：例外映像（每行一個）
+    pub img_except: String,
 }
 
 fn lines(v: &str) -> Vec<&str> {
@@ -131,6 +140,12 @@ pub fn parse_form(raw: &[u8]) -> RuleForm {
             "p_dh_exclude_nics" => f.p.dh_exclude_nics = v,
             "p_dh_exclude_cidrs" => f.p.dh_exclude_cidrs = v,
             "p_dh_cross_only" => f.p.dh_cross_only = v == "1",
+            "p_img_image" => f.p.img_image = v,
+            "p_img_running" => f.p.img_running_only = v == "1",
+            "p_pv_privileged" => f.p.pv_privileged = v == "1",
+            "p_pv_host_network" => f.p.pv_host_network = v == "1",
+            "p_pv_socket" => f.p.pv_socket = v == "1",
+            "p_img_except" => f.p.img_except = v,
             _ => {}
         }
     }
@@ -236,6 +251,14 @@ pub fn form_to_input(f: &RuleForm) -> Result<RuleInput, String> {
             m.insert("only_cross_site".into(), json!(p.dh_cross_only));
             Value::Object(m)
         }
+        "forbidden_image" => json!({"image": p.img_image, "running_only": p.img_running_only}),
+        "container_privilege" => json!({
+            "privileged": p.pv_privileged,
+            "host_network": p.pv_host_network,
+            "runtime_socket": p.pv_socket,
+            "except_images": lines(&p.img_except),
+        }),
+        "unpinned_image" => json!({ "except_images": lines(&p.img_except) }),
         "local_admins" => {
             let allowed: Vec<&str> = p
                 .admins_allowed
@@ -305,6 +328,12 @@ pub fn params_to_form(kind: &str, v: &Value) -> ParamFields {
         dh_exclude_nics: joined(v, "exclude_interfaces"),
         dh_exclude_cidrs: joined(v, "exclude_cidrs"),
         dh_cross_only: b("only_cross_site"),
+        img_image: s("image"),
+        img_running_only: v["running_only"].as_bool().unwrap_or(true),
+        pv_privileged: b("privileged"),
+        pv_host_network: b("host_network"),
+        pv_socket: b("runtime_socket"),
+        img_except: joined(v, "except_images"),
         admins_allowed: v["allowed"]
             .as_array()
             .map(|a| {
@@ -635,7 +664,11 @@ pub async fn new_form(
         severities: severities("medium"),
         include: group_checks(&st, &[]).await.map_err(db_error)?,
         exclude: group_checks(&st, &[]).await.map_err(db_error)?,
-        p: ParamFields::default(),
+        // 禁止映像預設只看執行中的容器
+        p: ParamFields {
+            img_running_only: true,
+            ..Default::default()
+        },
         error: None,
     }))
 }
@@ -917,6 +950,18 @@ mod tests {
             ("update_policy", json!({})),
             ("dual_homed", json!({"lookback_days": 7})),
             (
+                "forbidden_image",
+                json!({"image": "*xmrig*", "running_only": false}),
+            ),
+            (
+                "container_privilege",
+                json!({"privileged": true, "runtime_socket": true,
+                       "except_images": ["portainer/*", "*traefik*"]}),
+            ),
+            ("container_privilege", json!({"host_network": true})),
+            ("unpinned_image", json!({})),
+            ("unpinned_image", json!({"except_images": ["*pause*"]})),
+            (
                 "dual_homed",
                 json!({"lookback_days": 30, "min_duration_secs": 60,
                        "exclude_interfaces": ["*Npcap*", "vEthernet*"],
@@ -971,6 +1016,36 @@ mod tests {
                    "exclude_cidrs": ["10.9.0.0/16"], "only_cross_site": true})
         );
         assert!(form_to_input(&form("dual_homed", &[("p_dh_lookback", "x")])).is_err());
+    }
+
+    #[test]
+    fn container_form_fields_parse() {
+        let i = form_to_input(&form(
+            "forbidden_image",
+            &[("p_img_image", " nginx:1.1* "), ("p_img_running", "1")],
+        ))
+        .unwrap();
+        assert_eq!(
+            Params::parse("forbidden_image", &i.params)
+                .unwrap()
+                .to_json(),
+            json!({"image": "nginx:1.1*", "running_only": true})
+        );
+        let i = form_to_input(&form(
+            "container_privilege",
+            &[
+                ("p_pv_host_network", "1"),
+                ("p_img_except", " traefik* \r\n\r\n"),
+            ],
+        ))
+        .unwrap();
+        assert_eq!(
+            i.params,
+            json!({"privileged": false, "host_network": true, "runtime_socket": false,
+                   "except_images": ["traefik*"]})
+        );
+        let i = form_to_input(&form("unpinned_image", &[])).unwrap();
+        assert_eq!(i.params, json!({"except_images": []}));
     }
 
     /// 表單送出的原始欄位（核取方塊、多行）能正確解析
