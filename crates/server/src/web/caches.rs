@@ -10,7 +10,6 @@ use time::Duration;
 use super::auth::{AdminSession, Nav, Session, check_csrf, platform};
 use super::devices::{action_error, db_error};
 use super::login::CsrfForm;
-use super::sites::cache_status_label;
 use super::{fmt_time, not_found, render};
 use crate::AppState;
 use crate::branch::caches;
@@ -23,7 +22,9 @@ pub struct CacheRow {
     pub site_id: Option<i64>,
     pub url: String,
     pub status: String,
-    pub status_label: &'static str,
+    /// 總覽用的狀態（使用中但太久沒回報顯示「離線 N 分鐘」）
+    pub tone: &'static str,
+    pub state: String,
     pub last_seen: String,
     pub version: String,
     pub disk: String,
@@ -103,23 +104,31 @@ async fn page_for(
     .fetch_all(&st.pool)
     .await
     .map_err(db_error)?;
+    let now = time::OffsetDateTime::now_utc();
     let rows = rows
         .into_iter()
         .map(
-            |(id, name, site, site_id, url, status, last_seen, version, disk, stored)| CacheRow {
-                id,
-                name,
-                site: site.unwrap_or_else(|| "—".into()),
-                site_id,
-                url,
-                status_label: cache_status_label(&status),
-                status,
-                last_seen: fmt_time(st, last_seen),
-                version: version.unwrap_or_else(|| "—".into()),
-                disk: disk
-                    .map(|b| format!("{:.1} GB", b as f64 / 1024f64.powi(3)))
-                    .unwrap_or_else(|| "—".into()),
-                progress: format!("已存 {stored}／應有 {expected}"),
+            |(id, name, site, site_id, url, status, last_seen, version, disk, stored)| {
+                let state = super::dashboard::cache_state(
+                    &status,
+                    last_seen.map(|t| (now - t).whole_seconds().max(0)),
+                );
+                CacheRow {
+                    id,
+                    name,
+                    site: site.unwrap_or_else(|| "—".into()),
+                    site_id,
+                    url,
+                    tone: state.0,
+                    state: state.1,
+                    status,
+                    last_seen: fmt_time(st, last_seen),
+                    version: version.unwrap_or_else(|| "—".into()),
+                    disk: disk
+                        .map(|b| format!("{:.1} GB", b as f64 / 1024f64.powi(3)))
+                        .unwrap_or_else(|| "—".into()),
+                    progress: format!("已存 {stored}／應有 {expected}"),
+                }
             },
         )
         .collect();
@@ -138,7 +147,6 @@ async fn page_for(
     .fetch_all(&st.pool)
     .await
     .map_err(db_error)?;
-    let now = time::OffsetDateTime::now_utc();
     Ok(render(&CachesPage {
         nav: Nav::new(s, "sites"),
         new_token,

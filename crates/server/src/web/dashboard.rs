@@ -275,6 +275,101 @@ pub(super) async fn sites(st: &AppState, s: &Session) -> Result<Vec<SiteRow>, sq
         .collect())
 }
 
+/// 分點快取超過這麼久沒回報算離線（快取每 30 秒回報一次）
+pub(super) const CACHE_OFFLINE_SECS: i64 = 180;
+
+pub struct CacheTile {
+    pub name: String,
+    pub site: String,
+    /// ok／warn／bad／off
+    pub tone: &'static str,
+    pub state: String,
+    pub last_seen: String,
+    pub version: String,
+    pub disk: String,
+    /// 預先下載：已存／應有
+    pub stored: i64,
+    pub expected: i64,
+}
+
+/// 「12 分鐘」「3 小時」「2 天」
+fn ago_text(secs: i64) -> String {
+    match secs {
+        ..3600 => format!("{} 分鐘", (secs / 60).max(1)),
+        3600..86400 => format!("{} 小時", secs / 3600),
+        _ => format!("{} 天", secs / 86400),
+    }
+}
+
+/// 快取的狀態（色調, 文字）；`age` 是距離上次回報的秒數
+pub(super) fn cache_state(status: &str, age: Option<i64>) -> (&'static str, String) {
+    match (status, age) {
+        ("pending", _) => ("warn", "待核准".into()),
+        ("disabled", _) => ("off", "已停用".into()),
+        ("active", None) => ("bad", "從未回報".into()),
+        ("active", Some(a)) if a > CACHE_OFFLINE_SECS => ("bad", format!("離線 {}", ago_text(a))),
+        ("active", Some(_)) => ("ok", "正常".into()),
+        _ => ("off", super::sites::cache_status_label(status).into()),
+    }
+}
+
+type CacheDbRow = (
+    String,
+    Option<String>,
+    String,
+    Option<OffsetDateTime>,
+    Option<String>,
+    Option<i64>,
+    Option<i32>,
+    i64,
+);
+
+/// 分點快取的狀態；只給平台管理員（快取設定頁也只限平台管理員）。已拒絕的不列。
+pub(super) async fn caches(st: &AppState, s: &Session) -> Result<Vec<CacheTile>, sqlx::Error> {
+    if !s.all_devices() {
+        return Ok(vec![]);
+    }
+    let expected: i64 = sqlx::query_scalar(
+        "SELECT count(DISTINCT package_id) FROM deployments WHERE stage <> 'stopped'",
+    )
+    .fetch_one(&st.pool)
+    .await?;
+    let rows: Vec<CacheDbRow> = sqlx::query_as(
+        "SELECT c.name, s.name, c.status, c.last_seen, c.version, c.disk_used_bytes, s.disk_limit_gb, \
+                (SELECT count(*) FROM cache_packages cp WHERE cp.cache_id = c.id AND EXISTS \
+                   (SELECT 1 FROM deployments d WHERE d.package_id = cp.package_id \
+                    AND d.stage <> 'stopped')) \
+         FROM caches c LEFT JOIN sites s ON s.id = c.site_id \
+         WHERE c.status <> 'rejected' ORDER BY s.name IS NULL, s.name, lower(c.name)",
+    )
+    .fetch_all(&st.pool)
+    .await?;
+    let now = OffsetDateTime::now_utc();
+    Ok(rows
+        .into_iter()
+        .map(|(name, site, status, seen, version, used, limit, stored)| {
+            let (tone, state) =
+                cache_state(&status, seen.map(|t| (now - t).whole_seconds().max(0)));
+            let gb = |b: i64| b as f64 / 1024f64.powi(3);
+            CacheTile {
+                name,
+                site: site.unwrap_or_else(|| "（未指定據點）".into()),
+                tone,
+                state,
+                last_seen: fmt_time(st, seen),
+                version: version.unwrap_or_else(|| "—".into()),
+                disk: match (used, limit) {
+                    (Some(u), Some(l)) => format!("{:.1} / {l} GB", gb(u)),
+                    (Some(u), None) => format!("{:.1} GB", gb(u)),
+                    (None, _) => "—".into(),
+                },
+                stored,
+                expected,
+            }
+        })
+        .collect())
+}
+
 pub struct TodoItem {
     /// high／medium／low
     pub severity: &'static str,
@@ -382,6 +477,36 @@ async fn todo(st: &AppState, s: &Session, pending: i64) -> Result<Vec<TodoItem>,
             href: "/vms?unmanaged=true".into(),
         });
     }
+    // 分點快取：離線時該據點的派送改向總部下載（或等待，依據點設定）；只給平台管理員
+    if s.all_devices() {
+        let (offline, waiting): (i64, i64) = sqlx::query_as(
+            "SELECT count(*) FILTER (WHERE status = 'active' AND \
+                      (last_seen IS NULL OR last_seen < now() - make_interval(secs => $1))), \
+                    count(*) FILTER (WHERE status = 'pending') FROM caches",
+        )
+        .bind(CACHE_OFFLINE_SECS as f64)
+        .fetch_one(&st.pool)
+        .await?;
+        for (n, severity, title, detail) in [
+            (
+                offline,
+                "high",
+                "分點快取離線",
+                "該據點的派送改向總部下載或暫停",
+            ),
+            (waiting, "low", "分點快取待核准", "核准並指定據點後才會使用"),
+        ] {
+            if n > 0 {
+                out.push(TodoItem {
+                    severity,
+                    title: title.into(),
+                    detail,
+                    count: n,
+                    href: "/caches".into(),
+                });
+            }
+        }
+    }
     if pending > 0 {
         out.push(TodoItem {
             severity: "low",
@@ -421,6 +546,7 @@ struct DashboardPage {
     o: Overview,
     todo: Vec<TodoItem>,
     sites: Vec<SiteRow>,
+    caches: Vec<CacheTile>,
     rules: Vec<RuleBar>,
     pending: Vec<PendingRow>,
     /// 全部核准的結果：(核准, 略過)
@@ -517,6 +643,7 @@ async fn build(st: &AppState, s: &Session, days: i32) -> Result<DashboardPage, A
         o: overview(st, s, days, Some(7)).await?,
         todo: todo(st, s, rows.len() as i64).await?,
         sites: sites(st, s).await?,
+        caches: caches(st, s).await?,
         rules: top_rules(st, s, 5).await?,
         pending: rows
             .into_iter()
@@ -538,6 +665,22 @@ async fn build(st: &AppState, s: &Session, days: i32) -> Result<DashboardPage, A
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cache_states() {
+        let s = |st: &str, age: Option<i64>| cache_state(st, age);
+        assert_eq!(s("active", Some(20)), ("ok", "正常".into()));
+        assert_eq!(s("active", Some(CACHE_OFFLINE_SECS)), ("ok", "正常".into()));
+        assert_eq!(s("active", Some(600)), ("bad", "離線 10 分鐘".into()));
+        assert_eq!(s("active", Some(200)), ("bad", "離線 3 分鐘".into()));
+        assert_eq!(s("active", Some(7300)), ("bad", "離線 2 小時".into()));
+        assert_eq!(s("active", Some(3 * 86400)), ("bad", "離線 3 天".into()));
+        assert_eq!(s("active", None), ("bad", "從未回報".into()));
+        assert_eq!(s("pending", None), ("warn", "待核准".into()));
+        assert_eq!(s("disabled", Some(5)), ("off", "已停用".into()));
+        assert_eq!(s("weird", None), ("off", "未知".into()));
+        assert_eq!(ago_text(30), "1 分鐘");
+    }
 
     #[test]
     fn deltas_and_ranges() {

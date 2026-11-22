@@ -8,17 +8,17 @@
   <input type="hidden" name="csrf" value="{{ nav.csrf }}">
   <label class="field">名稱 <input name="name" value="{{ name }}" required maxlength="100" size="40"></label>
   <label class="field">套件 <select name="package_id">{% for o in packages %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}</select></label>
-  <p class="checks">動作：
+  <p class="checks"><span class="checks-label">動作：</span>
     <label><input type="radio" name="action" value="install" {% if action != "uninstall" %}checked{% endif %}> 安裝（沒裝或版本太舊就安裝）</label>
     <label><input type="radio" name="action" value="uninstall" {% if action == "uninstall" %}checked{% endif %}> 移除（偵測到就移除）</label></p>
   <fieldset><legend>範圍（都不勾＝全部裝置；排除優先）</legend>
-    <p class="checks">只派送給：{% for g in include %}<label><input type="checkbox" name="include" value="{{ g.value }}" {% if g.selected %}checked{% endif %}> {{ g.label }}</label> {% endfor %}</p>
-    <p class="checks">排除：{% for g in exclude %}<label><input type="checkbox" name="exclude" value="{{ g.value }}" {% if g.selected %}checked{% endif %}> {{ g.label }}</label> {% endfor %}</p>
+    <p class="checks"><span class="checks-label">只派送給：</span>{% for g in include %}<label><input type="checkbox" name="include" value="{{ g.value }}" {% if g.selected %}checked{% endif %}> {{ g.label }}</label> {% endfor %}</p>
+    <p class="checks"><span class="checks-label">排除：</span>{% for g in exclude %}<label><input type="checkbox" name="exclude" value="{{ g.value }}" {% if g.selected %}checked{% endif %}> {{ g.label }}</label> {% endfor %}</p>
   </fieldset>
   <fieldset><legend>分階段發布{% call m::help_btn("autopause", "試點與自動暫停") %}{% endcall %}</legend>
     <label class="field">試點群組 <select name="pilot_group_id">{% for o in groups %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}</select></label>
-    <div class="row"><label class="field">失敗率超過 <input name="max_failure_pct" type="number" min="1" max="100" value="{{ max_failure_pct }}" required>%</label>
-       <label class="field">（至少 <input name="min_samples" type="number" min="1" max="10000" value="{{ min_samples }}" required> 台有結果後）自動暫停</label></div>
+    <div class="row"><label class="field">失敗率超過 <span class="with-unit"><input name="max_failure_pct" type="number" min="1" max="100" value="{{ max_failure_pct }}" required> %</span></label>
+       <label class="field">（至少 <span class="with-unit"><input name="min_samples" type="number" min="1" max="10000" value="{{ min_samples }}" required> 台有結果後）自動暫停</span></label></div>
   </fieldset>
   <button class="btn primary">建立</button>
 </form>

@@ -64,6 +64,17 @@ pub fn runs_in_label(kind: Option<&str>, detail: Option<&str>) -> Option<String>
     })
 }
 
+/// 執行環境的白話說明（滑鼠移上去、裝置頁顯示）；實體機與虛擬機不需要說明
+pub fn runs_in_hint(kind: Option<&str>) -> &'static str {
+    match kind {
+        Some("wsl") => {
+            "WSL（Windows Subsystem for Linux）：裝在 Windows 電腦裡的 Linux 環境，不是獨立的電腦；             這裡的資料是那個 Linux 環境的，Windows 本身要另外安裝 Windows 版 Agent"
+        }
+        Some("container") => "Agent 在容器裡執行：看到的軟體、服務是容器內的，不是主機的",
+        _ => "",
+    }
+}
+
 /// 執行環境篩選值：physical、vm、container、wsl，其他一律當成全部
 fn env_filter(env: &str) -> &'static str {
     match env {
@@ -228,8 +239,8 @@ pub struct DeviceRow {
     pub os: String,
     pub user: String,
     pub linux: bool,
-    /// 容器或 WSL 的標籤文字
-    pub guest: Option<String>,
+    /// 容器或 WSL 的標籤文字與說明
+    pub guest: Option<(String, &'static str)>,
     pub ip: String,
     /// 全部位址（滑過 IP 時顯示）
     pub all_ips: String,
@@ -412,7 +423,10 @@ async fn list_page(
                     guest: runs_in
                         .as_deref()
                         .filter(|k| matches!(*k, "container" | "wsl"))
-                        .and_then(|k| runs_in_label(Some(k), runs_in_detail.as_deref())),
+                        .and_then(|k| {
+                            runs_in_label(Some(k), runs_in_detail.as_deref())
+                                .map(|l| (l, runs_in_hint(Some(k))))
+                        }),
                 }
             },
         )
@@ -449,7 +463,7 @@ async fn list_page(
         ("physical", "實體機"),
         ("vm", "虛擬機"),
         ("container", "容器"),
-        ("wsl", "WSL"),
+        ("wsl", "WSL（Windows 裡的 Linux）"),
     ]
     .into_iter()
     .map(|(v, l)| SelectOption {
@@ -648,6 +662,8 @@ pub struct DeviceView {
     pub linux: bool,
     /// 執行環境（實體機、虛擬機（KVM）、容器、WSL）；不知道時是空字串
     pub runs_in: String,
+    /// 執行環境的白話說明（WSL、容器才有）
+    pub runs_in_hint: &'static str,
     /// 最後回報的相對時間
     pub seen_ago: String,
     /// 這台是虛擬機：執行於哪台主機（連結（範圍外為空）、主機名稱、虛擬機名稱）
@@ -820,6 +836,7 @@ pub async fn detail(
             linux,
             runs_in: runs_in_label(runs_in.as_deref(), runs_in_detail.as_deref())
                 .unwrap_or_default(),
+            runs_in_hint: runs_in_hint(runs_in.as_deref()),
             vm_host: super::vms::host_of(&st, &s, id).await?,
         },
         tabs: tabs_for(
@@ -1289,6 +1306,10 @@ mod tests {
         assert_eq!(l(Some("container"), None).as_deref(), Some("容器"));
         assert_eq!(l(Some("wsl"), Some("1")).as_deref(), Some("WSL 1"));
         assert_eq!(l(Some("wsl"), None).as_deref(), Some("WSL"));
+        assert!(runs_in_hint(Some("wsl")).contains("Windows"));
+        assert!(runs_in_hint(Some("container")).contains("容器"));
+        assert_eq!(runs_in_hint(Some("host")), "");
+        assert_eq!(runs_in_hint(None), "");
         assert_eq!(l(Some("future"), Some("x")), None);
         assert_eq!(l(None, None), None);
         assert_eq!(env_filter("vm"), "vm");

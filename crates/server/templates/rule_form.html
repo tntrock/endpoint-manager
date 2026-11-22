@@ -50,7 +50,7 @@
        <label><input type="radio" name="p_svc_require" value="running" {% if p.svc_require == "running" %}checked{% endif %}> 必須執行中</label></p>
     <p class="muted">「必須停用」時，未安裝也算符合；「必須執行中」時，未安裝算違規。</p>
   {% else if kind == "firewall" %}
-    <p class="checks">必須啟用的設定檔：
+    <p class="checks"><span class="checks-label">必須啟用的設定檔：</span>
        <label><input type="checkbox" name="p_fw_domain" value="1" {% if p.fw_domain %}checked{% endif %}> 網域</label>
        <label><input type="checkbox" name="p_fw_private" value="1" {% if p.fw_private %}checked{% endif %}> 私人</label>
        <label><input type="checkbox" name="p_fw_public" value="1" {% if p.fw_public %}checked{% endif %}> 公用</label></p>
@@ -108,8 +108,8 @@
   </fieldset>
 
   <fieldset><legend>範圍（都不勾＝全部裝置；排除優先）</legend>
-    <p class="checks">只套用：{% for g in include %}<label><input type="checkbox" name="include" value="{{ g.value }}" {% if g.selected %}checked{% endif %}> {{ g.label }}</label> {% endfor %}</p>
-    <p class="checks">排除：{% for g in exclude %}<label><input type="checkbox" name="exclude" value="{{ g.value }}" {% if g.selected %}checked{% endif %}> {{ g.label }}</label> {% endfor %}</p>
+    <p class="checks"><span class="checks-label">只套用：</span>{% for g in include %}<label><input type="checkbox" name="include" value="{{ g.value }}" {% if g.selected %}checked{% endif %}> {{ g.label }}</label> {% endfor %}</p>
+    <p class="checks"><span class="checks-label">排除：</span>{% for g in exclude %}<label><input type="checkbox" name="exclude" value="{{ g.value }}" {% if g.selected %}checked{% endif %}> {{ g.label }}</label> {% endfor %}</p>
   </fieldset>
 
   <div class="actions"><button class="btn primary">儲存</button>

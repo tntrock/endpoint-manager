@@ -17,7 +17,7 @@
   {% endif %}
   <label class="field">內容（最多 64 KiB）<textarea name="content" rows="20" cols="100" class="code" required>
 {{ f.content }}</textarea></label>
-  <label class="field">逾時 <input name="timeout_minutes" value="{{ f.timeout_minutes }}" inputmode="numeric" size="4"> 分鐘（1–120）</label>
+  <label class="field">逾時 <span class="with-unit"><input name="timeout_minutes" value="{{ f.timeout_minutes }}" inputmode="numeric" size="4"> 分鐘（1–120）</span></label>
   <p class="muted">改了內容或逾時就要重新核准。腳本可能因 Agent 狀態檔遺失而重跑，請設計成可以重複執行。</p>
   <button class="btn primary">{% if id.is_some() %}儲存{% else %}建立{% endif %}</button>
 </form>

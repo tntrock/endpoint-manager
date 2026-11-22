@@ -13,13 +13,13 @@
 {% endif %}
 {% if rows.is_empty() %}{% call m::empty("還沒有快取", "建立快取註冊金鑰後，在分點主機執行 endpoint-cache enroll") %}{% endcall %}{% else %}
 <table>
-  <tr><th>名稱</th><th>據點</th><th>網址</th><th>狀態</th><th>最後回報</th><th>版本</th><th>磁碟用量</th><th>預先下載</th><th></th></tr>
+  <tr><th>名稱</th><th>據點</th><th>網址</th><th>狀態</th><th>最後回報</th><th>版本</th><th class="num nw">磁碟用量</th><th>預先下載</th><th></th></tr>
   {% for c in rows %}
   <tr>
-    <td>{{ c.name }}</td><td>{{ c.site }}</td><td>{{ c.url }}</td>
-    <td>{% if c.status == "active" %}<span class="tag ok">{{ c.status_label }}</span>{% else if c.status == "pending" %}<span class="tag warn">{{ c.status_label }}</span>{% else if c.status == "disabled" %}<span class="tag off">{{ c.status_label }}</span>{% else %}<span class="tag bad">{{ c.status_label }}</span>{% endif %}</td>
-    <td><span class="num">{{ c.last_seen }}</span></td><td>{{ c.version }}</td><td class="num">{{ c.disk }}</td><td>{{ c.progress }}</td>
-    <td><div class="actions">
+    <td class="nw">{{ c.name }}</td><td class="nw">{{ c.site }}</td><td class="wrap">{{ c.url }}</td>
+    <td class="nw"><span class="tag {{ c.tone }}">{{ c.state }}</span></td>
+    <td class="nw"><span class="num">{{ c.last_seen }}</span></td><td>{{ c.version }}</td><td class="num nw">{{ c.disk }}</td><td class="nw">{{ c.progress }}</td>
+    <td class="acts"><div class="actions">
       {% if c.status == "pending" %}
       <form method="post" action="/caches/{{ c.id }}/approve"><input type="hidden" name="csrf" value="{{ nav.csrf }}">
         <select name="site" required aria-label="據點"><option value="">選擇據點</option>{% for o in free_sites %}<option value="{{ o.id }}">{{ o.name }}</option>{% endfor %}</select>

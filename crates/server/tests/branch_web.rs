@@ -512,12 +512,7 @@ async fn cache_tokens_and_lifecycle(pool: PgPool) {
     assert_eq!(site, None);
     let (st, _, _) = post(&s, &admin, &format!("/caches/{id}/delete"), &[("csrf", &t)]).await;
     assert_eq!(st, 303);
-    assert!(
-        !s.page(&admin, "/caches")
-            .await
-            .1
-            .contains("<td>台北快取</td>")
-    );
+    assert!(!s.page(&admin, "/caches").await.1.contains(">台北快取<"));
     let (st, _, _) = post(
         &s,
         &admin,
