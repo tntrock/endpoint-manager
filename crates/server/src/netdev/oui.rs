@@ -74,7 +74,15 @@ fn builtin() -> HashMap<u32, String> {
 
 /// 啟動時呼叫：有 `EM_OUI_FILE` 就讀它，讀不到就停止啟動（設定錯誤要被發現）
 pub fn init(file: Option<&Path>) -> anyhow::Result<usize> {
-    let table = match file {
+    let table = load(file)?;
+    let n = table.len();
+    let _ = TABLE.set(table);
+    Ok(n)
+}
+
+/// 讀取廠商清單，不動全域表（測試可以平行執行）
+fn load(file: Option<&Path>) -> anyhow::Result<HashMap<u32, String>> {
+    Ok(match file {
         Some(p) => {
             let text = std::fs::read_to_string(p)
                 .with_context(|| format!("reading OUI file {}", p.display()))?;
@@ -83,10 +91,7 @@ pub fn init(file: Option<&Path>) -> anyhow::Result<usize> {
             t
         }
         None => builtin(),
-    };
-    let n = table.len();
-    let _ = TABLE.set(table);
-    Ok(n)
+    })
 }
 
 /// MAC 的廠商名稱；隨機產生的位址（本機管理位址）與查不到的回 None
@@ -152,10 +157,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("oui.csv");
         std::fs::write(&p, "Registry,Assignment,Organization Name\nMA-L,001122,X\n").unwrap();
-        assert_eq!(init(Some(&p)).unwrap_or(1), 1);
+        // 用 load 而不是 init：init 會設定全域表，平行執行的其他測試會查到這份只有一筆的清單
+        assert_eq!(load(Some(&p)).unwrap()[&0x001122], "X");
         std::fs::write(&p, "header only\n").unwrap();
-        assert!(init(Some(&p)).is_err());
-        assert!(init(Some(&dir.path().join("missing"))).is_err());
+        assert!(load(Some(&p)).is_err());
+        assert!(load(Some(&dir.path().join("missing"))).is_err());
+        assert!(init(None).unwrap() > 30_000);
     }
 
     #[test]
