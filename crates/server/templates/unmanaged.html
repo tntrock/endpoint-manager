@@ -15,17 +15,16 @@
 {% if rows.is_empty() %}{% call m::empty("沒有未管理設備", "MAC 位址表每 5 分鐘查詢一次；需要先在「設備」分頁登錄交換器") %}{% endcall %}{% else %}
 <p class="muted">共 {{ rows.len() }} 台{% if rows.len() != total %}（全部 {{ total }} 台）{% endif %}。</p>
 <table>
-  <tr><th>MAC</th><th>IP</th><th>廠商</th><th>位置</th><th class="num">VLAN</th><th>第一次看到</th><th>最後看到</th><th>標記為已知</th></tr>
+  <tr><th>MAC</th><th>IP</th><th>廠商</th><th>位置</th><th class="num">VLAN</th><th>第一次／最後看到</th><th>標記為已知</th></tr>
   {% for r in rows %}
   <tr>
     <td class="nw"><span class="num">{{ r.mac }}</span>{% if r.is_new %} <span class="tag warn">新</span>{% endif %}</td>
     <td class="nw"><span class="num">{{ r.ip }}</span></td>
-    <td class="wrap">{% if r.random %}<span class="tag" title="手機、筆電等為了隱私隨機產生的位址，查不到廠商">隨機 MAC</span>{% else %}{{ r.vendor }}{% endif %}</td>
+    <td>{% if r.random %}<span class="tag" title="手機、筆電等為了隱私隨機產生的位址，查不到廠商">隨機 MAC</span>{% else %}{{ r.vendor }}{% endif %}</td>
     <td class="nw">{% if let Some(d) = r.net_device_id %}<a href="/netdevices/{{ d }}">{{ r.where_ }}</a>{% else %}{{ r.where_ }}{% endif %}</td>
     <td class="num">{{ r.vlan }}</td>
-    <td class="nw"><span class="num">{{ r.first_seen }}</span></td>
-    <td class="nw"><span class="num">{{ r.last_seen }}</span></td>
-    <td class="nw"><form class="inline" method="post" action="/netdevices/unmanaged/known">
+    <td class="nw"><span class="num">{{ r.first_seen }}</span><br><span class="num muted">{{ r.last_seen }}</span></td>
+    <td class="nw"><form class="inline nowrap" method="post" action="/netdevices/unmanaged/known">
       <input type="hidden" name="csrf" value="{{ nav.csrf }}">
       <input type="hidden" name="mac" value="{{ r.mac }}">
       {% if let Some(d) = r.net_device_id %}<input type="hidden" name="net_device_id" value="{{ d }}">{% endif %}
@@ -35,7 +34,7 @@
         {% if !r.random %}<option value="oui">同廠牌</option>{% endif %}
         {% if !r.if_index.is_empty() %}<option value="port">這個埠</option>{% endif %}
       </select>
-      <input name="note" placeholder="說明，例如 3F 印表機" size="16" required maxlength="200" aria-label="說明">
+      <input name="note" placeholder="說明，如印表機" size="10" required maxlength="200" aria-label="說明">
       <button class="btn sm">標記</button></form></td>
   </tr>
   {% endfor %}

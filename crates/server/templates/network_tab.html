@@ -32,7 +32,7 @@
 </table>
 {% endif %}
 {% if history.len() > 1 %}
-<details class="card details"><summary><h3>位置紀錄</h3></summary>
+<details class="fold"><summary><h2>位置紀錄</h2></summary>
 <table>
   <tr><th>交換器</th><th>連接埠</th><th class="num">VLAN</th><th>網卡 MAC</th><th>從</th><th>到</th></tr>
   {% for l in history %}<tr>

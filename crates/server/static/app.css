@@ -127,6 +127,7 @@ main { max-width: 1440px; padding: 24px 28px 48px; view-transition-name: main; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 14px; }
 .page-head .actions { margin: 0; }
 .actions form, form.inline { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0; }
+form.inline.nowrap { flex-wrap: nowrap; }
 .card { position: relative; background: linear-gradient(180deg, var(--panel2), var(--panel));
   border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 14px; }
 .card > h2:first-child, .card > h3:first-child { margin-top: 0; }
