@@ -10,4 +10,5 @@ pub mod run;
 pub mod server;
 #[cfg(windows)]
 pub mod service;
+pub mod snmp;
 pub mod store;

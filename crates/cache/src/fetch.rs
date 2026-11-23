@@ -220,6 +220,7 @@ mod tests {
             bandwidth_limit_mbps: Some(20),
             disk_limit_gb: 5,
             renew_certificate: false,
+            snmp: None,
         });
         assert_eq!(c.get(2).unwrap().sha256, "b".repeat(64));
         assert_eq!(c.limits(), (Some(20), 5 * GB));
@@ -245,6 +246,7 @@ mod tests {
             bandwidth_limit_mbps: None,
             disk_limit_gb: 5,
             renew_certificate: false,
+            snmp: None,
         });
         assert_eq!(c.all().len(), 1);
         assert!(c.get(2).is_none() && c.get(3).is_none() && c.get(4).is_none());

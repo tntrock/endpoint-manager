@@ -33,7 +33,8 @@ pub async fn central(pool: PgPool) -> Env {
         .await
         .unwrap();
     let state = AppState::new(pool.clone(), ca::Ca::load(pki.path()).unwrap())
-        .with_packages(pki.path().join("packages"), 8);
+        .with_packages(pki.path().join("packages"), 8)
+        .with_secrets(Some(endpoint_server::secret::SecretBox::new(&[42; 32])));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(tls::serve_mtls(

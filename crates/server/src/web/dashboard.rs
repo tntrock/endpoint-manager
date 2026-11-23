@@ -506,6 +506,21 @@ async fn todo(st: &AppState, s: &Session, pending: i64) -> Result<Vec<TodoItem>,
                 });
             }
         }
+        let unreachable: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM net_devices WHERE enabled AND consecutive_failures >= $1",
+        )
+        .bind(crate::netdev::UNREACHABLE_AFTER)
+        .fetch_one(&st.pool)
+        .await?;
+        if unreachable > 0 {
+            out.push(TodoItem {
+                severity: "high",
+                title: "網路設備無法連線".into(),
+                detail: "連續 3 次查詢失敗",
+                count: unreachable,
+                href: "/netdevices?status=down".into(),
+            });
+        }
     }
     if pending > 0 {
         out.push(TodoItem {

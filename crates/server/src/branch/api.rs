@@ -272,6 +272,7 @@ pub async fn checkin(
         None => None,
     };
     let (bandwidth, disk) = limits.unwrap_or((None, DEFAULT_DISK_LIMIT_GB as i32));
+    let snmp = crate::netdev::job_for(&st.pool, st.secrets.as_deref(), cache.site_id).await?;
     Ok(Json(CacheCheckinResponse {
         packages: packages
             .into_iter()
@@ -285,6 +286,7 @@ pub async fn checkin(
         disk_limit_gb: disk.max(1) as u32,
         renew_certificate: cache.cert_not_after - time::OffsetDateTime::now_utc()
             < Duration::days(RENEW_BEFORE_DAYS),
+        snmp,
     }))
 }
 

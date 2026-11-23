@@ -187,6 +187,9 @@ pub struct CacheCheckinResponse {
     pub disk_limit_gb: u32,
     #[serde(default)]
     pub renew_certificate: bool,
+    /// 網路設備查詢工作；舊版中央沒有這個欄位，快取就不查詢
+    #[serde(default)]
+    pub snmp: Option<crate::netdev::SnmpJob>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -225,6 +228,13 @@ mod tests {
         )
         .unwrap();
         assert!(r.package_source.is_none());
+    }
+
+    #[test]
+    fn old_cache_checkin_response_has_no_snmp() {
+        let r: CacheCheckinResponse =
+            serde_json::from_str(r#"{"packages":[],"disk_limit_gb":100}"#).unwrap();
+        assert!(r.snmp.is_none());
     }
 
     #[test]

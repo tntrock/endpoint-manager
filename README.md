@@ -75,6 +75,7 @@ flowchart LR
 | 3 | 中央伺服器 | PostgreSQL | **TCP 5432** | PostgreSQL | 資料庫 | 必要 |
 | 4 | 分點端點 | 該據點的快取 | **TCP 8443**（快取 `config.json` 的 `listen`） | HTTPS（mTLS） | 下載派送套件 | 有快取時 |
 | 5 | 快取主機 | 中央伺服器 | **TCP 8443** | HTTPS（mTLS） | 快取註冊、報到、確認端點是否被指派、預先下載套件 | 有快取時 |
+| 5a | 快取主機 | 該據點的網路設備（交換器、路由器、AP） | **UDP 161** | SNMP v2c／v3（唯讀） | 查詢網路設備資訊 | 有登錄網路設備時 |
 | 6 | 中央伺服器 | Webhook 接收端 | 接收端網址的埠（通常 443） | HTTPS | 合規違規通知 | 選用 |
 | 7 | Windows 端點 | Microsoft Update 或 WSUS | 依 Windows 設定 | — | 實際下載 Windows 更新。本系統只寫入 Windows Update for Business 原則，不經手更新檔 | 依環境 |
 
@@ -88,7 +89,7 @@ flowchart LR
 - **端點**：不需要任何對內規則；只要能連到中央的 8443（以及有快取時，該據點快取的 8443）。
 - **快取主機**：
   - 對內：8443 開放給該據點的端點。
-  - 對外：中央的 8443。
+  - 對外：中央的 8443。有登錄網路設備時，還要能用 UDP 161 連到設備的管理 IP（管理網段常有 ACL，記得放行快取主機）。
 - 中間有 TLS 檢查（SSL inspection）的 Proxy 或防火牆時，8443 必須設為**不解密**，否則 mTLS 會失敗。
 
 ### 伺服器 HTTP 端點一覽
@@ -143,6 +144,15 @@ docker run --rm -v "$PWD/pki:/pki" endpoint-manager-server ca-init /pki em.examp
 
 **把 `deploy/pki/root.key` 移到離線儲存媒體後從伺服器刪除。**
 
+要登錄網路設備（SNMP）時，產生加密帳密用的金鑰，並在 `.env` 設定 `EM_SECRET_KEY_FILE=/pki/secret.key`：
+
+```bash
+openssl rand -hex 32 | sudo tee pki/secret.key > /dev/null
+sudo chown 65532:65532 pki/secret.key && sudo chmod 600 pki/secret.key
+```
+
+設了 `EM_SECRET_KEY_FILE` 但檔案不存在或格式不對時，伺服器不會啟動。
+
 從 GitHub Release 下載 `endpoint-agent-<版本>.msi`（通用範本）放到 `deploy/agent/endpoint-agent.msi`。要管理 Linux 時，再把 `endpoint-agent_<版本>_amd64.deb`、`endpoint-agent-<版本>-1.x86_64.rpm` 改名為 `deploy/agent/endpoint-agent.deb`、`endpoint-agent.rpm`（用不到的可以不放）。然後：
 
 ```bash
@@ -164,7 +174,7 @@ Volume：
 - `./pki`：唯讀掛載的憑證。
 - `./agent`：唯讀掛載的 MSI 範本與 Linux 安裝包。
 
-備份時至少備份 `pgdata`、`packages` 與 `pki`（`root.key` 除外，另行離線保存）。
+備份時至少備份 `pgdata`、`packages` 與 `pki`（`root.key` 除外，另行離線保存）。`pki/secret.key` 遺失後，資料庫裡的 SNMP 帳密就解不開，只能重新輸入。
 
 `docker compose stop` 時，伺服器會先寫出記憶體中的報到資料再結束。
 
@@ -187,6 +197,7 @@ Volume：
 | `EM_WEBHOOK_SECRET` | （空） | 合規通知 Webhook 的 HMAC 簽章密鑰 |
 | `EM_METRICS_TOKEN` | （空） | `/metrics` 的 Bearer 權杖，至少 32 字元；沒設定時不提供監控指標 |
 | `EM_OIDC_ISSUER` 等 | （空） | 單一登入，見「單一登入（OIDC）」 |
+| `EM_SECRET_KEY_FILE` | （空） | 加密保存 SNMP 帳密的金鑰檔（64 個十六進位字元，例如 `openssl rand -hex 32 > secret.key`）；沒設定時不能新增網路設備的帳密。**金鑰遺失後帳密就解不開，要和資料庫一起備份，但分開保存** |
 
 ### 3. 安裝 Agent
 
@@ -737,6 +748,26 @@ scrape_configs:
   expr: em_caches_stale > 0
   for: 10m
 ```
+
+### 網路設備（SNMP）
+
+各據點的快取主機用 SNMP **唯讀**查詢管理員在「網路設備」頁登錄的交換器、路由器、AP，取得型號、序號、韌體版本、開機時間、每個埠的狀態、速度、VLAN 與 LLDP 鄰居。
+
+- **只查詢登錄的設備**，不會 ping、不掃描網段。
+- **由該據點的快取查詢**：沒有快取的據點不會被查詢。總部要查詢，就在總部也裝一台快取（只做查詢、不放套件也可以）。
+- **帳密**：支援 SNMPv2c 與 SNMPv3（authPriv：SHA、SHA-256；AES-128、AES-256、AES-256（Cisco））。帳密在中央以 `EM_SECRET_KEY_FILE` 的金鑰加密保存，網頁上只能寫、不能讀；快取每次報到時取得該據點設備的帳密，只放在記憶體。
+- **建議在設備上建立唯讀帳號**，例如 Cisco：
+  ```
+  snmp-server view EM-RO iso included
+  snmp-server group EM-RO v3 priv read EM-RO
+  snmp-server user em-monitor EM-RO v3 auth sha <驗證密碼> priv aes 128 <加密密碼>
+  ```
+- **頻率**：系統資訊、介面、LLDP 預設每 15 分鐘查一次，可在「網路設備」頁調整。新增或修改設備、按「立即查詢」時，快取下一次報到（最多約 60 秒）就會查詢。
+- **限制**：每台快取同時查 4 台設備；每次請求逾時 2 秒、重試 2 次；單台設備一輪最長 120 秒。
+- 連續 3 次查詢失敗就列為「無法連線」，出現在總覽的「需要處理」。錯誤訊息會說明常見原因（防火牆、community 或 v3 帳密錯誤）。
+- 有網路設備的據點不能直接刪除；被設備使用中的帳密也不能刪除。
+
+需要快取 0.13.0 以上。
 
 ### 資料保留
 

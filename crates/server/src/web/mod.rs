@@ -19,6 +19,7 @@ pub mod groups;
 pub mod images;
 pub mod login;
 pub mod mfa;
+pub mod netdevices;
 pub mod network;
 pub mod notify;
 pub mod packages;
@@ -240,6 +241,39 @@ pub fn web_router(state: AppState) -> Router {
             post(caches::revoke_cache_token),
         )
         .route("/caches/{id}/{action}", post(caches::act))
+        .route(
+            "/netdevices",
+            get(netdevices::list).post(netdevices::create_device),
+        )
+        .route("/netdevices/new", get(netdevices::new_device))
+        .route("/netdevices/settings", post(netdevices::save_intervals))
+        .route(
+            "/netdevices/credentials",
+            post(netdevices::create_credential),
+        )
+        .route(
+            "/netdevices/credentials/new",
+            get(netdevices::new_credential),
+        )
+        .route(
+            "/netdevices/credentials/{id}",
+            post(netdevices::update_credential),
+        )
+        .route(
+            "/netdevices/credentials/{id}/edit",
+            get(netdevices::edit_credential),
+        )
+        .route(
+            "/netdevices/credentials/{id}/delete",
+            post(netdevices::delete_credential),
+        )
+        .route(
+            "/netdevices/{id}",
+            get(netdevices::detail).post(netdevices::update_device),
+        )
+        .route("/netdevices/{id}/edit", get(netdevices::edit_device))
+        .route("/netdevices/{id}/delete", post(netdevices::delete_device))
+        .route("/netdevices/{id}/poll", post(netdevices::poll_device))
         .route("/sites", get(sites::list).post(sites::create))
         .route("/sites/new", get(sites::new_form))
         .route("/sites/{id}", post(sites::update))

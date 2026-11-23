@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block content %}
+<div class="page-head">
+  <div><div class="crumb"><a href="/netdevices">網路設備</a></div><h1>{{ name }} <span class="tag {{ tone }}">{{ state }}</span></h1><div class="sub">{{ site }} · <span class="num">{{ address }}</span> · 帳密 {{ credential }}</div></div>
+  <div class="actions">
+    <form method="post" action="/netdevices/{{ id }}/poll"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="btn">立即查詢</button></form>
+    <a class="btn" href="/netdevices/{{ id }}/edit">編輯</a>
+    <form method="post" action="/netdevices/{{ id }}/delete" data-confirm="刪除網路設備「{{ name }}」？查詢到的資料會一併刪除。"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="btn danger">刪除</button></form>
+  </div>
+</div>
+{% if polling %}<div class="notice ok" role="status">已排入查詢。快取下一次報到時（最多約 60 秒）會查詢，重新整理頁面即可看到結果。</div>{% endif %}
+{% if let Some(e) = last_error %}<div class="notice error" role="alert">最近一次查詢失敗：{{ e }}</div>{% endif %}
+<details class="card details" open>
+<summary><h2>設備資訊</h2></summary>
+<table>
+  {% for i in info %}<tr><th>{{ i.0 }}</th><td class="wrap">{{ i.1 }}</td></tr>{% endfor %}
+</table>
+</details>
+<h2>連接埠</h2>
+{% if ports.is_empty() %}<p class="muted">還沒有查詢到介面。</p>{% else %}
+<table>
+  <tr><th>名稱</th><th>描述</th><th>狀態</th><th>速度</th><th class="num">VLAN</th><th>MAC</th><th>LLDP 鄰居</th><th>最後變動</th></tr>
+  {% for p in ports %}
+  <tr>
+    <td class="nw">{{ p.name }}{% if p.uplink %} <span class="tag" title="{% if p.role_manual %}管理員指定{% else %}依 LLDP 鄰居判斷{% endif %}">上行</span>{% endif %}</td>
+    <td class="wrap">{{ p.alias }}</td>
+    <td class="nw"><span class="tag {{ p.tone }}">{{ p.state }}</span></td>
+    <td class="nw">{{ p.speed }}</td>
+    <td class="num">{{ p.vlan }}</td>
+    <td class="nw"><span class="num">{{ p.mac }}</span></td>
+    <td class="wrap">{{ p.neighbor }}</td>
+    <td class="nw"><span class="num">{{ p.last_change }}</span></td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+{% endblock %}

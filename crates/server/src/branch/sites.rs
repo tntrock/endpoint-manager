@@ -216,6 +216,16 @@ pub async fn update_site(pool: &PgPool, id: i64, i: &SiteInput, actor: &str) -> 
 
 pub async fn delete_site(pool: &PgPool, id: i64, actor: &str) -> anyhow::Result<()> {
     let mut tx = pool.begin().await?;
+    let netdevs: i64 = sqlx::query_scalar("SELECT count(*) FROM net_devices WHERE site_id = $1")
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+    if netdevs > 0 {
+        return Err(crate::commands::CmdError::Conflict(format!(
+            "這個據點還有 {netdevs} 台網路設備，請先到「網路設備」刪除或改到其他據點"
+        ))
+        .into());
+    }
     let name: Option<String> = sqlx::query_scalar("DELETE FROM sites WHERE id = $1 RETURNING name")
         .bind(id)
         .fetch_optional(&mut *tx)
