@@ -157,6 +157,22 @@ pub async fn build(st: &AppState, f: &Facts<'_>) -> Result<(Vec<Card>, Vec<Issue
         issues.push(issue);
     }
 
+    // 竄改偵測：還沒確認的發現
+    let found: Vec<(String, String, serde_json::Value)> = sqlx::query_as(
+        "SELECT kind, severity, detail FROM device_findings \
+         WHERE device_id = $1 AND acknowledged_at IS NULL \
+         ORDER BY started_at DESC, id DESC LIMIT 20",
+    )
+    .bind(f.id)
+    .fetch_all(&st.pool)
+    .await?;
+    issues.extend(found.into_iter().map(|(kind, sev, detail)| Issue {
+        severity: if sev == "high" { "high" } else { "medium" },
+        title: crate::findings::label(&kind).to_string(),
+        detail: crate::findings::describe(&kind, &detail),
+        tab: Some("integrity"),
+    }));
+
     if f.linux {
         if f.containers {
             compliance(st, f, now, &mut cards, &mut issues).await?;

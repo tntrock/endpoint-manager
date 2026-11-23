@@ -53,6 +53,11 @@ pub async fn run(dir: &Path, shutdown: watch::Receiver<bool>) -> anyhow::Result<
         std::time::Duration::from_secs(15),
         shutdown.clone(),
     ));
+    tokio::spawn(crate::eventpush::run(
+        agent.journal(),
+        agent.push_target(),
+        shutdown.clone(),
+    ));
     run_agent(agent, shutdown, rx).await;
     Ok(())
 }

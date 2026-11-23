@@ -1,6 +1,7 @@
-//! 依 IP 的固定視窗限速（用於未經 mTLS 的註冊端點）。
+//! 固定視窗限速：依 IP（未經 mTLS 的註冊、登入）或依裝置（立即上傳事件）。
 
 use std::collections::HashMap;
+use std::hash::Hash;
 use std::net::IpAddr;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -20,13 +21,19 @@ fn key_of(ip: IpAddr) -> IpAddr {
 /// 同時追蹤的來源（IPv4 位址或 IPv6 /64）上限
 pub const MAX_TRACKED: usize = 100_000;
 
-pub struct RateLimiter {
+pub struct RateLimiter<K = IpAddr> {
     max: u32,
     window: Duration,
-    hits: Mutex<HashMap<IpAddr, (Instant, u32)>>,
+    hits: Mutex<HashMap<K, (Instant, u32)>>,
 }
 
-impl RateLimiter {
+impl RateLimiter<IpAddr> {
+    pub fn check(&self, ip: IpAddr, now: Instant) -> bool {
+        self.check_key(key_of(ip), now)
+    }
+}
+
+impl<K: Hash + Eq> RateLimiter<K> {
     pub fn new(max: u32, window: Duration) -> Self {
         Self {
             max,
@@ -35,8 +42,7 @@ impl RateLimiter {
         }
     }
 
-    pub fn check(&self, ip: IpAddr, now: Instant) -> bool {
-        let ip = key_of(ip);
+    pub fn check_key(&self, ip: K, now: Instant) -> bool {
         let mut hits = self.hits.lock().expect("ratelimit lock");
         if hits.len() >= MAX_TRACKED && !hits.contains_key(&ip) {
             hits.retain(|_, (start, _)| now.duration_since(*start) < self.window);
@@ -99,6 +105,16 @@ mod tests {
         let other = IpAddr::V6(std::net::Ipv6Addr::new(0x2001, 0xdb8, 1, 3, 0, 0, 0, 1));
         assert!(rl.check(other, t0), "另一個 /64");
         assert_eq!(rl.tracked(), 2);
+    }
+
+    #[test]
+    fn keyed_by_anything() {
+        let rl: RateLimiter<u32> = RateLimiter::new(1, Duration::from_secs(1));
+        let t0 = Instant::now();
+        assert!(rl.check_key(7, t0));
+        assert!(!rl.check_key(7, t0));
+        assert!(rl.check_key(8, t0));
+        assert!(rl.check_key(7, t0 + Duration::from_secs(1)));
     }
 
     #[test]

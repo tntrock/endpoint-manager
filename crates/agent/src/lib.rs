@@ -7,6 +7,7 @@ pub mod collector;
 pub mod commands;
 pub mod config;
 pub mod deploy;
+pub mod eventpush;
 pub mod journal;
 #[cfg(target_os = "linux")]
 pub mod linux;

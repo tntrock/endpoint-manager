@@ -23,6 +23,7 @@ pub(super) fn label(action: &str) -> &str {
         "token_create" => "建立註冊金鑰",
         "token_revoke" => "作廢註冊金鑰",
         "device_retire" => "除役裝置",
+        "finding_ack" => "確認完整性警示",
         "device_approve" => "核准重新註冊",
         "device_reject" => "拒絕重新註冊",
         "device_move" => "移動裝置群組",

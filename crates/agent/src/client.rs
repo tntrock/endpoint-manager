@@ -159,6 +159,18 @@ impl ServerClient {
             .await?)
     }
 
+    /// 立即上傳事件（伺服器在報到回應宣告 `supports_event_push` 後才用）
+    pub async fn push_events(
+        &self,
+        up: &protocol::EventsUpload,
+    ) -> Result<protocol::EventsAck, ClientError> {
+        Ok(self
+            .send(self.http.post(self.url("/v1/events")).json(up))
+            .await?
+            .json()
+            .await?)
+    }
+
     pub async fn renew(&self, req: &RenewRequest) -> Result<RenewResponse, ClientError> {
         Ok(self
             .send(self.http.post(self.url("/v1/renew")).json(req))

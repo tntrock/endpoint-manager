@@ -98,6 +98,8 @@ pub struct Agent<C: Collector> {
     journal: Arc<Mutex<Journal>>,
     /// 伺服器在上一次報到回應中表明接受事件
     server_supports_events: bool,
+    /// 立即上傳事件的目標（伺服器支援時才有）
+    push: crate::eventpush::SharedTarget,
     /// 伺服器下發的登錄檔查詢清單與它的雜湊
     registry_queries: Vec<RegistryQuery>,
     registry_hash: Option<String>,
@@ -164,6 +166,7 @@ impl<C: Collector> Agent<C> {
             server_sections: vec![],
             journal: Arc::new(Mutex::new(Journal::open(dir))),
             server_supports_events: false,
+            push: Default::default(),
             registry_queries: vec![],
             registry_hash: None,
             unsupported_error: None,
@@ -207,6 +210,11 @@ impl<C: Collector> Agent<C> {
     /// 給網卡監看寫入的事件日誌
     pub fn journal(&self) -> Arc<Mutex<Journal>> {
         self.journal.clone()
+    }
+
+    /// 立即上傳事件的目標（報到後更新），交給 [`crate::eventpush::run`]
+    pub fn push_target(&self) -> crate::eventpush::SharedTarget {
+        self.push.clone()
     }
 
     fn lock_journal(&self) -> std::sync::MutexGuard<'_, Journal> {
@@ -471,6 +479,13 @@ impl<C: Collector> Agent<C> {
         self.backing_off = false;
         self.intervals = resp.collection_intervals.clone();
         self.server_supports_events = resp.supports_events;
+        let target =
+            (resp.supports_events && resp.supports_event_push).then(|| crate::eventpush::Target {
+                url: self.config.server_url.clone(),
+                root_pem: self.root_pem.clone(),
+                identity_pem: self.state.identity_pem(),
+            });
+        *self.push.lock().unwrap_or_else(|p| p.into_inner()) = target;
         // 伺服器確認收到才刪除；報到失敗（上面已返回）就留著下次重送
         let more_events = match resp.events_ack {
             Some(ack) => {

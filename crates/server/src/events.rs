@@ -105,6 +105,48 @@ async fn close_period(
     Ok(())
 }
 
+/// 存下一批事件（報到與立即上傳共用）：同一個交易內完成，失敗時 Agent 沒收到確認、下次重送。
+/// 多重連線期間可能變了，之後重算這台的合規。回傳要確認給 Agent 的最大序號。
+pub async fn store(
+    st: &crate::AppState,
+    device_id: Uuid,
+    journal_id: Uuid,
+    events: &[AgentEvent],
+    now: OffsetDateTime,
+) -> Result<Option<u64>, crate::error::AppError> {
+    if events.is_empty() {
+        return Ok(None);
+    }
+    let sites = crate::network::load_sites(&st.pool).await?;
+    let mut tx = st.pool.begin().await?;
+    let ack = ingest(&mut tx, device_id, journal_id, events, now, &sites).await?;
+    tx.commit().await?;
+    crate::compliance::refresh_after_upload(st, device_id).await?;
+    Ok(ack)
+}
+
+/// `POST /v1/events`：Agent 有新事件就立即送出，不等報到（竄改偵測規格 §3）
+pub async fn push(
+    axum::extract::State(st): axum::extract::State<crate::AppState>,
+    device: crate::identity::AuthedDevice,
+    axum::Json(req): axum::Json<protocol::EventsUpload>,
+) -> Result<axum::Json<protocol::EventsAck>, crate::error::AppError> {
+    use crate::error::AppError;
+    if !st
+        .event_limiter
+        .check_key(device.device_id, std::time::Instant::now())
+    {
+        return Err(AppError::TooManyRequests);
+    }
+    protocol::validate_strings(&req)?;
+    if req.events.len() > protocol::MAX_EVENTS_PER_CHECKIN {
+        return Err(AppError::BadRequest("too many events".into()));
+    }
+    let now = OffsetDateTime::now_utc();
+    let events_ack = store(&st, device.device_id, req.journal_id, &req.events, now).await?;
+    Ok(axum::Json(protocol::EventsAck { events_ack }))
+}
+
 /// 一筆要存的事件
 pub struct Incoming<'a> {
     pub seq: i64,
@@ -142,6 +184,8 @@ pub async fn ingest(
     let ats: Vec<OffsetDateTime> = list.iter().map(|e| e.at).collect();
     let kinds: Vec<&str> = list.iter().map(|e| e.event.kind.as_str()).collect();
     let data: Vec<String> = list.iter().map(|e| e.event.data.to_string()).collect();
+    // 先鎖住這份日誌的序號追蹤（同一台的報到與立即上傳同時到時依序處理）
+    let journal = crate::findings::journal_begin(conn, device_id, journal_id).await?;
     // 重送的（已存過的序號）不回傳，也不再重播
     let inserted: Vec<i64> = sqlx::query_scalar(
         "INSERT INTO device_events (device_id, journal_id, seq, at, received_at, kind, data) \
@@ -159,6 +203,23 @@ pub async fn ingest(
     .bind(&data)
     .fetch_all(&mut *conn)
     .await?;
+    let tracked: Vec<(i64, Option<i64>)> = list
+        .iter()
+        .filter(|e| inserted.contains(&e.seq))
+        .map(|e| {
+            let dropped = (e.event.kind == AgentEvent::JOURNAL_DROPPED)
+                .then(|| {
+                    e.event
+                        .data
+                        .get("count")
+                        .and_then(serde_json::Value::as_i64)
+                })
+                .flatten();
+            (e.seq, dropped)
+        })
+        .collect();
+    crate::findings::journal_finish(conn, device_id, journal_id, journal, &tracked, received)
+        .await?;
     if inserted.is_empty() {
         return Ok(ack);
     }

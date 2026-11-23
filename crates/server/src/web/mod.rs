@@ -17,6 +17,7 @@ pub mod device_status;
 pub mod devices;
 pub mod groups;
 pub mod images;
+pub mod integrity;
 pub mod login;
 pub mod mfa;
 pub mod netdevices;
@@ -421,6 +422,10 @@ pub fn web_router(state: AppState) -> Router {
         .route("/devices/{id}/timeline", get(timeline::more))
         .route("/devices/{id}/retire", post(devices::retire))
         .route("/devices/{id}/group", post(devices::move_group))
+        .route(
+            "/devices/{id}/findings/{finding}/ack",
+            post(integrity::acknowledge),
+        )
         .route(
             "/devices/{id}/exemptions",
             post(compliance::create_exemption),

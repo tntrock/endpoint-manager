@@ -264,6 +264,25 @@ pub struct CheckinResponse {
     /// 伺服器已存下的最大事件序號：Agent 收到後才刪除本機日誌中序號不大於它的事件
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub events_ack: Option<u64>,
+    /// 伺服器有 `POST /v1/events`：Agent 有新事件就立即送出，不等報到（竄改偵測規格 §3）
+    #[serde(default)]
+    pub supports_event_push: bool,
+}
+
+/// `POST /v1/events`：立即上傳本機事件，內容與報到裡的事件欄位相同
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EventsUpload {
+    pub journal_id: Uuid,
+    /// 最舊的在前，最多 [`MAX_EVENTS_PER_CHECKIN`] 筆
+    pub events: Vec<AgentEvent>,
+}
+
+/// `POST /v1/events` 的回應
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EventsAck {
+    /// 伺服器已存下的最大事件序號（同 [`CheckinResponse::events_ack`]）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub events_ack: Option<u64>,
 }
 
 impl CheckinResponse {
