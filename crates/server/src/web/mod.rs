@@ -41,8 +41,8 @@ pub mod vms;
 
 use askama::Template;
 use axum::Router;
-use axum::extract::Request;
-use axum::http::{HeaderValue, StatusCode, header};
+use axum::extract::{RawQuery, Request};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
@@ -133,15 +133,109 @@ pub fn enc(s: &str) -> String {
         .collect()
 }
 
-fn asset(body: &'static str, content_type: &'static str) -> Response {
+/// 內嵌的靜態檔：(網址, 內容, Content-Type)
+const STATIC_FILES: &[(&str, &str, &str)] = &[
     (
-        [
-            (header::CONTENT_TYPE, content_type),
-            (header::CACHE_CONTROL, "public, max-age=86400"),
-        ],
-        body,
-    )
-        .into_response()
+        "/static/htmx.min.js",
+        include_str!("../../static/htmx.min.js"),
+        "text/javascript; charset=utf-8",
+    ),
+    (
+        "/static/upload.js",
+        include_str!("../../static/upload.js"),
+        "text/javascript; charset=utf-8",
+    ),
+    (
+        "/static/app.css",
+        include_str!("../../static/app.css"),
+        "text/css; charset=utf-8",
+    ),
+    (
+        "/static/app.js",
+        include_str!("../../static/app.js"),
+        "text/javascript; charset=utf-8",
+    ),
+    (
+        "/static/theme.js",
+        include_str!("../../static/theme.js"),
+        "text/javascript; charset=utf-8",
+    ),
+    (
+        "/static/favicon.svg",
+        include_str!("../../static/favicon.svg"),
+        "image/svg+xml",
+    ),
+    (
+        "/static/icons.svg",
+        include_str!("../../static/icons.svg"),
+        "image/svg+xml",
+    ),
+];
+
+/// 靜態檔內容的雜湊（前 12 個十六進位字元）：頁面用 `?v=` 帶上它，
+/// 內容一改網址就變，瀏覽器不會沿用舊的 CSS、圖示（同一個版本號重新建置也一樣）。
+pub fn asset_version() -> &'static str {
+    static V: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+        let mut ctx = ring::digest::Context::new(&ring::digest::SHA256);
+        for (path, body, _) in STATIC_FILES {
+            ctx.update(path.as_bytes());
+            ctx.update(&[0]);
+            ctx.update(body.as_bytes());
+            ctx.update(&[0]);
+        }
+        ctx.finish().as_ref()[..6]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    });
+    &V
+}
+
+fn static_routes() -> Router<AppState> {
+    STATIC_FILES
+        .iter()
+        .fold(Router::new(), |r, &(path, body, content_type)| {
+            r.route(
+                path,
+                get(move |h: HeaderMap, q: RawQuery| async move {
+                    asset(body, content_type, &h, q.0.as_deref())
+                }),
+            )
+        })
+}
+
+/// 網址帶著目前的 `?v=` 就長期快取；其他（例如 `<use href="/static/icons.svg#…">`
+/// 與舊版頁面）每次都要向伺服器確認，沒變就回 304。
+fn asset(
+    body: &'static str,
+    content_type: &'static str,
+    req: &HeaderMap,
+    query: Option<&str>,
+) -> Response {
+    let etag = format!("\"{}\"", asset_version());
+    let versioned = query.is_some_and(|q| {
+        q.split('&')
+            .any(|kv| kv.strip_prefix("v=") == Some(asset_version()))
+    });
+    let cache = if versioned {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-cache"
+    };
+    let fresh = req
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.split(',').any(|t| t.trim() == etag || t.trim() == "*"));
+    let headers = [
+        (header::CONTENT_TYPE, content_type.to_string()),
+        (header::CACHE_CONTROL, cache.to_string()),
+        (header::ETAG, etag),
+    ];
+    if fresh {
+        (StatusCode::NOT_MODIFIED, headers).into_response()
+    } else {
+        (headers, body).into_response()
+    }
 }
 
 pub fn web_router(state: AppState) -> Router {
@@ -335,59 +429,7 @@ pub fn web_router(state: AppState) -> Router {
             "/exemptions/{id}/revoke",
             post(compliance::revoke_exemption),
         )
-        .route(
-            "/static/htmx.min.js",
-            get(|| async {
-                asset(
-                    include_str!("../../static/htmx.min.js"),
-                    "text/javascript; charset=utf-8",
-                )
-            }),
-        )
-        .route(
-            "/static/upload.js",
-            get(|| async {
-                asset(
-                    include_str!("../../static/upload.js"),
-                    "text/javascript; charset=utf-8",
-                )
-            }),
-        )
-        .route(
-            "/static/app.css",
-            get(|| async {
-                asset(
-                    include_str!("../../static/app.css"),
-                    "text/css; charset=utf-8",
-                )
-            }),
-        )
-        .route(
-            "/static/app.js",
-            get(|| async {
-                asset(
-                    include_str!("../../static/app.js"),
-                    "text/javascript; charset=utf-8",
-                )
-            }),
-        )
-        .route(
-            "/static/theme.js",
-            get(|| async {
-                asset(
-                    include_str!("../../static/theme.js"),
-                    "text/javascript; charset=utf-8",
-                )
-            }),
-        )
-        .route(
-            "/static/favicon.svg",
-            get(|| async { asset(include_str!("../../static/favicon.svg"), "image/svg+xml") }),
-        )
-        .route(
-            "/static/icons.svg",
-            get(|| async { asset(include_str!("../../static/icons.svg"), "image/svg+xml") }),
-        )
+        .merge(static_routes())
         .route_layer(middleware::from_fn_with_state(
             (state.metrics.clone(), "web"),
             crate::metrics::track,

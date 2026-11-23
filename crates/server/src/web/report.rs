@@ -35,7 +35,7 @@ pub struct DeployRow {
 #[derive(Template)]
 #[template(path = "report.html")]
 struct ReportPage {
-    version: &'static str,
+    assets: &'static str,
     scope: String,
     days: i32,
     period: String,
@@ -145,7 +145,7 @@ async fn build(st: &AppState, s: &Session, days: i32) -> Result<ReportPage, AppE
         .await?;
 
     Ok(ReportPage {
-        version: env!("CARGO_PKG_VERSION"),
+        assets: super::asset_version(),
         scope: scope_label(st, s).await?,
         days,
         period: format!("{} ～ {}", fmt_day(start), fmt_day(today)),
