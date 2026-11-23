@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block content %}
+<div class="page-head"><div><div class="crumb"><a href="/netdevices">網路設備</a> ／ {% if id.is_some() %}編輯{% else %}新增{% endif %}</div><h1>{% if id.is_some() %}編輯網路設備{% else %}新增網路設備{% endif %}</h1></div></div>
+{% if let Some(e) = error %}<div class="notice error" role="alert">{{ e }}</div>{% endif %}
+{% if sites.is_empty() %}<div class="notice error">還沒有據點，請先到「<a href="/sites/new">據點與快取</a>」建立。</div>{% endif %}
+{% if credentials.is_empty() %}<div class="notice error">還沒有 SNMP 帳密，請先<a href="/netdevices/credentials/new">新增帳密</a>。</div>{% endif %}
+<form class="card" method="post" action="{% if let Some(i) = id %}/netdevices/{{ i }}{% else %}/netdevices{% endif %}">
+  <input type="hidden" name="csrf" value="{{ nav.csrf }}">
+  <label class="field">名稱 <input name="name" value="{{ f.name }}" required maxlength="100" size="40"></label>
+  <label class="field">據點 <select name="site_id" required><option value="">選擇據點</option>{% for o in sites %}<option value="{{ o.id }}"{% if f.site_id == o.id %} selected{% endif %}>{{ o.name }}</option>{% endfor %}</select><span class="help">由這個據點的快取主機查詢</span></label>
+  <div class="row">
+    <label class="field">管理 IP 或主機名稱 <input name="address" value="{{ f.address }}" required maxlength="253" size="30"></label>
+    <label class="field">SNMP 埠 <input name="port" value="{{ f.port }}" inputmode="numeric" size="6"></label>
+  </div>
+  <label class="field">SNMP 帳密 <select name="credential_id" required><option value="">選擇帳密</option>{% for c in credentials %}<option value="{{ c.id }}"{% if f.credential_id == c.id %} selected{% endif %}>{{ c.name }}（{{ c.version }}）</option>{% endfor %}</select></label>
+  <label class="field">Cisco 逐 VLAN 查詢 MAC 位址表 <select name="cisco_vlan">
+    <option value="auto"{% if f.cisco_vlan == "auto" %} selected{% endif %}>自動（依設備型號判斷）</option>
+    <option value="on"{% if f.cisco_vlan == "on" %} selected{% endif %}>開啟</option>
+    <option value="off"{% if f.cisco_vlan == "off" %} selected{% endif %}>關閉</option>
+  </select><span class="help">Cisco 交換器的 MAC 位址表要逐個 VLAN 查詢；其他廠牌保持「自動」即可</span></label>
+  <p class="checks"><label><input type="checkbox" name="enabled" value="1"{% if f.enabled %} checked{% endif %}> 啟用查詢</label></p>
+  <button class="btn primary">{% if id.is_some() %}儲存{% else %}建立{% endif %}</button>
+  <span class="help">存檔後，快取下一次報到時（最多約 60 秒）會立即查詢一次</span>
+</form>
+{% endblock %}

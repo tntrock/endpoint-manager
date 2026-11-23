@@ -23,6 +23,7 @@ pub mod installer;
 pub mod inventory;
 pub mod metrics;
 pub mod mfa;
+pub mod netdev;
 pub mod network;
 pub mod notify;
 pub mod oidc;
@@ -30,6 +31,7 @@ pub mod partitions;
 pub mod ratelimit;
 pub mod renew;
 pub mod retention;
+pub mod secret;
 pub mod signing;
 pub mod stats;
 pub mod tls;
@@ -89,6 +91,8 @@ pub struct AppState {
     pub metrics: Arc<metrics::Metrics>,
     /// 管理網頁單一登入；None 表示關閉
     pub oidc: Option<Arc<oidc::Provider>>,
+    /// 資料庫機密的加密金鑰；None 表示沒設定 `EM_SECRET_KEY_FILE`
+    pub secrets: Option<Arc<secret::SecretBox>>,
 }
 
 impl AppState {
@@ -120,7 +124,13 @@ impl AppState {
             branch: Arc::new(branch::assign::BranchCache::default()),
             metrics: Arc::new(metrics::Metrics::default()),
             oidc: None,
+            secrets: None,
         }
+    }
+
+    pub fn with_secrets(mut self, secrets: Option<secret::SecretBox>) -> Self {
+        self.secrets = secrets.map(Arc::new);
+        self
     }
 
     pub fn with_packages(mut self, dir: std::path::PathBuf, concurrency: usize) -> Self {
@@ -205,6 +215,7 @@ pub fn agent_router(state: AppState) -> Router {
             get(branch::api::package_content),
         )
         .route("/v1/cache/authorize", post(branch::api::authorize))
+        .route("/v1/cache/netdata", post(netdev::api::netdata))
         .route("/v1/packages/{id}/content", get(deploy::api::download))
         .route("/v1/deployments/{id}/result", post(deploy::api::result))
         .route("/v1/update-status", put(updates::api::status))
@@ -243,6 +254,12 @@ pub async fn serve(cfg: config::Config) -> anyhow::Result<()> {
         })
         .with_metrics_token(cfg.metrics_token.as_deref())
         .with_oidc(cfg.oidc.clone().map(oidc::Provider::new).transpose()?)
+        .with_secrets(
+            cfg.secret_key_file
+                .as_deref()
+                .map(secret::SecretBox::load)
+                .transpose()?,
+        )
         .with_packages(cfg.package_dir.clone(), cfg.download_concurrency);
     // 安裝檔可以晚點才放上去（網頁每次顯示時會再檢查），這裡只先提醒
     for (var, path) in [

@@ -29,6 +29,8 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 time.workspace = true
 futures-util = "0.3"
+flate2.workspace = true
+async-snmp = { version = "0.18.1", default-features = false, features = ["crypto-rustcrypto"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.8"
@@ -38,3 +40,5 @@ endpoint-server = { path = "../server" }
 sqlx.workspace = true
 tempfile.workspace = true
 uuid.workspace = true
+async-snmp = { version = "0.18.1", default-features = false, features = ["crypto-rustcrypto", "agent"] }
+bytes = "1"

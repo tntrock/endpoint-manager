@@ -32,6 +32,8 @@ pub struct Config {
     pub metrics_token: Option<String>,
     /// 管理網頁單一登入（`EM_OIDC_*`）；None 表示關閉
     pub oidc: Option<crate::oidc::OidcConfig>,
+    /// 資料庫裡機密（SNMP 帳密）的加密金鑰檔（`EM_SECRET_KEY_FILE`）；None 表示不能保存帳密
+    pub secret_key_file: Option<PathBuf>,
 }
 
 impl Config {
@@ -83,6 +85,9 @@ impl Config {
                 .map(PathBuf::from),
             agent_public_url: get("EM_AGENT_PUBLIC_URL").unwrap_or_default(),
             webhook_secret: get("EM_WEBHOOK_SECRET").filter(|s| !s.is_empty()),
+            secret_key_file: get("EM_SECRET_KEY_FILE")
+                .filter(|s| !s.trim().is_empty())
+                .map(PathBuf::from),
             package_dir: get("EM_PACKAGE_DIR")
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "packages".into())
@@ -147,6 +152,25 @@ mod tests {
         })
         .unwrap();
         assert_eq!(c.webhook_secret, None, "空字串視為未設定");
+    }
+
+    #[test]
+    fn secret_key_file_env() {
+        let with = |v: &str| {
+            let v = v.to_string();
+            Config::from_lookup(move |k| match k {
+                "DATABASE_URL" => Some("postgres://x".into()),
+                "EM_SECRET_KEY_FILE" => Some(v.clone()),
+                _ => None,
+            })
+            .unwrap()
+            .secret_key_file
+        };
+        assert_eq!(with(" "), None, "空白視為未設定");
+        assert_eq!(
+            with("/run/secrets/em.key"),
+            Some(PathBuf::from("/run/secrets/em.key"))
+        );
     }
 
     #[test]

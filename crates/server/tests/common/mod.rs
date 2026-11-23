@@ -43,18 +43,24 @@ impl TestServer {
     }
 
     pub async fn start_with(pool: PgPool, limits: tls::ConnLimits) -> TestServer {
-        Self::start_inner(pool, limits, None).await
+        Self::start_inner(pool, limits, None, true).await
+    }
+
+    /// 沒有設定 EM_SECRET_KEY_FILE 的伺服器
+    pub async fn start_without_secrets(pool: PgPool) -> TestServer {
+        Self::start_inner(pool, tls::ConnLimits::default(), None, false).await
     }
 
     /// 設定了單一登入的測試伺服器
     pub async fn start_oidc(pool: PgPool, cfg: endpoint_server::oidc::OidcConfig) -> TestServer {
-        Self::start_inner(pool, tls::ConnLimits::default(), Some(cfg)).await
+        Self::start_inner(pool, tls::ConnLimits::default(), Some(cfg), true).await
     }
 
     async fn start_inner(
         pool: PgPool,
         limits: tls::ConnLimits,
         oidc: Option<endpoint_server::oidc::OidcConfig>,
+        secrets: bool,
     ) -> TestServer {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let dir = tempfile::tempdir().unwrap();
@@ -79,7 +85,8 @@ impl TestServer {
             .with_linux_packages(Some(deb_path), Some(rpm_path))
             .with_packages(dir.path().join("packages"), 2)
             .with_metrics_token(Some(METRICS_TOKEN))
-            .with_oidc(oidc.map(|c| endpoint_server::oidc::Provider::new(c).unwrap()));
+            .with_oidc(oidc.map(|c| endpoint_server::oidc::Provider::new(c).unwrap()))
+            .with_secrets(secrets.then(|| endpoint_server::secret::SecretBox::new(&[42; 32])));
         let cfg = tls::server_config(dir.path()).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();

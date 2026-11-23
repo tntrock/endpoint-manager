@@ -182,7 +182,7 @@ td .num, td .tag, td .sev, td a[href^="/devices/"] { white-space: nowrap; }
 td.wrap { overflow-wrap: anywhere; }
 /* 操作欄：按鈕與下拉選單排成一兩列，不要被擠成直的一排 */
 td.acts { min-width: 22em; }
-td.acts .actions { margin: 0; }
+td .actions { margin: 0; }
 td.acts form { flex-wrap: nowrap; }
 tr:last-child > td, tr:last-child > th { border-bottom: 0; }
 tr:hover > td { background: color-mix(in srgb, var(--accent) 5%, transparent); }

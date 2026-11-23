@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block content %}
+<div class="page-head">
+  <div><h1>網路設備{% call m::help_btn("netdevices", "網路設備") %}{% endcall %}</h1><div class="sub">由各據點的快取主機以 SNMP 唯讀查詢</div></div>
+  <div class="actions"><a class="btn primary" href="/netdevices/new">＋ 新增設備</a></div>
+</div>
+{% if !secrets_ok %}<div class="notice error" role="alert">伺服器沒有設定加密金鑰（<code>EM_SECRET_KEY_FILE</code>），不能保存 SNMP 帳密，也不會下發查詢工作。設定方式見 README。</div>{% endif %}
+{% if saved %}<div class="notice ok" role="status">已儲存。各快取下一次報到後生效。</div>{% endif %}
+{% if let Some(e) = error %}<div class="notice error" role="alert">{{ e }}</div>{% endif %}
+<form class="row" method="get" action="/netdevices" aria-label="篩選">
+  <label class="field">據點 <select name="site"><option value="">全部</option>{% for o in sites %}<option value="{{ o.id }}"{% if site_selected(o.id) %} selected{% endif %}>{{ o.name }}</option>{% endfor %}</select></label>
+  <label class="field">狀態 <select name="status"><option value="">全部</option><option value="down"{% if down_only %} selected{% endif %}>無法連線</option></select></label>
+  <div class="field"><button class="btn">篩選</button></div>
+</form>
+{% if rows.is_empty() %}{% call m::empty("沒有網路設備", "新增設備前，先在下方建立 SNMP 帳密") %}{% endcall %}{% else %}
+<table>
+  <tr><th>名稱</th><th>據點</th><th>位址</th><th>型號</th><th>韌體</th><th>開機時間</th><th>狀態</th><th>最後查詢</th><th class="num">連線埠</th></tr>
+  {% for r in rows %}
+  <tr>
+    <td class="nw"><a href="/netdevices/{{ r.id }}">{{ r.name }}</a></td>
+    <td class="nw">{{ r.site }}</td>
+    <td class="nw"><span class="num">{{ r.address }}</span></td>
+    <td>{{ r.model }}</td>
+    <td class="wrap">{{ r.firmware }}</td>
+    <td class="nw">{{ r.uptime }}</td>
+    <td class="nw"><span class="tag {{ r.tone }}">{{ r.state }}</span></td>
+    <td class="nw"><span class="num">{{ r.last_polled }}</span></td>
+    <td class="num nw">{{ r.ports }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+<h2 id="credentials">SNMP 帳密</h2>
+<div class="actions"><a class="btn" href="/netdevices/credentials/new">＋ 新增帳密</a></div>
+{% if credentials.is_empty() %}<p class="muted">還沒有帳密。</p>{% else %}
+<table>
+  <tr><th>名稱</th><th>版本</th><th>使用者</th><th class="num">設備數</th><th></th></tr>
+  {% for c in credentials %}
+  <tr>
+    <td class="nw">{{ c.name }}</td><td>{{ c.version }}</td><td>{{ c.user }}</td><td class="num">{{ c.used }}</td>
+    <td><div class="actions"><a class="btn sm" href="/netdevices/credentials/{{ c.id }}/edit">編輯</a>
+      <form method="post" action="/netdevices/credentials/{{ c.id }}/delete" data-confirm="刪除帳密「{{ c.name }}」？"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="btn sm danger">刪除</button></form></div></td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+<h2>查詢間隔</h2>
+<form class="card" method="post" action="/netdevices/settings" aria-label="查詢間隔">
+  <input type="hidden" name="csrf" value="{{ nav.csrf }}">
+  <div class="row">
+    <label class="field">系統資訊、介面、LLDP <span class="with-unit"><input class="num" type="number" name="system_min" value="{{ system_min }}" min="1" max="1440" required> 分鐘</span><span class="help">預設 15 分鐘</span></label>
+    <label class="field">MAC 位址表、ARP 表 <span class="with-unit"><input class="num" type="number" name="table_min" value="{{ table_min }}" min="1" max="1440" required> 分鐘</span><span class="help">預設 5 分鐘</span></label>
+    <div class="field"><button class="btn primary">儲存</button></div>
+  </div>
+</form>
+
+{% call m::help_box("netdevices", "網路設備") %}
+<ul>
+<li>每個據點的快取主機，每 60 秒向中央報到時取得該據點設備的清單與帳密，再用 SNMP 唯讀查詢。<b>沒有快取的據點不會被查詢</b>；總部要查詢，就在總部也裝一台快取。</li>
+<li>只查詢這裡登錄的設備，不會掃描網段。</li>
+<li>快取主機要能用 UDP 161 連到設備的管理 IP。建議在設備上建立唯讀的 community 或 SNMPv3 使用者。</li>
+<li>連續 3 次查詢失敗就列為「無法連線」，並出現在總覽的「需要處理」。</li>
+<li>帳密在中央加密保存，只發給該據點的快取；快取只放在記憶體。</li>
+</ul>
+{% endcall %}
+{% endblock %}

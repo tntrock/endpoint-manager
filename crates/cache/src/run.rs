@@ -85,6 +85,8 @@ pub struct Cache {
     pub state: CacheState,
     slot: Arc<CertSlot>,
     root_pem: String,
+    /// 網路設備查詢工作（每次報到更新）
+    snmp: watch::Sender<Option<protocol::netdev::SnmpJob>>,
 }
 
 /// 等待核准：輪詢到取得憑證為止（stop 時回 None）
@@ -229,7 +231,13 @@ impl Cache {
             enrollment,
             state,
             root_pem,
+            snmp: watch::channel(None).0,
         }))
+    }
+
+    /// 網路設備查詢工作的接收端
+    pub fn snmp_jobs(&self) -> watch::Receiver<Option<protocol::netdev::SnmpJob>> {
+        self.snmp.subscribe()
     }
 
     pub fn router(&self) -> axum::Router {
@@ -265,6 +273,13 @@ impl Cache {
             Err(e) => return Err(e.into()),
         };
         st.catalog.replace(&resp);
+        self.snmp.send_if_modified(|cur| {
+            let changed = *cur != resp.snmp;
+            if changed {
+                cur.clone_from(&resp.snmp);
+            }
+            changed
+        });
         // 中央已恢復：不再因先前的授權失敗回 503
         st.auth.clear_failure();
         if resp.renew_certificate
@@ -370,6 +385,12 @@ pub async fn run(dir: &Path, mut stop: watch::Receiver<bool>) -> anyhow::Result<
             }
         })
     };
+    let snmp = tokio::spawn(crate::snmp::run(
+        cache.state.central.clone(),
+        cache.snmp_jobs(),
+        crate::snmp::collect::Limits::default(),
+        stop.clone(),
+    ));
     loop {
         match cache.checkin_once().await {
             Ok(()) => wake.notify_one(),
@@ -384,6 +405,7 @@ pub async fn run(dir: &Path, mut stop: watch::Receiver<bool>) -> anyhow::Result<
         }
     }
     prefetch.abort();
+    snmp.abort();
     prune.abort();
     server.abort();
     tracing::info!("cache stopped");

@@ -4,6 +4,7 @@ pub mod branch;
 pub mod command;
 pub mod deploy;
 pub mod matcher;
+pub mod netdev;
 pub mod regpath;
 pub mod signing;
 pub mod timefmt;

@@ -173,6 +173,24 @@ impl Central {
         Ok(r.certificate_chain_pem)
     }
 
+    /// 上傳一台網路設備一輪的查詢結果（gzip）
+    pub async fn netdata(&self, d: &protocol::netdev::NetData) -> Result<(), CentralError> {
+        use std::io::Write;
+        let json = serde_json::to_vec(d).expect("netdata json");
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(&json)?;
+        let body = gz.finish()?;
+        self.send(
+            self.http()
+                .post(self.url("/v1/cache/netdata"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::CONTENT_ENCODING, "gzip")
+                .body(body),
+        )
+        .await?;
+        Ok(())
+    }
+
     pub async fn authorize(&self, r: &CacheAuthorize) -> Result<bool, CentralError> {
         let a: CacheAuthorizeResponse = self.post("/v1/cache/authorize", r).await?;
         Ok(a.allowed)

@@ -42,6 +42,7 @@ hmac.workspace = true
 sha1 = "0.11"
 getrandom = "0.4"
 qrcode = { version = "0.15.0", default-features = false, features = ["svg"] }
+ring = "0.17"
 
 [dev-dependencies]
 reqwest = { workspace = true, features = ["cookies", "form"] }
@@ -50,4 +51,3 @@ rcgen.workspace = true
 rustls.workspace = true
 serde_json.workspace = true
 flate2.workspace = true
-ring = "0.17"
