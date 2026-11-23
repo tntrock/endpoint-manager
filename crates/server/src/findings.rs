@@ -368,6 +368,17 @@ mod tests {
             "30 天內重建 3 次"
         );
         assert_eq!(label("x"), "x");
+        for k in [
+            "agent_stopped",
+            "agent_killed",
+            "agent_disabled",
+            "log_cleared",
+            "silent_on_network",
+            "ip_conflict",
+            "mac_duplicate",
+        ] {
+            assert_ne!(label(k), k);
+        }
         assert_eq!(describe("x", &json!({})), "");
         assert!(!hint(JOURNAL_GAP).is_empty() && hint("x").is_empty());
     }

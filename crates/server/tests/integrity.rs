@@ -211,6 +211,14 @@ async fn gaps_explanations_and_acknowledgement(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(r.status(), 303);
+    // 不存在的裝置
+    let r = c
+        .post(s.web_url(&format!("/devices/{}/findings/{id}/ack", Uuid::new_v4())))
+        .form(&[("csrf", csrf_from(&page).as_str()), ("note", "")])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 404);
     // 說明太長
     let r = c
         .post(s.web_url(&format!("/devices/{}/findings/{id}/ack", a.device_id)))

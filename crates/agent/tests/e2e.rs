@@ -697,6 +697,71 @@ async fn journal_events_upload_after_server_confirms(pool: PgPool) {
     );
 }
 
+/// 報到宣告支援後，新事件不等報到、約 1 秒內就送到伺服器；送到後本機刪除
+#[sqlx::test(migrations = false)]
+async fn new_events_are_pushed_without_waiting_for_checkin(pool: PgPool) {
+    let e = env(pool, 1).await;
+    let mut a = Agent::new(e.dir.path(), Fake::new()).unwrap();
+    let journal = a.journal();
+    let target = a.push_target();
+    // 還沒報到：沒有目標，事件留著
+    assert!(target.lock().unwrap().is_none());
+    next(a.run_cycle().await);
+    assert!(target.lock().unwrap().is_some());
+    let (stop, shutdown) = tokio::sync::watch::channel(false);
+    let task = tokio::spawn(endpoint_agent::eventpush::run(
+        journal.clone(),
+        target.clone(),
+        shutdown,
+    ));
+    journal
+        .lock()
+        .unwrap()
+        .append(
+            "net.down",
+            serde_json::json!({"name": "eth1"}),
+            time::OffsetDateTime::now_utc(),
+        )
+        .unwrap();
+    let mut stored = 0;
+    for _ in 0..50 {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        stored = sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM device_events WHERE kind = 'net.down'",
+        )
+        .fetch_one(&e.pool)
+        .await
+        .unwrap();
+        if stored > 0 {
+            break;
+        }
+    }
+    assert_eq!(stored, 1);
+    for _ in 0..50 {
+        if journal.lock().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(journal.lock().unwrap().is_empty());
+
+    // 目標不見了（伺服器不再支援）：不送，事件留給報到
+    *target.lock().unwrap() = None;
+    journal
+        .lock()
+        .unwrap()
+        .append(
+            "net.up",
+            serde_json::json!({"name": "eth1"}),
+            time::OffsetDateTime::now_utc(),
+        )
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(journal.lock().unwrap().len(), 1);
+    stop.send(true).unwrap();
+    task.await.unwrap();
+}
+
 mod deploy {
     use super::*;
     use endpoint_agent::client::DownloadError;
