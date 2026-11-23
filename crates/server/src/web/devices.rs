@@ -99,13 +99,23 @@ fn net_filter(net: &str) -> &'static str {
 const WINDOWS_ONLY_TABS: &[&str] = &["security", "deployments", "updates", "patches"];
 
 /// `containers`：這台有偵測到容器執行環境（才顯示「容器」分頁）；
-/// `vms`：這台是虛擬化主機（才顯示「虛擬機」分頁）
-fn tabs_for(os_family: &str, containers: bool, vms: bool) -> Vec<(&'static str, &'static str)> {
+/// `vms`：這台是虛擬化主機（才顯示「虛擬機」分頁）；
+/// `integrity`：這台有竄改偵測的發現（才顯示「完整性」分頁）
+fn tabs_for(
+    os_family: &str,
+    containers: bool,
+    vms: bool,
+    integrity: bool,
+) -> Vec<(&'static str, &'static str)> {
     let mut tabs = tabs_for_os(os_family, containers);
+    // 都放在「變更歷史」前面
     if vms {
-        // 放在「變更歷史」前面
         let at = tabs.len() - 1;
         tabs.insert(at, ("vms", "虛擬機"));
+    }
+    if integrity {
+        let at = tabs.len() - 1;
+        tabs.insert(at, ("integrity", "完整性"));
     }
     tabs
 }
@@ -360,6 +370,9 @@ async fn list_page(
            AND (CASE WHEN $5 = '' THEN d.status <> 'retired' WHEN $5 = 'all' THEN true \
                      WHEN $5 = 'stale' THEN d.status NOT IN ('retired', 'pending_approval') \
                           AND (d.last_seen_at IS NULL OR d.last_seen_at < now() - interval '7 days') \
+                     WHEN $5 = 'integrity' THEN d.status <> 'retired' AND EXISTS ( \
+                          SELECT 1 FROM device_findings f \
+                          WHERE f.device_id = d.id AND f.acknowledged_at IS NULL) \
                      ELSE d.status = $5 END) \
            AND (CASE WHEN $6 = '' THEN true WHEN $6 = 'none' THEN d.group_id IS NULL \
                      ELSE d.group_id = $7 END) \
@@ -436,6 +449,7 @@ async fn list_page(
         ("pending_approval", "待核准"),
         ("duplicate_suspect", "疑似重複"),
         ("stale", "離線超過 7 天"),
+        ("integrity", "有完整性警示"),
         ("retired", "已除役"),
         ("all", "全部"),
     ]
@@ -857,6 +871,7 @@ pub async fn detail(
             &os_family,
             containers,
             super::vms::has_platforms(&st, id).await?,
+            super::integrity::has_findings(&st, id).await?,
         ),
     }))
 }
@@ -892,6 +907,9 @@ pub async fn tab(
     }
     if tab == "network" {
         return super::network::device_tab(&st, s.all_devices(), id).await;
+    }
+    if tab == "integrity" {
+        return super::integrity::device_tab(&st, &s, id).await;
     }
 
     if tab == "compliance" {

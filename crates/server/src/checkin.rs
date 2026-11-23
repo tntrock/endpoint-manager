@@ -113,26 +113,12 @@ pub async fn checkin(
         let mut conn = st.pool.acquire().await?;
         crate::compliance::store::refresh_device_fresh(&mut conn, device.device_id).await?;
     }
-    // 事件：存下並重播；同一個交易內完成，失敗時 Agent 沒收到確認、下次重送
+    // 事件：存下並重播（也可能已經從立即上傳收到，重送的不重複計算）
     let events_ack = match req.journal_id {
-        Some(journal_id) if !req.events.is_empty() => {
-            let sites = crate::network::load_sites(&st.pool).await?;
-            let mut tx = st.pool.begin().await?;
-            let ack = crate::events::ingest(
-                &mut tx,
-                device.device_id,
-                journal_id,
-                &req.events,
-                now,
-                &sites,
-            )
-            .await?;
-            tx.commit().await?;
-            // 多重連線期間可能變了：重算這台的合規（多重連線規則）
-            crate::compliance::refresh_after_upload(&st, device.device_id).await?;
-            ack
+        Some(journal_id) => {
+            crate::events::store(&st, device.device_id, journal_id, &req.events, now).await?
         }
-        _ => None,
+        None => None,
     };
 
     let deploy = st.deploy.get_throttled(&st.pool).await?;
@@ -177,6 +163,7 @@ pub async fn checkin(
             .map(|s| s.as_str().to_string())
             .collect(),
         supports_events: true,
+        supports_event_push: true,
         events_ack,
     }))
 }

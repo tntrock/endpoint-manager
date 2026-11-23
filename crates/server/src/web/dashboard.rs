@@ -462,6 +462,26 @@ async fn todo(st: &AppState, s: &Session, pending: i64) -> Result<Vec<TodoItem>,
             });
         }
     }
+    // 竄改偵測：還沒確認的發現（有高嚴重度的才列為高）
+    let sql = format!(
+        "SELECT count(DISTINCT d.id), count(DISTINCT d.id) FILTER (WHERE f.severity = 'high') \
+         FROM device_findings f JOIN devices d ON d.id = f.device_id \
+         WHERE f.acknowledged_at IS NULL AND d.status <> 'retired' AND {SCOPED}"
+    );
+    let (found, found_high): (i64, i64) = sqlx::query_as(sqlx::AssertSqlSafe(sql))
+        .bind(all)
+        .bind(groups)
+        .fetch_one(&st.pool)
+        .await?;
+    if found > 0 {
+        out.push(TodoItem {
+            severity: if found_high > 0 { "high" } else { "medium" },
+            title: "完整性警示".into(),
+            detail: "本機資料可能遭竄改，或 Agent 被停用",
+            count: found,
+            href: "/devices?status=integrity".into(),
+        });
+    }
     // 執行中、卻沒有對到任何已註冊裝置的虛擬機：漏裝 Agent
     let unmanaged: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(super::vms::unmanaged_sql(SCOPED)))
         .bind(all)

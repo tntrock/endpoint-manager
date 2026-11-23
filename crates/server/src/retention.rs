@@ -131,6 +131,11 @@ const DELETE_ARP: &str = "DELETE FROM net_arp WHERE ctid IN ( \
 const DELETE_LOCATIONS: &str = "DELETE FROM endpoint_locations WHERE id IN ( \
      SELECT id FROM endpoint_locations WHERE ended_at < now() - make_interval(days => $1) \
      LIMIT $2)";
+/// 竄改偵測的發現：開始超過 365 天、而且已經結束的
+const DELETE_FINDINGS: &str = "DELETE FROM device_findings WHERE id IN ( \
+     SELECT id FROM device_findings \
+     WHERE started_at < now() - make_interval(days => $1) AND ended_at IS NOT NULL \
+     ORDER BY id LIMIT $2)";
 const DELETE_EVENTS: &str = "DELETE FROM device_events WHERE ctid IN ( \
      SELECT ctid FROM device_events WHERE received_at < now() - make_interval(days => $1) \
      LIMIT $2)";
@@ -192,7 +197,8 @@ async fn purge_with(pool: &PgPool, pause: Duration) -> Result<Purged, sqlx::Erro
         + delete_batches(pool, DELETE_PERIODS, PERIOD_DAYS, pause).await?
         + delete_batches(pool, DELETE_SIGHTINGS, SIGHTING_DAYS, pause).await?
         + delete_batches(pool, DELETE_ARP, SIGHTING_DAYS, pause).await?
-        + delete_batches(pool, DELETE_LOCATIONS, PERIOD_DAYS, pause).await?;
+        + delete_batches(pool, DELETE_LOCATIONS, PERIOD_DAYS, pause).await?
+        + delete_batches(pool, DELETE_FINDINGS, PERIOD_DAYS, pause).await?;
     if p != Purged::default() {
         let mut c = pool.acquire().await?;
         audit::record(

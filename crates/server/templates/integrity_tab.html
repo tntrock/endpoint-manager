@@ -1,0 +1,22 @@
+{% if let Some(e) = error %}<div class="notice error" role="alert">{{ e }}</div>{% endif %}
+{% if rows.is_empty() %}<p class="muted">沒有發現。</p>{% else %}
+<table id="findings">
+  <tr><th>嚴重度</th><th>發現</th><th>時間</th><th>處理</th></tr>
+  {% for r in rows %}<tr id="finding-{{ r.id }}">
+    <td class="nw">{% if r.severity == "high" %}<span class="tag bad">高</span>{% else %}<span class="tag warn">中</span>{% endif %}</td>
+    <td><b>{{ r.title }}</b>{% if r.ongoing %} <span class="tag bad">持續中</span>{% endif %}
+      {% if !r.detail.is_empty() %}<br>{{ r.detail }}{% endif %}
+      {% if !r.hint.is_empty() %}<br><span class="faint">{{ r.hint }}</span>{% endif %}</td>
+    <td class="nw"><span class="num">{{ r.started }}</span></td>
+    <td>{% if r.acknowledged %}<span class="muted">{{ r.ack }}</span>
+      {% else if can_ack %}<form class="inline nowrap" method="post" action="/devices/{{ device }}/findings/{{ r.id }}/ack"
+            hx-post="/devices/{{ device }}/findings/{{ r.id }}/ack" hx-target="#tab">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <input name="note" placeholder="說明，如換網卡" size="12" maxlength="500" aria-label="確認說明">
+        <button class="btn sm">確認</button></form>
+      {% else %}<span class="muted">未確認</span>{% endif %}</td>
+  </tr>{% endfor %}
+</table>
+{% if truncated %}<p class="muted">只列出最近 200 筆。</p>{% endif %}
+{% endif %}
+<p class="muted">「確認」表示看過、沒有問題，會寫入稽核記錄；確認後不再列在「需要處理」，這裡仍然看得到。發現保存 365 天。</p>

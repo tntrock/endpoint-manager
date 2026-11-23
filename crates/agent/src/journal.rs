@@ -8,10 +8,12 @@ use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use protocol::AgentEvent;
 use serde::{Deserialize, Serialize};
 use time::{Duration, OffsetDateTime};
+use tokio::sync::Notify;
 use uuid::Uuid;
 
 pub const FILE: &str = "events.jsonl";
@@ -31,10 +33,13 @@ pub struct Journal {
     id: Uuid,
     next_seq: u64,
     events: VecDeque<AgentEvent>,
+    /// 有新事件時通知立即上傳的工作
+    notify: Arc<Notify>,
 }
 
 impl Journal {
-    /// 讀取日誌。檔案不存在、標頭壞掉時換一個新的 journal_id；壞掉的事件行略過
+    /// 讀取日誌。檔案不存在、標頭壞掉時換一個新的 journal_id；壞掉的事件行略過，
+    /// 並記一筆 `journal.dropped`（`reason: "corrupt"`），伺服器才不會把它當成被刪掉的事件
     pub fn open(dir: &Path) -> Self {
         let path = dir.join(FILE);
         let text = std::fs::read_to_string(&path).unwrap_or_default();
@@ -42,8 +47,14 @@ impl Journal {
         let header = lines
             .next()
             .and_then(|l| serde_json::from_str::<Header>(l).ok());
+        let mut corrupt = 0usize;
         let mut events: VecDeque<AgentEvent> = lines
-            .filter_map(|l| serde_json::from_str::<AgentEvent>(l).ok())
+            .filter(|l| !l.trim().is_empty())
+            .filter_map(|l| {
+                let e = serde_json::from_str::<AgentEvent>(l).ok();
+                corrupt += usize::from(e.is_none());
+                e
+            })
             .collect();
         events.make_contiguous().sort_by_key(|e| e.seq);
         let after_events = events.back().map_or(1, |e| e.seq + 1);
@@ -51,16 +62,32 @@ impl Journal {
             Some(h) => (h.journal_id, h.next_seq.max(after_events), false),
             None => (Uuid::new_v4(), after_events, true),
         };
-        let j = Self {
+        let mut j = Self {
             path,
             id,
             next_seq,
             events,
+            notify: Arc::new(Notify::new()),
         };
-        if rewrite && let Err(e) = j.rewrite() {
+        if corrupt > 0 {
+            // 壞掉的行之後就不在檔案裡了（重寫），下次開啟不會重複記
+            j.push(
+                AgentEvent::JOURNAL_DROPPED,
+                serde_json::json!({ "count": corrupt, "reason": "corrupt" }),
+                OffsetDateTime::now_utc(),
+            );
+        }
+        if (rewrite || corrupt > 0)
+            && let Err(e) = j.rewrite()
+        {
             tracing::warn!(error = %e, "cannot write event journal");
         }
         j
+    }
+
+    /// 有新事件時會被通知（立即上傳用）
+    pub fn notifier(&self) -> Arc<Notify> {
+        self.notify.clone()
     }
 
     pub fn id(&self) -> Uuid {
@@ -113,6 +140,7 @@ impl Journal {
                 now,
             );
             self.push(kind, data, now);
+            self.notify.notify_one();
             return self.rewrite();
         }
         let e = self.push(kind, data, now);
@@ -126,6 +154,7 @@ impl Journal {
             serde_json::to_string(&e).expect("event serializes")
         )?;
         f.sync_data()?;
+        self.notify.notify_one();
         // 標頭的 next_seq 不用每次更新：開啟時取標頭與最後一筆事件的較大者
         Ok(())
     }
@@ -208,10 +237,17 @@ mod tests {
         let mut text = std::fs::read_to_string(&p).unwrap();
         text.push_str("{garbage\n");
         std::fs::write(&p, &text).unwrap();
+        // 壞行略過，記一筆 journal.dropped 說明（伺服器才不會當成被刪掉的事件）
         let mut j = Journal::open(dir.path());
-        assert_eq!((j.id(), j.len()), (id, 1));
+        assert_eq!((j.id(), j.len()), (id, 2));
+        let dropped = &j.pending(5)[1];
+        assert_eq!(dropped.kind, AgentEvent::JOURNAL_DROPPED);
+        assert_eq!(dropped.seq, 2);
+        assert_eq!(dropped.data, json!({"count": 1, "reason": "corrupt"}));
         j.append("net.down", json!({}), t0()).unwrap();
-        assert_eq!(j.pending(5).last().unwrap().seq, 2);
+        assert_eq!(j.pending(5).last().unwrap().seq, 3);
+        // 壞行已經不在檔案裡：再開一次不會重複記
+        assert_eq!(Journal::open(dir.path()).len(), 3);
 
         // 標頭壞掉（或重新安裝）：換新的 ID，還讀得到的事件保留
         let text = std::fs::read_to_string(&p).unwrap();
@@ -219,7 +255,7 @@ mod tests {
         std::fs::write(&p, format!("not json\n{}\n", body.join("\n"))).unwrap();
         let j = Journal::open(dir.path());
         assert_ne!(j.id(), id);
-        assert_eq!(j.len(), 2);
+        assert_eq!(j.len(), 3);
         let j2 = Journal::open(dir.path());
         assert_eq!(j2.id(), j.id(), "新的標頭已寫回");
     }

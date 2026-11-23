@@ -15,6 +15,7 @@ pub mod diff;
 pub mod enroll;
 pub mod error;
 pub mod events;
+pub mod findings;
 pub mod gencache;
 pub mod groups;
 pub mod heartbeat;
@@ -51,6 +52,8 @@ use sqlx::PgPool;
 
 pub const MAX_BODY_BYTES: usize = 5 * 1024 * 1024;
 pub const ENROLL_PER_IP_PER_MINUTE: u32 = 60;
+/// 立即上傳事件：每台裝置每秒最多幾次
+pub const EVENT_PUSH_PER_SECOND: u32 = 2;
 /// 同時下載套件的預設上限（`EM_DOWNLOAD_CONCURRENCY`）
 pub const DOWNLOAD_CONCURRENCY: usize = 50;
 /// 管理網頁登入：每個 IP 每分鐘最多嘗試次數
@@ -63,6 +66,8 @@ pub struct AppState {
     pub heartbeat: Arc<heartbeat::HeartbeatBuffer>,
     pub enroll_limiter: Arc<ratelimit::RateLimiter>,
     pub login_limiter: Arc<ratelimit::RateLimiter>,
+    /// 立即上傳事件：每台裝置每秒最多幾次（竄改偵測規格 §3.2）
+    pub event_limiter: Arc<ratelimit::RateLimiter<uuid::Uuid>>,
     /// 管理網頁顯示時間用的時區
     pub display_offset: time::UtcOffset,
     /// 通用範本 MSI；None 表示不提供下載安裝檔
@@ -104,6 +109,10 @@ impl AppState {
             enroll_limiter: Arc::new(ratelimit::RateLimiter::new(
                 ENROLL_PER_IP_PER_MINUTE,
                 Duration::from_secs(60),
+            )),
+            event_limiter: Arc::new(ratelimit::RateLimiter::new(
+                EVENT_PUSH_PER_SECOND,
+                Duration::from_secs(1),
             )),
             login_limiter: Arc::new(ratelimit::RateLimiter::new(
                 LOGIN_PER_IP_PER_MINUTE,
@@ -204,6 +213,7 @@ pub fn agent_router(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .route("/v1/enroll", post(enroll::enroll))
         .route("/v1/checkin", post(checkin::checkin))
+        .route("/v1/events", post(events::push))
         .route("/v1/inventory/{section}", put(inventory::upload))
         .route("/v1/renew", post(renew::renew))
         .route("/v1/cache/enroll", post(branch::api::enroll))

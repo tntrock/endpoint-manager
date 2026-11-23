@@ -98,6 +98,11 @@ pub async fn run(dir: &Path, shutdown: watch::Receiver<bool>) -> anyhow::Result<
         shutdown.clone(),
     ));
     regwatch::watch_patches(tx);
+    tokio::spawn(crate::eventpush::run(
+        agent.journal(),
+        agent.push_target(),
+        shutdown.clone(),
+    ));
     run_agent(agent, shutdown, rx).await;
     Ok(())
 }

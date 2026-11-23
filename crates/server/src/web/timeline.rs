@@ -294,6 +294,25 @@ pub async fn events(
         tab: Some("network"),
     }));
 
+    // 竄改偵測的發現
+    let found: Vec<(OffsetDateTime, String, serde_json::Value)> = sqlx::query_as(
+        "SELECT started_at, kind, detail FROM device_findings \
+         WHERE device_id = $1 AND started_at < $2 ORDER BY started_at DESC LIMIT $3",
+    )
+    .bind(id)
+    .bind(before)
+    .bind(LIMIT)
+    .fetch_all(&st.pool)
+    .await?;
+    full(found.len(), found.last().map(|r| r.0));
+    out.extend(found.into_iter().map(|(at, kind, detail)| Event {
+        at,
+        kind: "bad",
+        title: crate::findings::label(&kind).to_string(),
+        detail: crate::findings::describe(&kind, &detail),
+        tab: Some("integrity"),
+    }));
+
     let audit: Vec<(OffsetDateTime, String, String)> = sqlx::query_as(
         "SELECT at, actor, action FROM audit_log WHERE target = $1 AND at < $2 \
          ORDER BY at DESC LIMIT $3",
