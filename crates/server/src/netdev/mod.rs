@@ -3,6 +3,8 @@
 
 pub mod api;
 pub mod ingest;
+pub mod oui;
+pub mod view;
 
 use std::net::IpAddr;
 

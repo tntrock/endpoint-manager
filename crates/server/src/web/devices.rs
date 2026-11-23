@@ -877,7 +877,7 @@ pub async fn tab(
         return super::vms::device_tab(&st, &s, id).await;
     }
     if tab == "network" {
-        return super::network::device_tab(&st, id).await;
+        return super::network::device_tab(&st, s.all_devices(), id).await;
     }
 
     if tab == "compliance" {

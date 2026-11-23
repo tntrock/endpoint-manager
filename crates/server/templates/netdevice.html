@@ -17,22 +17,36 @@
   {% for i in info %}<tr><th>{{ i.0 }}</th><td class="wrap">{{ i.1 }}</td></tr>{% endfor %}
 </table>
 </details>
-<h2>連接埠</h2>
+<h2>連接埠{% call m::help_btn("ports", "連接埠") %}{% endcall %}</h2>
+{% if role_saved %}<div class="notice ok" role="status">已儲存埠的角色。下一次查詢 MAC 位址表時（預設 5 分鐘內）會依新的角色判斷電腦的位置。</div>{% endif %}
 {% if ports.is_empty() %}<p class="muted">還沒有查詢到介面。</p>{% else %}
 <table>
-  <tr><th>名稱</th><th>描述</th><th>狀態</th><th>速度</th><th class="num">VLAN</th><th>MAC</th><th>LLDP 鄰居</th><th>最後變動</th></tr>
+  <tr><th>名稱</th><th>描述</th><th>狀態</th><th>速度</th><th class="num">VLAN</th><th>接著</th><th>LLDP 鄰居</th><th>最後變動</th><th>角色</th></tr>
   {% for p in ports %}
-  <tr>
-    <td class="nw">{{ p.name }}{% if p.uplink %} <span class="tag" title="{% if p.role_manual %}管理員指定{% else %}依 LLDP 鄰居判斷{% endif %}">上行</span>{% endif %}</td>
+  <tr id="port-{{ p.if_index }}">
+    <td class="nw">{{ p.name }}{% if p.uplink %} <span class="tag" title="{{ p.uplink_why }}">上行</span>{% endif %}</td>
     <td class="wrap">{{ p.alias }}</td>
     <td class="nw"><span class="tag {{ p.tone }}">{{ p.state }}</span></td>
     <td class="nw">{{ p.speed }}</td>
     <td class="num">{{ p.vlan }}</td>
-    <td class="nw"><span class="num">{{ p.mac }}</span></td>
+    <td class="wrap">{% for e in p.endpoints %}<a href="/devices/{{ e.0 }}">{{ e.1 }}</a>{% if !loop.last %}、{% endif %}{% endfor %}{% if p.endpoints.is_empty() && p.mac_count > 0 %}<span class="faint">{{ p.mac_count }} 個 MAC</span>{% endif %}</td>
     <td class="wrap">{{ p.neighbor }}</td>
     <td class="nw"><span class="num">{{ p.last_change }}</span></td>
+    <td class="nw"><form class="inline" method="post" action="/netdevices/{{ id }}/ports/{{ p.if_index }}/role"><input type="hidden" name="csrf" value="{{ nav.csrf }}">
+      <select name="role" aria-label="{{ p.name }} 的角色">
+        <option value="auto"{% if p.role == "auto" %} selected{% endif %}>自動</option>
+        <option value="edge"{% if p.role == "edge" %} selected{% endif %}>端點</option>
+        <option value="uplink"{% if p.role == "uplink" %} selected{% endif %}>上行</option>
+      </select><button class="btn sm">套用</button></form></td>
   </tr>
   {% endfor %}
 </table>
 {% endif %}
+{% call m::help_box("ports", "連接埠") %}
+<ul>
+<li><b>接著</b>：MAC 位址表上看到的電腦（依 Agent 回報的網卡 MAC 比對）。沒有對到電腦時顯示這個埠學到幾個 MAC。</li>
+<li><b>上行埠</b>：接往其他交換器、路由器或 AP 的埠。上行埠上看到的 MAC 不代表電腦接在這裡，所以不算位置。</li>
+<li>「自動」依 LLDP 鄰居（對方是交換器或路由器）或「同時有 10 個以上 MAC」判斷。判斷錯誤時（例如接了沒開 LLDP 的小交換器），改成「上行」或「端點」。</li>
+</ul>
+{% endcall %}
 {% endblock %}

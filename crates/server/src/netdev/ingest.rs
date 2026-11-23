@@ -1,8 +1,12 @@
 //! 存下快取上傳的查詢結果。
 
 use std::collections::HashSet;
+use std::net::IpAddr;
 
-use protocol::netdev::{MAX_INTERFACES, NetData, NetInterface, NetPollKind, NetSystem};
+use protocol::netdev::{
+    ArpEntry, FdbEntry, MAX_INTERFACES, MAX_TABLE_ENTRIES, NetData, NetInterface, NetPollKind,
+    NetSystem,
+};
 use sqlx::PgPool;
 
 /// 存進資料庫的字串上限（設備回的描述可能很長）
@@ -35,18 +39,17 @@ pub fn auto_role(i: &NetInterface, known: &HashSet<String>) -> &'static str {
     if uplink { "auto_uplink" } else { "auto_edge" }
 }
 
-#[derive(Debug, PartialEq)]
-pub enum Outcome {
-    Stored,
-    /// 第一期還不處理 MAC／ARP 表
-    Ignored,
+/// 小寫、冒號分隔的 MAC；格式不對時 None
+pub fn normalize_mac(m: &str) -> Option<String> {
+    let m = m.trim().to_ascii_lowercase();
+    let ok = m.len() == 17
+        && m.split(':')
+            .all(|p| p.len() == 2 && p.bytes().all(|b| b.is_ascii_hexdigit()));
+    ok.then_some(m)
 }
 
 /// 呼叫前已確認設備屬於這台快取的據點
-pub async fn store(pool: &PgPool, d: &NetData) -> Result<Outcome, sqlx::Error> {
-    if d.kind == NetPollKind::Tables {
-        return Ok(Outcome::Ignored);
-    }
+pub async fn store(pool: &PgPool, d: &NetData) -> Result<(), sqlx::Error> {
     let mut tx = pool.begin().await?;
     if let Some(err) = &d.error {
         sqlx::query(
@@ -58,13 +61,137 @@ pub async fn store(pool: &PgPool, d: &NetData) -> Result<Outcome, sqlx::Error> {
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
-        return Ok(Outcome::Stored);
+        return Ok(());
     }
-    let sys = d.system.clone().unwrap_or_default();
-    store_system(&mut tx, d.device_id, &sys).await?;
-    store_interfaces(&mut tx, d.device_id, &d.interfaces).await?;
+    match d.kind {
+        NetPollKind::System => {
+            let sys = d.system.clone().unwrap_or_default();
+            store_system(&mut tx, d.device_id, &sys).await?;
+            store_interfaces(&mut tx, d.device_id, &d.interfaces).await?;
+        }
+        NetPollKind::Tables => {
+            sqlx::query(
+                "UPDATE net_devices SET last_polled_at = now(), last_ok_at = now(), \
+                 last_error = NULL, consecutive_failures = 0 WHERE id = $1",
+            )
+            .bind(d.device_id)
+            .execute(&mut *tx)
+            .await?;
+            store_fdb(&mut tx, d.device_id, &d.fdb).await?;
+            store_arp(&mut tx, d.device_id, &d.arp).await?;
+        }
+    }
     tx.commit().await?;
-    Ok(Outcome::Stored)
+    Ok(())
+}
+
+async fn store_fdb(
+    tx: &mut sqlx::PgConnection,
+    id: i64,
+    fdb: &[FdbEntry],
+) -> Result<(), sqlx::Error> {
+    let mut seen = HashSet::new();
+    let (mut ifs, mut macs, mut vlans) = (vec![], vec![], vec![]);
+    for e in fdb.iter().take(MAX_TABLE_ENTRIES) {
+        let Some(mac) = normalize_mac(&e.mac) else {
+            continue;
+        };
+        let vlan = e.vlan.and_then(|v| i32::try_from(v).ok()).unwrap_or(0);
+        if seen.insert((e.if_index, mac.clone(), vlan)) {
+            ifs.push(i64::from(e.if_index));
+            macs.push(mac);
+            vlans.push(vlan);
+        }
+    }
+    sqlx::query(
+        "INSERT INTO net_mac_sightings (device_id, if_index, mac, vlan) \
+         SELECT $1, u.ifi, u.mac, u.vlan FROM UNNEST($2::bigint[], $3::text[], $4::int[]) \
+              AS u(ifi, mac, vlan) \
+         ON CONFLICT (device_id, if_index, mac, vlan) DO UPDATE SET last_seen = now()",
+    )
+    .bind(id)
+    .bind(&ifs)
+    .bind(&macs)
+    .bind(&vlans)
+    .execute(&mut *tx)
+    .await?;
+    // 每個埠這一輪學到幾個 MAC：判斷上行埠
+    sqlx::query(
+        "UPDATE net_interfaces i SET mac_count = coalesce( \
+             (SELECT count(DISTINCT u.mac) FROM UNNEST($2::bigint[], $3::text[]) AS u(ifi, mac) \
+              WHERE u.ifi = i.if_index), 0) \
+         WHERE i.device_id = $1",
+    )
+    .bind(id)
+    .bind(&ifs)
+    .bind(&macs)
+    .execute(&mut *tx)
+    .await?;
+    // 端點埠上看到的電腦：位置變了就結束舊的一段（兩句分開：同一句的 CTE 看不到彼此的修改）
+    const CURRENT: &str = "WITH cur AS ( \
+           SELECT DISTINCT ON (m.device_id, u.mac) m.device_id AS ep, u.mac, u.ifi, u.vlan, \
+                  i.name AS port \
+           FROM UNNEST($2::bigint[], $3::text[], $4::int[]) AS u(ifi, mac, vlan) \
+           JOIN net_interfaces i ON i.device_id = $1 AND i.if_index = u.ifi \
+           JOIN device_macs m ON m.mac = u.mac \
+           JOIN devices d ON d.id = m.device_id AND d.status = 'active' \
+           WHERE NOT net_port_is_uplink(i.role, i.mac_count) \
+           ORDER BY m.device_id, u.mac, u.vlan DESC) ";
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "{CURRENT} UPDATE endpoint_locations l SET ended_at = now() FROM cur \
+         WHERE l.device_id = cur.ep AND l.mac = cur.mac AND l.ended_at IS NULL \
+           AND (l.net_device_id IS DISTINCT FROM $1 OR l.if_index <> cur.ifi \
+                OR l.vlan <> cur.vlan)"
+    )))
+    .bind(id)
+    .bind(&ifs)
+    .bind(&macs)
+    .bind(&vlans)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "{CURRENT} INSERT INTO endpoint_locations \
+             (device_id, mac, net_device_id, net_device_name, port_name, if_index, vlan) \
+         SELECT cur.ep, cur.mac, $1, (SELECT name FROM net_devices WHERE id = $1), cur.port, \
+                cur.ifi, cur.vlan FROM cur \
+         ON CONFLICT (device_id, mac) WHERE ended_at IS NULL DO NOTHING"
+    )))
+    .bind(id)
+    .bind(&ifs)
+    .bind(&macs)
+    .bind(&vlans)
+    .execute(&mut *tx)
+    .await?;
+    Ok(())
+}
+
+async fn store_arp(
+    tx: &mut sqlx::PgConnection,
+    id: i64,
+    arp: &[ArpEntry],
+) -> Result<(), sqlx::Error> {
+    let mut seen = HashSet::new();
+    let (mut ips, mut macs) = (vec![], vec![]);
+    for e in arp.iter().take(MAX_TABLE_ENTRIES) {
+        let (Ok(ip), Some(mac)) = (e.ip.trim().parse::<IpAddr>(), normalize_mac(&e.mac)) else {
+            continue;
+        };
+        if seen.insert((ip, mac.clone())) {
+            ips.push(ip.to_string());
+            macs.push(mac);
+        }
+    }
+    sqlx::query(
+        "INSERT INTO net_arp (device_id, ip, mac) \
+         SELECT $1, u.ip::inet, u.mac FROM UNNEST($2::text[], $3::text[]) AS u(ip, mac) \
+         ON CONFLICT (device_id, ip, mac) DO UPDATE SET last_seen = now()",
+    )
+    .bind(id)
+    .bind(&ips)
+    .bind(&macs)
+    .execute(&mut *tx)
+    .await?;
+    Ok(())
 }
 
 async fn store_system(
@@ -246,6 +373,22 @@ mod tests {
             auto_role(&iface(vec![neighbor(false, Some("10.0.0.2"))]), &known),
             "auto_uplink"
         );
+    }
+
+    #[test]
+    fn macs() {
+        assert_eq!(
+            normalize_mac(" 00:1B:2C:AA:bb:01 ").as_deref(),
+            Some("00:1b:2c:aa:bb:01")
+        );
+        for bad in [
+            "",
+            "00:1b:2c:aa:bb",
+            "00-1b-2c-aa-bb-01",
+            "00:1b:2c:aa:bb:0g",
+        ] {
+            assert_eq!(normalize_mac(bad), None, "{bad}");
+        }
     }
 
     #[test]

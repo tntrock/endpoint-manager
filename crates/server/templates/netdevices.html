@@ -5,6 +5,7 @@
   <div><h1>網路設備{% call m::help_btn("netdevices", "網路設備") %}{% endcall %}</h1><div class="sub">由各據點的快取主機以 SNMP 唯讀查詢</div></div>
   <div class="actions"><a class="btn primary" href="/netdevices/new">＋ 新增設備</a></div>
 </div>
+{% call m::netdev_tabs("devices") %}{% endcall %}
 {% if !secrets_ok %}<div class="notice error" role="alert">伺服器沒有設定加密金鑰（<code>EM_SECRET_KEY_FILE</code>），不能保存 SNMP 帳密，也不會下發查詢工作。設定方式見 README。</div>{% endif %}
 {% if saved %}<div class="notice ok" role="status">已儲存。各快取下一次報到後生效。</div>{% endif %}
 {% if let Some(e) = error %}<div class="notice error" role="alert">{{ e }}</div>{% endif %}

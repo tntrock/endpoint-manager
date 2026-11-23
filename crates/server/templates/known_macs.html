@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block content %}
+<div class="page-head">
+  <div><h1>網路設備</h1><div class="sub">標記為已知的設備不會列在「未管理設備」</div></div>
+</div>
+{% call m::netdev_tabs("known") %}{% endcall %}
+{% if rows.is_empty() %}{% call m::empty("沒有已知設備", "在「未管理設備」分頁可以把確認過的設備標記為已知") %}{% endcall %}{% else %}
+<table>
+  <tr><th>範圍</th><th>比對值</th><th>廠商</th><th>說明</th><th>標記者</th><th>標記時間</th><th></th></tr>
+  {% for r in rows %}
+  <tr>
+    <td class="nw">{{ r.kind }}</td>
+    <td class="nw"><span class="num">{{ r.value }}</span></td>
+    <td class="wrap">{{ r.vendor }}</td>
+    <td class="wrap">{{ r.note }}</td>
+    <td class="nw">{{ r.created_by }}</td>
+    <td class="nw"><span class="num">{{ r.created_at }}</span></td>
+    <td><div class="actions"><form method="post" action="/netdevices/known/{{ r.id }}/delete" data-confirm="取消標記？符合的設備會重新列在「未管理設備」。"><input type="hidden" name="csrf" value="{{ nav.csrf }}"><button class="btn sm danger">取消標記</button></form></div></td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+{% endblock %}

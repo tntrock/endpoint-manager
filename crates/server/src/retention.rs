@@ -120,6 +120,17 @@ pub const EVENT_DAYS: i32 = 180;
 /// 已結束的多重連線期間保留天數（固定，比事件長：合規回溯與稽核要用）
 pub const PERIOD_DAYS: i32 = 365;
 
+/// MAC 位址表、ARP 表：最後一次看到超過這麼多天就刪除
+pub const SIGHTING_DAYS: i32 = 30;
+const DELETE_SIGHTINGS: &str = "DELETE FROM net_mac_sightings WHERE ctid IN ( \
+     SELECT ctid FROM net_mac_sightings WHERE last_seen < now() - make_interval(days => $1) \
+     LIMIT $2)";
+const DELETE_ARP: &str = "DELETE FROM net_arp WHERE ctid IN ( \
+     SELECT ctid FROM net_arp WHERE last_seen < now() - make_interval(days => $1) LIMIT $2)";
+/// 電腦的網路位置：結束超過 365 天的
+const DELETE_LOCATIONS: &str = "DELETE FROM endpoint_locations WHERE id IN ( \
+     SELECT id FROM endpoint_locations WHERE ended_at < now() - make_interval(days => $1) \
+     LIMIT $2)";
 const DELETE_EVENTS: &str = "DELETE FROM device_events WHERE ctid IN ( \
      SELECT ctid FROM device_events WHERE received_at < now() - make_interval(days => $1) \
      LIMIT $2)";
@@ -178,7 +189,10 @@ async fn purge_with(pool: &PgPool, pause: Duration) -> Result<Purged, sqlx::Erro
         p.audit = delete_batches(pool, DELETE_AUDIT, r.audit_days, pause).await?;
     }
     p.events = delete_batches(pool, DELETE_EVENTS, EVENT_DAYS, pause).await?
-        + delete_batches(pool, DELETE_PERIODS, PERIOD_DAYS, pause).await?;
+        + delete_batches(pool, DELETE_PERIODS, PERIOD_DAYS, pause).await?
+        + delete_batches(pool, DELETE_SIGHTINGS, SIGHTING_DAYS, pause).await?
+        + delete_batches(pool, DELETE_ARP, SIGHTING_DAYS, pause).await?
+        + delete_batches(pool, DELETE_LOCATIONS, PERIOD_DAYS, pause).await?;
     if p != Purged::default() {
         let mut c = pool.acquire().await?;
         audit::record(

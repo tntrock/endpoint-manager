@@ -12,9 +12,9 @@ use async_snmp::handler::{
 use async_snmp::v3::{AuthProtocol, AuthoritativeEngine, PrivProtocol, generate_engine_id};
 use async_snmp::{Agent, Oid, Value, VarBind};
 use bytes::Bytes;
-use endpoint_cache::snmp::{self, collect, parse};
+use endpoint_cache::snmp::{self, collect, parse, tables};
 use protocol::netdev::{
-    CiscoVlanMode, SnmpAuthProtocol, SnmpCredential, SnmpPrivProtocol, SnmpTarget,
+    CiscoVlanMode, NetPollKind, SnmpAuthProtocol, SnmpCredential, SnmpPrivProtocol, SnmpTarget,
 };
 use sqlx::PgPool;
 use tokio::sync::watch;
@@ -135,6 +135,70 @@ fn switch_mib() -> BTreeMap<Oid, Value> {
         &[0, 3, 1, 1, 4, 10, 9, 9, 1],
         Value::Integer(2),
     );
+    // MAC 位址表（Q-BRIDGE）：埠 1 接電腦、埠 2 接印表機、埠 3（上行）學到 12 個 MAC
+    put(&mut m, tables::Q_VLAN_FDB_ID, &[0, 10], Value::Gauge32(10));
+    let mut fdb = |mac: [u32; 6], port: i32| {
+        let mut idx = vec![10];
+        idx.extend(mac);
+        put(&mut m, tables::Q_FDB_PORT, &idx, Value::Integer(port));
+    };
+    fdb(PC, 1);
+    fdb(PRINTER, 2);
+    for i in 0..12 {
+        fdb([0, 0x50, 0x56, 0, 1, i], 3);
+    }
+    // ARP 表
+    let pc_mac = Value::OctetString(Bytes::from(PC.map(|b| b as u8).to_vec()));
+    let printer_mac = Value::OctetString(Bytes::from(PRINTER.map(|b| b as u8).to_vec()));
+    put(
+        &mut m,
+        tables::IP_NET_TO_PHYS,
+        &[3, 1, 4, 10, 0, 0, 5],
+        pc_mac,
+    );
+    put(
+        &mut m,
+        tables::IP_NET_TO_PHYS,
+        &[3, 1, 4, 10, 0, 0, 9],
+        printer_mac,
+    );
+    m
+}
+
+const PC: [u32; 6] = [0, 0x1b, 0x2c, 0, 0, 1];
+/// 00:00:0c 是 Cisco 的 OUI
+const PRINTER: [u32; 6] = [0, 0, 0x0c, 0x11, 0x22, 0x33];
+
+/// Cisco 交換器：沒有 Q-BRIDGE，MAC 位址表要用 community@VLAN 逐個 VLAN 查
+fn cisco_mib() -> BTreeMap<Oid, Value> {
+    let mut m = BTreeMap::new();
+    put(
+        &mut m,
+        parse::SYS_OBJECT_ID,
+        &[],
+        Value::ObjectIdentifier(Oid::from_slice(&[1, 3, 6, 1, 4, 1, 9, 1, 1208])),
+    );
+    put(
+        &mut m,
+        parse::BASE_PORT_IFINDEX,
+        &[5],
+        Value::Integer(10105),
+    );
+    for v in [10, 20, 1002] {
+        put(&mut m, tables::CISCO_VLAN_STATE, &[1, v], Value::Integer(1));
+    }
+    let mut idx = PC.to_vec();
+    put(&mut m, tables::D_FDB_PORT, &idx, Value::Integer(5));
+    idx = vec![0, 0x1b, 0x2c, 0, 0, 2];
+    put(&mut m, tables::D_FDB_PORT, &idx, Value::Integer(5));
+    put(&mut m, tables::D_FDB_STATUS, &idx, Value::Integer(4));
+    // 舊表的 ARP
+    put(
+        &mut m,
+        tables::IP_NET_TO_MEDIA,
+        &[1, 10, 0, 0, 5],
+        Value::OctetString(Bytes::from(PC.map(|b| b as u8).to_vec())),
+    );
     m
 }
 
@@ -150,7 +214,10 @@ impl Drop for FakeSwitch {
 }
 
 async fn fake_switch() -> FakeSwitch {
-    let all = switch_mib();
+    fake_switch_with(switch_mib(), &[]).await
+}
+
+async fn fake_switch_with(all: BTreeMap<Oid, Value>, communities: &[&str]) -> FakeSwitch {
     let lldp = Oid::from_slice(&[1, 0, 8802]);
     let (l, rest): (BTreeMap<_, _>, BTreeMap<_, _>) =
         all.into_iter().partition(|(o, _)| o.starts_with(&lldp));
@@ -158,9 +225,11 @@ async fn fake_switch() -> FakeSwitch {
         Ok::<(), std::convert::Infallible>(())
     })
     .unwrap();
-    let agent = Agent::builder()
-        .bind("127.0.0.1:0")
-        .community(b"public")
+    let mut b = Agent::builder().bind("127.0.0.1:0").community(b"public");
+    for c in communities {
+        b = b.community(c.as_bytes().to_vec());
+    }
+    let agent = b
         .authoritative_engine(engine)
         .usm_user("mon-sha1", |u| {
             u.auth_priv(
@@ -354,6 +423,72 @@ async fn wrong_credentials_are_explained() {
     assert!(d.error.unwrap().contains("已中止"));
 }
 
+#[tokio::test]
+async fn polls_mac_and_arp_tables() {
+    let sw = fake_switch().await;
+    for cred in [
+        v2c("public"),
+        v3(
+            "mon-sha256",
+            SnmpAuthProtocol::Sha256,
+            SnmpPrivProtocol::Aes128,
+            "authpass123",
+        ),
+    ] {
+        let d = collect::poll(&target(7, sw.port, cred), NetPollKind::Tables, &fast()).await;
+        assert_eq!(d.error, None);
+        assert_eq!((d.device_id, d.kind), (7, NetPollKind::Tables));
+        assert!(d.system.is_none() && d.interfaces.is_empty());
+        assert_eq!(d.fdb.len(), 14);
+        let pc = d.fdb.iter().find(|e| e.mac == "00:1b:2c:00:00:01").unwrap();
+        assert_eq!((pc.if_index, pc.vlan), (1, Some(10)));
+        assert_eq!(d.fdb.iter().filter(|e| e.if_index == 3).count(), 12);
+        assert_eq!(d.arp.len(), 2);
+        assert!(
+            d.arp
+                .iter()
+                .any(|a| a.ip == "10.0.0.9" && a.mac == "00:00:0c:11:22:33")
+        );
+    }
+    // 連不到：錯誤說明
+    let d = collect::poll(
+        &target(7, sw.port, v2c("wrong")),
+        NetPollKind::Tables,
+        &fast(),
+    )
+    .await;
+    assert!(d.error.unwrap().starts_with("逾時"));
+}
+
+#[tokio::test]
+async fn cisco_per_vlan_mac_table() {
+    let sw = fake_switch_with(cisco_mib(), &["public@10", "public@20"]).await;
+    let mut t = target(9, sw.port, v2c("public"));
+    let d = collect::poll(&t, NetPollKind::Tables, &fast()).await;
+    assert_eq!(d.error, None);
+    // 1002 是保留 VLAN 不查；status 4（設備自己）不算
+    let mut got: Vec<(String, u32, Option<u32>)> = d
+        .fdb
+        .iter()
+        .map(|e| (e.mac.clone(), e.if_index, e.vlan))
+        .collect();
+    got.sort();
+    assert_eq!(
+        got,
+        vec![
+            ("00:1b:2c:00:00:01".into(), 10105, Some(10)),
+            ("00:1b:2c:00:00:01".into(), 10105, Some(20)),
+        ]
+    );
+    assert_eq!(d.arp.len(), 1);
+    assert_eq!(d.arp[0].ip, "10.0.0.5");
+    // 關閉逐 VLAN 查詢：直接查 BRIDGE-MIB，不知道 VLAN
+    t.cisco_vlan = CiscoVlanMode::Off;
+    let d = collect::poll(&t, NetPollKind::Tables, &fast()).await;
+    assert_eq!(d.fdb.len(), 1);
+    assert_eq!(d.fdb[0].vlan, None);
+}
+
 async fn wait_for<F, Fut>(mut f: F)
 where
     F: FnMut() -> Fut,
@@ -417,6 +552,22 @@ async fn cache_polls_devices_and_central_stores_results(pool: PgPool) {
         .await
         .unwrap();
 
+    // 一台裝了 Agent 的電腦，網卡 MAC 是 PC（Agent 回報大寫）
+    common::device(&e).await;
+    let endpoint: uuid::Uuid = sqlx::query_scalar("SELECT id FROM devices LIMIT 1")
+        .fetch_one(&e.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO device_network (device_id, data) VALUES ($1, \
+         '{\"interfaces\":[{\"name\":\"eth0\",\"kind\":\"ethernet\",\"up\":true,\
+           \"mac\":\"00:1B:2C:00:00:01\",\"addresses\":[],\"gateways\":[],\"dns\":[]}]}')",
+    )
+    .bind(endpoint)
+    .execute(&e.pool)
+    .await
+    .unwrap();
+
     let (_stop_tx, stop) = watch::channel(false);
     let cache = endpoint_cache::run::Cache::start(dir.path(), stop.clone())
         .await
@@ -448,13 +599,14 @@ async fn cache_polls_devices_and_central_stores_results(pool: PgPool) {
     wait_for(|| {
         let pool = pool.clone();
         async move {
-            let n: i64 = sqlx::query_scalar(
-                "SELECT count(*) FROM net_devices WHERE last_polled_at IS NOT NULL",
+            let (n, locs): (i64, i64) = sqlx::query_as(
+                "SELECT (SELECT count(*) FROM net_devices WHERE last_polled_at IS NOT NULL), \
+                        (SELECT count(*) FROM endpoint_locations)",
             )
             .fetch_one(&pool)
             .await
             .unwrap();
-            n == 2
+            n == 2 && locs == 1
         }
     })
     .await;
@@ -496,16 +648,54 @@ async fn cache_polls_devices_and_central_stores_results(pool: PgPool) {
     assert!(err.unwrap().starts_with("逾時"));
     assert_eq!(failures, 1);
 
-    // MAC／ARP 表第一期還不處理：接受但不改資料
+    // 電腦的位置：埠 1、VLAN 10
+    let (port, vlan, mac): (String, i32, String) = sqlx::query_as(
+        "SELECT port_name, vlan, mac FROM endpoint_locations WHERE device_id = $1 \
+         AND ended_at IS NULL",
+    )
+    .bind(endpoint)
+    .fetch_one(&e.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        (port.as_str(), vlan, mac.as_str()),
+        ("Gi0/1", 10, "00:1b:2c:00:00:01")
+    );
+    let up: (i32, bool) = sqlx::query_as(
+        "SELECT mac_count, net_port_is_uplink(role, mac_count) FROM net_interfaces \
+         WHERE device_id = $1 AND if_index = 3",
+    )
+    .bind(ok_id)
+    .fetch_one(&e.pool)
+    .await
+    .unwrap();
+    assert_eq!(up, (12, true));
+    // 未管理設備：只有印表機（電腦有 Agent、上行埠的 MAC 不算）
+    let u = netdev::view::unmanaged(&e.pool, None).await.unwrap();
+    assert_eq!(u.len(), 1, "{u:?}");
+    assert_eq!(u[0].mac, "00:00:0c:11:22:33");
+    assert_eq!(u[0].ip.as_deref(), Some("10.0.0.9"));
+    assert_eq!(u[0].port.as_deref(), Some("Gi0/2"));
+    assert!(u[0].vendor.is_some_and(|v| v.contains("Cisco")));
+    let loc = netdev::view::endpoint_location(&e.pool, endpoint)
+        .await
+        .unwrap();
+    assert_eq!(loc.current.len(), 1);
+    assert!(loc.current[0].last_seen.is_some());
+    assert!(loc.via_uplink.is_none());
+
+    // MAC 表那一輪失敗也算一次失敗
     cache
         .state
         .central
         .netdata(&protocol::netdev::NetData {
             device_id: ok_id,
-            kind: protocol::netdev::NetPollKind::Tables,
+            kind: NetPollKind::Tables,
             error: Some("x".into()),
             system: None,
             interfaces: vec![],
+            fdb: vec![],
+            arp: vec![],
         })
         .await
         .unwrap();
@@ -515,7 +705,7 @@ async fn cache_polls_devices_and_central_stores_results(pool: PgPool) {
             .fetch_one(&e.pool)
             .await
             .unwrap();
-    assert_eq!(failures, 0);
+    assert_eq!(failures, 1);
 
     // 據點沒有這台設備的快取不能上傳
     let other_site = common::site(&e, "10.99.0.0/16").await;
@@ -534,6 +724,8 @@ async fn cache_polls_devices_and_central_stores_results(pool: PgPool) {
             error: Some("x".into()),
             system: None,
             interfaces: vec![],
+            fdb: vec![],
+            arp: vec![],
         })
         .await;
     assert!(matches!(

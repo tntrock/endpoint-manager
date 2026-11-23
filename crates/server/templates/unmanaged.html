@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block content %}
+<div class="page-head">
+  <div><h1>網路設備{% call m::help_btn("unmanaged", "未管理設備") %}{% endcall %}</h1><div class="sub">交換器與路由器上看得到、但沒有裝 Agent 的設備（24 小時內）</div></div>
+</div>
+{% call m::netdev_tabs("unmanaged") %}{% endcall %}
+{% if saved %}<div class="notice ok" role="status">已標記為已知，不會再列在這裡。</div>{% endif %}
+{% if let Some(e) = error %}<div class="notice error" role="alert">{{ e }}</div>{% endif %}
+<form class="row" method="get" action="/netdevices/unmanaged" aria-label="篩選">
+  <label class="field">據點 <select name="site"><option value="">全部</option>{% for o in sites %}<option value="{{ o.id }}"{% if site_selected(o.id) %} selected{% endif %}>{{ o.name }}</option>{% endfor %}</select></label>
+  <label class="field">MAC、IP 或廠商 <input name="q" value="{{ q }}" size="24"></label>
+  <div class="field"><button class="btn">篩選</button></div>
+</form>
+{% if rows.is_empty() %}{% call m::empty("沒有未管理設備", "MAC 位址表每 5 分鐘查詢一次；需要先在「設備」分頁登錄交換器") %}{% endcall %}{% else %}
+<p class="muted">共 {{ rows.len() }} 台{% if rows.len() != total %}（全部 {{ total }} 台）{% endif %}。</p>
+<table>
+  <tr><th>MAC</th><th>IP</th><th>廠商</th><th>位置</th><th class="num">VLAN</th><th>第一次看到</th><th>最後看到</th><th>標記為已知</th></tr>
+  {% for r in rows %}
+  <tr>
+    <td class="nw"><span class="num">{{ r.mac }}</span>{% if r.is_new %} <span class="tag warn">新</span>{% endif %}</td>
+    <td class="nw"><span class="num">{{ r.ip }}</span></td>
+    <td class="wrap">{% if r.random %}<span class="tag" title="手機、筆電等為了隱私隨機產生的位址，查不到廠商">隨機 MAC</span>{% else %}{{ r.vendor }}{% endif %}</td>
+    <td class="nw">{% if let Some(d) = r.net_device_id %}<a href="/netdevices/{{ d }}">{{ r.where_ }}</a>{% else %}{{ r.where_ }}{% endif %}</td>
+    <td class="num">{{ r.vlan }}</td>
+    <td class="nw"><span class="num">{{ r.first_seen }}</span></td>
+    <td class="nw"><span class="num">{{ r.last_seen }}</span></td>
+    <td class="nw"><form class="inline" method="post" action="/netdevices/unmanaged/known">
+      <input type="hidden" name="csrf" value="{{ nav.csrf }}">
+      <input type="hidden" name="mac" value="{{ r.mac }}">
+      {% if let Some(d) = r.net_device_id %}<input type="hidden" name="net_device_id" value="{{ d }}">{% endif %}
+      <input type="hidden" name="if_index" value="{{ r.if_index }}">
+      <select name="kind" aria-label="範圍">
+        <option value="mac">這個 MAC</option>
+        {% if !r.random %}<option value="oui">同廠牌</option>{% endif %}
+        {% if !r.if_index.is_empty() %}<option value="port">這個埠</option>{% endif %}
+      </select>
+      <input name="note" placeholder="說明，例如 3F 印表機" size="16" required maxlength="200" aria-label="說明">
+      <button class="btn sm">標記</button></form></td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+{% call m::help_box("unmanaged", "未管理設備") %}
+<ul>
+<li>列出 24 小時內出現在交換器<b>端點埠</b>的 MAC 位址表，或據點網段內的 ARP 表，但不是任何使用中電腦的網卡、也不是網路設備本身的位址。</li>
+<li>常見的是印表機、IP 電話、門禁、監視器，以及訪客或私人的設備。確認過的設備可以標記為已知：
+  <ul><li><b>這個 MAC</b>：只排除這一台。</li><li><b>同廠牌</b>：排除 MAC 前 6 碼相同的所有設備，例如全公司同一款印表機。</li><li><b>這個埠</b>：排除這個交換器埠上的所有設備，例如會議室或刻意開放給訪客的埠。</li></ul></li>
+<li>「只在 ARP 表」表示交換器的 MAC 位址表沒看到它（可能接在沒有登錄的交換器或 AP 下面），只有路由器知道它的 IP。</li>
+<li>標記為已知不會影響其他功能，可以在「已知設備」分頁取消。</li>
+</ul>
+{% endcall %}
+{% endblock %}
