@@ -668,6 +668,10 @@ pub struct DeviceView {
     pub seen_ago: String,
     /// 這台是虛擬機：執行於哪台主機（連結（範圍外為空）、主機名稱、虛擬機名稱）
     pub vm_host: Option<(String, String, String)>,
+    /// 這台是 WSL：執行於哪台 Windows（連結（範圍外為空）、主機名稱）
+    pub wsl_host: Option<(String, String)>,
+    /// 這台是 Windows：裡面配對到的 WSL（連結（範圍外為空）、發行版名稱）
+    pub wsl_guests: Vec<(String, String)>,
 }
 
 #[derive(Template)]
@@ -838,6 +842,16 @@ pub async fn detail(
                 .unwrap_or_default(),
             runs_in_hint: runs_in_hint(runs_in.as_deref()),
             vm_host: super::vms::host_of(&st, &s, id).await?,
+            wsl_host: if runs_in.as_deref() == Some("wsl") {
+                super::vms::wsl_host_of(&st, &s, id).await?
+            } else {
+                None
+            },
+            wsl_guests: if linux {
+                vec![]
+            } else {
+                super::vms::wsl_guests_of(&st, &s, id).await?
+            },
         },
         tabs: tabs_for(
             &os_family,
