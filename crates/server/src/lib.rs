@@ -273,6 +273,8 @@ pub async fn serve(cfg: config::Config) -> anyhow::Result<()> {
             tracing::warn!(var, path = %p.display(), "agent installer file not found");
         }
     }
+    let ouis = netdev::oui::init(cfg.oui_file.as_deref())?;
+    tracing::info!(entries = ouis, "MAC vendor list loaded");
     let tls_cfg = tls::server_config(&cfg.ca_dir)?;
 
     let hb = state.heartbeat.clone();

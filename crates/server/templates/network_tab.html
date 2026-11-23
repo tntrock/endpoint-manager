@@ -17,6 +17,34 @@
 </table>
 <p class="muted">資料時間：{{ updated }}。「對外」是有預設閘道的實體網卡；VPN 與虛擬網卡不算。{% if !has_sites %}尚未設定據點網段，只依「兩張以上網卡都有預設閘道」判斷多重連線。{% endif %}</p>
 {% endif %}
+<h2>網路位置</h2>
+{% if locations.is_empty() %}<p class="muted">交換器上沒有看到這台電腦。需要在「網路設備」登錄它所在據點的交換器，並由該據點的快取主機查詢 MAC 位址表。</p>{% else %}
+<table>
+  <tr><th>交換器</th><th>連接埠</th><th class="num">VLAN</th><th>網卡 MAC</th><th>從</th><th>最後看到</th></tr>
+  {% for l in locations %}<tr>
+    <td class="nw">{% if links %}{% if let Some(d) = l.net_device_id %}<a href="/netdevices/{{ d }}">{{ l.net_device }}</a>{% else %}{{ l.net_device }}{% endif %}{% else %}{{ l.net_device }}{% endif %}</td>
+    <td class="nw">{{ l.port }}{% if l.via_uplink %} <span class="tag warn" title="這個埠是上行埠：電腦接在下游沒有登錄的交換器或 AP">經由上行埠</span>{% endif %}</td>
+    <td class="num">{{ l.vlan }}</td>
+    <td class="nw"><span class="num">{{ l.mac }}</span></td>
+    <td class="nw"><span class="num">{{ l.since }}</span></td>
+    <td class="nw"><span class="num">{{ l.last_seen }}</span></td>
+  </tr>{% endfor %}
+</table>
+{% endif %}
+{% if history.len() > 1 %}
+<details class="fold"><summary><h2>位置紀錄</h2></summary>
+<table>
+  <tr><th>交換器</th><th>連接埠</th><th class="num">VLAN</th><th>網卡 MAC</th><th>從</th><th>到</th></tr>
+  {% for l in history %}<tr>
+    <td class="nw">{{ l.net_device }}</td><td class="nw">{{ l.port }}</td><td class="num">{{ l.vlan }}</td>
+    <td class="nw"><span class="num">{{ l.mac }}</span></td>
+    <td class="nw"><span class="num">{{ l.since }}</span></td>
+    <td class="nw">{% if l.until.is_empty() %}<span class="tag ok">目前</span>{% else %}<span class="num">{{ l.until }}</span>{% endif %}</td>
+  </tr>{% endfor %}
+</table>
+<p class="muted">只列出最近 20 段，保留 365 天。</p>
+</details>
+{% endif %}
 <h2>多重連線紀錄</h2>
 {% if periods.is_empty() %}<p class="muted">沒有紀錄。Agent 會在本機監看網卡變化，短暫插上又拔掉的網卡也記得到（需要 Agent 0.12.0 以上）。</p>{% else %}
 <table>

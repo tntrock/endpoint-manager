@@ -89,6 +89,61 @@ struct NetworkTab {
     dual_homed: Option<String>,
     has_sites: bool,
     nics: Vec<NicRow>,
+    /// 交換器上看到的位置
+    locations: Vec<LocationRow>,
+    history: Vec<LocationRow>,
+    /// 平台管理員才連到網路設備頁
+    links: bool,
+}
+
+pub struct LocationRow {
+    pub net_device_id: Option<i64>,
+    pub net_device: String,
+    pub port: String,
+    pub vlan: String,
+    pub mac: String,
+    pub since: String,
+    pub until: String,
+    pub last_seen: String,
+    /// 只在上行埠看到（下游有未登錄的交換器或 AP）
+    pub via_uplink: bool,
+}
+
+fn location_row(st: &AppState, l: crate::netdev::view::Location, via_uplink: bool) -> LocationRow {
+    LocationRow {
+        net_device_id: l.net_device_id,
+        net_device: l.net_device,
+        port: l.port,
+        vlan: if l.vlan > 0 {
+            l.vlan.to_string()
+        } else {
+            "—".into()
+        },
+        mac: l.mac,
+        since: fmt_time(st, Some(l.since)),
+        until: l.until.map(|u| fmt_time(st, Some(u))).unwrap_or_default(),
+        last_seen: fmt_time(st, l.last_seen),
+        via_uplink,
+    }
+}
+
+async fn locations(
+    st: &AppState,
+    id: Uuid,
+) -> Result<(Vec<LocationRow>, Vec<LocationRow>), sqlx::Error> {
+    let v = crate::netdev::view::endpoint_location(&st.pool, id).await?;
+    let mut current: Vec<LocationRow> = v
+        .current
+        .into_iter()
+        .map(|l| location_row(st, l, false))
+        .collect();
+    current.extend(v.via_uplink.map(|l| location_row(st, l, true)));
+    let history = v
+        .history
+        .into_iter()
+        .map(|l| location_row(st, l, false))
+        .collect();
+    Ok((current, history))
 }
 
 pub fn kind_label(kind: &str) -> &'static str {
@@ -135,7 +190,8 @@ fn row(i: NetInterface, sites: &[SiteNets], involved: &[&str]) -> NicRow {
     }
 }
 
-pub async fn device_tab(st: &AppState, id: Uuid) -> Result<Response, AppError> {
+pub async fn device_tab(st: &AppState, links: bool, id: Uuid) -> Result<Response, AppError> {
+    let (locations, history) = locations(st, id).await?;
     let data: Option<(serde_json::Value, time::OffsetDateTime)> =
         sqlx::query_as("SELECT data, updated_at FROM device_network WHERE device_id = $1")
             .bind(id)
@@ -153,6 +209,9 @@ pub async fn device_tab(st: &AppState, id: Uuid) -> Result<Response, AppError> {
             dual_homed: None,
             has_sites: false,
             nics: vec![],
+            locations,
+            history,
+            links,
         }));
     };
     let sites = load_sites(&st.pool).await?;
@@ -174,6 +233,9 @@ pub async fn device_tab(st: &AppState, id: Uuid) -> Result<Response, AppError> {
         dual_homed: dh.as_ref().map(|d| d.describe()),
         has_sites: !sites.is_empty(),
         nics: rows,
+        locations,
+        history,
+        links,
     }))
 }
 

@@ -40,6 +40,14 @@
 </nav>
 {% endmacro %}
 
+{% macro netdev_tabs(on) %}
+<nav class="tabs" aria-label="網路設備">
+  <a href="/netdevices"{% if on == "devices" %} class="on" aria-current="page"{% endif %}>設備</a>
+  <a href="/netdevices/unmanaged"{% if on == "unmanaged" %} class="on" aria-current="page"{% endif %}>未管理設備</a>
+  <a href="/netdevices/known"{% if on == "known" %} class="on" aria-current="page"{% endif %}>已知設備</a>
+</nav>
+{% endmacro %}
+
 {% macro help_btn(key, title) %}<button type="button" class="help-btn" popovertarget="help-{{ key }}" aria-label="說明：{{ title }}">?</button>{% endmacro %}
 
 {% macro help_box(key, title) %}

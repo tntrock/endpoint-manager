@@ -15,6 +15,7 @@ use super::{fmt_time, not_found, render};
 use crate::AppState;
 use crate::netdev::{self, CredentialInput, DeviceInput, UNREACHABLE_AFTER};
 use crate::network::duration_label;
+use uuid::Uuid;
 
 /// 設備狀態：(色調, 文字)
 pub fn device_state(
@@ -511,17 +512,39 @@ pub async fn poll_device(
 // ---------- 設備詳情 ----------
 
 pub struct PortRow {
+    pub if_index: i64,
     pub name: String,
     pub alias: String,
     pub tone: &'static str,
     pub state: &'static str,
     pub speed: String,
     pub vlan: String,
-    pub mac: String,
     pub uplink: bool,
-    pub role_manual: bool,
+    /// "auto" | "edge" | "uplink"（表單的選項）
+    pub role: &'static str,
+    /// 為什麼是上行埠
+    pub uplink_why: &'static str,
     pub neighbor: String,
+    pub endpoints: Vec<(Uuid, String)>,
+    pub mac_count: i32,
     pub last_change: String,
+}
+
+/// (表單的角色, 是否上行, 原因)
+pub fn port_role(role: &str, mac_count: i32, uplink: bool) -> (&'static str, &'static str) {
+    let form = match role {
+        "edge" => "edge",
+        "uplink" => "uplink",
+        _ => "auto",
+    };
+    let why = match (uplink, role) {
+        (false, _) => "",
+        (true, "uplink") => "管理員指定",
+        (true, "auto_uplink") => "依 LLDP 鄰居判斷",
+        (true, _) if mac_count >= 10 => "同時有 10 個以上 MAC",
+        (true, _) => "上行",
+    };
+    (form, why)
 }
 
 #[derive(Template)]
@@ -539,12 +562,15 @@ struct DetailPage {
     last_error: Option<String>,
     ports: Vec<PortRow>,
     polling: bool,
+    role_saved: bool,
 }
 
 #[derive(Deserialize, Default)]
 pub struct DetailQuery {
     #[serde(default)]
     polling: bool,
+    #[serde(default)]
+    role_saved: bool,
 }
 
 /// 介面狀態：(色調, 文字)
@@ -605,18 +631,21 @@ struct DetailRow {
     firmware: Option<String>,
 }
 
-type PortDbRow = (
-    String,
-    String,
-    bool,
-    bool,
-    Option<i64>,
-    Option<i32>,
-    Option<String>,
-    String,
-    serde_json::Value,
-    Option<time::OffsetDateTime>,
-);
+#[derive(sqlx::FromRow)]
+struct PortDbRow {
+    if_index: i64,
+    name: String,
+    alias: String,
+    admin_up: bool,
+    oper_up: bool,
+    speed_mbps: Option<i64>,
+    pvid: Option<i32>,
+    role: String,
+    mac_count: i32,
+    uplink: bool,
+    lldp: serde_json::Value,
+    last_change_at: Option<time::OffsetDateTime>,
+}
 
 pub async fn detail(
     State(st): State<AppState>,
@@ -683,33 +712,39 @@ pub async fn detail(
         ("系統描述", dash(sys_descr)),
     ];
     let ports: Vec<PortDbRow> = sqlx::query_as(
-        "SELECT name, alias, admin_up, oper_up, speed_mbps, pvid, mac, role, lldp, last_change_at \
+        "SELECT if_index, name, alias, admin_up, oper_up, speed_mbps, pvid, role, mac_count, \
+                net_port_is_uplink(role, mac_count) AS uplink, lldp, last_change_at \
          FROM net_interfaces WHERE device_id = $1 ORDER BY if_index",
     )
     .bind(id)
     .fetch_all(&st.pool)
     .await
     .map_err(db_error)?;
+    let mut endpoints = netdev::view::port_endpoints(&st.pool, id)
+        .await
+        .map_err(db_error)?;
     let ports = ports
         .into_iter()
-        .map(
-            |(pname, alias, admin, oper, speed, pvid, mac, role, lldp, changed)| {
-                let (tone, state) = port_state(admin, oper);
-                PortRow {
-                    name: pname,
-                    alias,
-                    tone,
-                    state,
-                    speed: speed_label(speed),
-                    vlan: pvid.map(|v| v.to_string()).unwrap_or_else(|| "—".into()),
-                    mac: mac.unwrap_or_else(|| "—".into()),
-                    uplink: role.ends_with("uplink"),
-                    role_manual: !role.starts_with("auto_"),
-                    neighbor: neighbor_label(&lldp),
-                    last_change: fmt_time(&st, changed),
-                }
-            },
-        )
+        .map(|p| {
+            let (tone, state) = port_state(p.admin_up, p.oper_up);
+            let (role, uplink_why) = port_role(&p.role, p.mac_count, p.uplink);
+            PortRow {
+                if_index: p.if_index,
+                name: p.name,
+                alias: p.alias,
+                tone,
+                state,
+                speed: speed_label(p.speed_mbps),
+                vlan: p.pvid.map(|v| v.to_string()).unwrap_or_else(|| "—".into()),
+                uplink: p.uplink,
+                role,
+                uplink_why,
+                neighbor: neighbor_label(&p.lldp),
+                endpoints: endpoints.remove(&p.if_index).unwrap_or_default(),
+                mac_count: p.mac_count,
+                last_change: fmt_time(&st, p.last_change_at),
+            }
+        })
         .collect();
     Ok(render(&DetailPage {
         nav: Nav::new(&s, "netdevices"),
@@ -728,7 +763,30 @@ pub async fn detail(
         last_error,
         ports,
         polling: q.polling,
+        role_saved: q.role_saved,
     }))
+}
+
+#[derive(Deserialize, Default)]
+pub struct RoleForm {
+    #[serde(default)]
+    csrf: String,
+    #[serde(default)]
+    role: String,
+}
+
+pub async fn set_port_role(
+    State(st): State<AppState>,
+    AdminSession(s): AdminSession,
+    Path((id, if_index)): Path<(i64, i64)>,
+    Form(f): Form<RoleForm>,
+) -> Result<Response, Response> {
+    check_csrf(&s, &f.csrf)?;
+    platform(&s)?;
+    netdev::view::set_port_role(&st.pool, id, if_index, &f.role, &s.username)
+        .await
+        .map_err(command_error)?;
+    Ok(Redirect::to(&format!("/netdevices/{id}?role_saved=true#port-{if_index}")).into_response())
 }
 
 // ---------- SNMP 帳密 ----------
@@ -972,6 +1030,22 @@ mod tests {
             device_state(true, true, true, false, 5),
             ("bad", "從未成功".into())
         );
+    }
+
+    #[test]
+    fn roles() {
+        assert_eq!(port_role("auto_edge", 3, false), ("auto", ""));
+        assert_eq!(
+            port_role("auto_edge", 12, true),
+            ("auto", "同時有 10 個以上 MAC")
+        );
+        assert_eq!(
+            port_role("auto_uplink", 0, true),
+            ("auto", "依 LLDP 鄰居判斷")
+        );
+        assert_eq!(port_role("uplink", 0, true), ("uplink", "管理員指定"));
+        assert_eq!(port_role("edge", 50, false), ("edge", ""));
+        assert_eq!(port_role("edge", 0, true), ("edge", "上行"));
     }
 
     #[test]

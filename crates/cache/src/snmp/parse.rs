@@ -67,14 +67,14 @@ pub fn text(v: &Value) -> String {
     }
 }
 
-fn dotted(arcs: &[u32]) -> String {
+pub(crate) fn dotted(arcs: &[u32]) -> String {
     arcs.iter()
         .map(u32::to_string)
         .collect::<Vec<_>>()
         .join(".")
 }
 
-fn bytes(v: &Value) -> &[u8] {
+pub(crate) fn bytes(v: &Value) -> &[u8] {
     match v {
         Value::OctetString(b) => b,
         _ => &[],
@@ -82,7 +82,7 @@ fn bytes(v: &Value) -> &[u8] {
 }
 
 /// 整數類的值（INTEGER、Gauge、Counter、TimeTicks）
-fn num(v: &Value) -> Option<u64> {
+pub(crate) fn num(v: &Value) -> Option<u64> {
     match v {
         Value::Integer(i) => u64::try_from(*i).ok(),
         _ => v.as_u64(),

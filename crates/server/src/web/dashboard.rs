@@ -521,6 +521,16 @@ async fn todo(st: &AppState, s: &Session, pending: i64) -> Result<Vec<TodoItem>,
                 href: "/netdevices?status=down".into(),
             });
         }
+        let fresh = crate::netdev::view::new_unmanaged(&st.pool).await?;
+        if fresh > 0 {
+            out.push(TodoItem {
+                severity: "low",
+                title: "新出現的未管理設備".into(),
+                detail: "24 小時內，網路上有但沒裝 Agent",
+                count: fresh,
+                href: "/netdevices/unmanaged".into(),
+            });
+        }
     }
     if pending > 0 {
         out.push(TodoItem {

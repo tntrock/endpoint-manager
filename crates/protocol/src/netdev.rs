@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 
 /// 單台設備一次上傳最多幾個介面（超過的部分捨棄）
 pub const MAX_INTERFACES: usize = 10_000;
+/// 單台設備一次上傳最多幾筆 MAC 位址表或 ARP 表（超過的部分捨棄）
+pub const MAX_TABLE_ENTRIES: usize = 200_000;
 /// 一份工作最多幾台設備
 pub const MAX_TARGETS: usize = 5_000;
 
@@ -161,6 +163,22 @@ pub struct NetInterface {
     pub lldp: Vec<LldpNeighbor>,
 }
 
+/// MAC 位址表的一筆：這個 MAC 從哪個埠學到
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FdbEntry {
+    pub mac: String,
+    pub if_index: u32,
+    pub vlan: Option<u32>,
+}
+
+/// ARP（或 IPv6 鄰居）表的一筆
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArpEntry {
+    pub ip: String,
+    pub mac: String,
+    pub if_index: Option<u32>,
+}
+
 /// 快取上傳一台設備一輪的查詢結果（`POST /v1/cache/netdata`）
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NetData {
@@ -173,6 +191,12 @@ pub struct NetData {
     pub system: Option<NetSystem>,
     #[serde(default)]
     pub interfaces: Vec<NetInterface>,
+    /// MAC 位址表（`tables` 輪）
+    #[serde(default)]
+    pub fdb: Vec<FdbEntry>,
+    /// ARP 表（`tables` 輪）
+    #[serde(default)]
+    pub arp: Vec<ArpEntry>,
 }
 
 /// MAC 位址的標準寫法：小寫、冒號分隔；長度不是 6 位元組時回 None
@@ -247,6 +271,7 @@ mod tests {
         let d: NetData = serde_json::from_str(r#"{"device_id":3,"kind":"system"}"#).unwrap();
         assert_eq!(d.error, None);
         assert!(d.system.is_none() && d.interfaces.is_empty());
+        assert!(d.fdb.is_empty() && d.arp.is_empty());
         let d = NetData {
             device_id: 3,
             kind: NetPollKind::System,
@@ -268,6 +293,16 @@ mod tests {
                 pvid: Some(10),
                 last_change_secs_ago: None,
                 lldp: vec![],
+            }],
+            fdb: vec![FdbEntry {
+                mac: "00:1b:2c:3d:4e:5f".into(),
+                if_index: 1,
+                vlan: Some(10),
+            }],
+            arp: vec![ArpEntry {
+                ip: "10.0.0.5".into(),
+                mac: "00:1b:2c:3d:4e:5f".into(),
+                if_index: None,
             }],
         };
         let back: NetData = serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();

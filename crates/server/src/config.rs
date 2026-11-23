@@ -34,6 +34,8 @@ pub struct Config {
     pub oidc: Option<crate::oidc::OidcConfig>,
     /// 資料庫裡機密（SNMP 帳密）的加密金鑰檔（`EM_SECRET_KEY_FILE`）；None 表示不能保存帳密
     pub secret_key_file: Option<PathBuf>,
+    /// IEEE 的 oui.csv（`EM_OUI_FILE`）；None 表示用內建的廠商清單
+    pub oui_file: Option<PathBuf>,
 }
 
 impl Config {
@@ -85,6 +87,9 @@ impl Config {
                 .map(PathBuf::from),
             agent_public_url: get("EM_AGENT_PUBLIC_URL").unwrap_or_default(),
             webhook_secret: get("EM_WEBHOOK_SECRET").filter(|s| !s.is_empty()),
+            oui_file: get("EM_OUI_FILE")
+                .filter(|s| !s.trim().is_empty())
+                .map(PathBuf::from),
             secret_key_file: get("EM_SECRET_KEY_FILE")
                 .filter(|s| !s.trim().is_empty())
                 .map(PathBuf::from),
@@ -167,6 +172,13 @@ mod tests {
             .secret_key_file
         };
         assert_eq!(with(" "), None, "空白視為未設定");
+        let oui = Config::from_lookup(|k| match k {
+            "DATABASE_URL" => Some("postgres://x".into()),
+            "EM_OUI_FILE" => Some("/data/oui.csv".into()),
+            _ => None,
+        })
+        .unwrap();
+        assert_eq!(oui.oui_file, Some(PathBuf::from("/data/oui.csv")));
         assert_eq!(
             with("/run/secrets/em.key"),
             Some(PathBuf::from("/run/secrets/em.key"))

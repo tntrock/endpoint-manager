@@ -271,6 +271,29 @@ pub async fn events(
         tab: Some("network"),
     }));
 
+    // 交換器 MAC 位址表上看到的位置（網路設備第二期）
+    let locs: Vec<(OffsetDateTime, String, String, i32, String)> = sqlx::query_as(
+        "SELECT started_at, net_device_name, port_name, vlan, mac FROM endpoint_locations \
+         WHERE device_id = $1 AND started_at < $2 ORDER BY started_at DESC LIMIT $3",
+    )
+    .bind(id)
+    .bind(before)
+    .bind(LIMIT)
+    .fetch_all(&st.pool)
+    .await?;
+    full(locs.len(), locs.last().map(|r| r.0));
+    out.extend(locs.into_iter().map(|(at, dev, port, vlan, mac)| Event {
+        at,
+        kind: "info",
+        title: format!("網路位置：{dev} {port}"),
+        detail: if vlan > 0 {
+            format!("VLAN {vlan}，網卡 {mac}")
+        } else {
+            format!("網卡 {mac}")
+        },
+        tab: Some("network"),
+    }));
+
     let audit: Vec<(OffsetDateTime, String, String)> = sqlx::query_as(
         "SELECT at, actor, action FROM audit_log WHERE target = $1 AND at < $2 \
          ORDER BY at DESC LIMIT $3",

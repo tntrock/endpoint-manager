@@ -35,6 +35,7 @@ pub mod software;
 pub mod sort;
 pub mod timeline;
 pub mod tokens;
+pub mod unmanaged;
 pub mod updates;
 pub mod vms;
 
@@ -274,6 +275,17 @@ pub fn web_router(state: AppState) -> Router {
         .route("/netdevices/{id}/edit", get(netdevices::edit_device))
         .route("/netdevices/{id}/delete", post(netdevices::delete_device))
         .route("/netdevices/{id}/poll", post(netdevices::poll_device))
+        .route(
+            "/netdevices/{id}/ports/{if_index}/role",
+            post(netdevices::set_port_role),
+        )
+        .route("/netdevices/unmanaged", get(unmanaged::list))
+        .route("/netdevices/unmanaged/known", post(unmanaged::add_known))
+        .route("/netdevices/known", get(unmanaged::known))
+        .route(
+            "/netdevices/known/{id}/delete",
+            post(unmanaged::delete_known),
+        )
         .route("/sites", get(sites::list).post(sites::create))
         .route("/sites/new", get(sites::new_form))
         .route("/sites/{id}", post(sites::update))

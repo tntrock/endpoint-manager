@@ -239,6 +239,14 @@ MAC 出現在上行埠，不代表設備就接在那裡。符合下列任一條�
 - v3 authPriv 的各種演算法組合，改用 `async-snmp` 內建的 agent 在測試裡驗證，不需要另外的 CI 工作。
 - **展示環境**：`emdemo` 塞入幾台交換器、埠與未管理設備，讓網頁有東西可看。
 
+## 10.1 第二期實作時的決定
+
+- 電腦的網卡 MAC 由 `device_network` 的觸發器同步到 `device_macs`，比對時不用每次展開 JSON。
+- `net_interfaces.mac_count` 記這個埠上一輪學到幾個 MAC；上行埠的判斷寫成 SQL 函式 `net_port_is_uplink(role, mac_count)`，查詢與存檔共用。
+- 自動判斷的 LLDP 上行埠不把「IP 電話」算進去（電話內建小交換器，也會宣告 bridge）。
+- 「搜尋 MAC 或 IP 也找到網路設備與未管理設備」先只做在未管理設備頁的篩選（MAC、IP、廠商），頂端的全站搜尋之後再加。
+- 廠商清單：伺服器內建一份從 IEEE `oui.csv` 整理的精簡清單（約 4 萬筆，壓縮後約 390 KB）；`EM_OUI_FILE` 可以指定新版的 `oui.csv`。
+
 ## 11. 分期
 
 1. **設備與系統資訊**：
