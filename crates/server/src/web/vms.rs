@@ -214,14 +214,58 @@ pub async fn host_of(
     .bind(id)
     .fetch_optional(&st.pool)
     .await?;
-    Ok(row.map(|(host, name, group, vm)| {
-        let href = if s.in_scope(group) {
-            format!("/devices/{host}")
-        } else {
-            String::new()
-        };
-        (href, name, vm)
-    }))
+    Ok(row.map(|(host, name, group, vm)| (scoped_href(s, host, group), name, vm)))
+}
+
+/// WSL 裝置頁的「執行於」：(Windows 主機連結（範圍外為空）、主機名稱)。
+/// 配對條件見 migration 0037 的 `wsl_hosts`
+pub async fn wsl_host_of(
+    st: &AppState,
+    s: &Session,
+    id: Uuid,
+) -> Result<Option<(String, String)>, sqlx::Error> {
+    let row: Option<(Uuid, String, Option<i64>)> = sqlx::query_as(
+        "SELECT h.id, h.hostname, h.group_id FROM wsl_hosts w \
+         JOIN devices h ON h.id = w.host_id WHERE w.wsl_id = $1",
+    )
+    .bind(id)
+    .fetch_optional(&st.pool)
+    .await?;
+    Ok(row.map(|(host, name, group)| (scoped_href(s, host, group), name)))
+}
+
+/// Windows 裝置頁列出裡面的 WSL：(連結（範圍外為空）、發行版名稱)
+pub async fn wsl_guests_of(
+    st: &AppState,
+    s: &Session,
+    id: Uuid,
+) -> Result<Vec<(String, String)>, sqlx::Error> {
+    let rows: Vec<(Uuid, Option<String>, Option<i64>)> = sqlx::query_as(
+        "SELECT d.id, d.os_caption, d.group_id FROM wsl_hosts w \
+         JOIN devices d ON d.id = w.wsl_id WHERE w.host_id = $1 \
+         ORDER BY d.os_caption, d.id",
+    )
+    .bind(id)
+    .fetch_all(&st.pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(wsl, os, group)| {
+            let name = os
+                .filter(|o| !o.is_empty())
+                .unwrap_or_else(|| "Linux".into());
+            (scoped_href(s, wsl, group), name)
+        })
+        .collect())
+}
+
+/// 看得到的裝置才給連結
+fn scoped_href(s: &Session, id: Uuid, group: Option<i64>) -> String {
+    if s.in_scope(group) {
+        format!("/devices/{id}")
+    } else {
+        String::new()
+    }
 }
 
 #[derive(Deserialize)]

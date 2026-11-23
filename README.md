@@ -299,6 +299,7 @@ Agent 會回報自己在哪裡執行，裝置頁與裝置清單會顯示，裝�
 - **WSL**：在 WSL 裡安裝 Linux Agent 即可。WSL 2 啟用 systemd 時 Agent 以服務執行；沒有 systemd 時要自己啟動 Agent。
 - **容器**：不建議把 Agent 裝在應用程式容器（Docker、Kubernetes 的 Pod）裡。容器重建時 Agent 的狀態目錄也會消失，除非 `/var/lib/endpoint-manager` 是持久卷，否則每次重建都會註冊成一台新裝置；裝置頁會提示這一點。請改把 Agent 裝在跑容器的主機上。LXC 這類系統容器有完整的作業系統，可以照一般 Linux 安裝。
 - 容器與 WSL 讀到的 BIOS UUID 與序號屬於所在的主機，所以在容器與 WSL 裡的 Agent 註冊時不送這兩個值，不會被誤判成主機的重新註冊或疑似重複。
+- **WSL 所在的 Windows**：WSL 和某台 Windows 裝置的主機名稱相同（忽略大小寫與網域），而且 WSL 的預設閘道是那台 Windows 的 IP（NAT 模式），或兩邊的 IP 有重疊（鏡像模式、WSL 1），就視為在那台裡面。WSL 的裝置頁顯示「執行於 <Windows>」，Windows 的裝置頁列出裡面的 WSL。Windows 那台也要安裝 0.12.0 以上的 Agent（要有網路資料，WSL 的虛擬網卡只出現在那裡）才對得到。
 
 **主機上的容器**：Linux Agent 會列出主機上的容器，裝置頁出現「容器」分頁（有偵測到容器執行環境才顯示）。
 
