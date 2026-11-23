@@ -711,6 +711,8 @@ pub struct Nav {
     pub manage: bool,
     pub section: &'static str,
     pub version: &'static str,
+    /// 靜態檔網址的 `?v=`（內容雜湊）
+    pub assets: &'static str,
 }
 
 impl Nav {
@@ -724,6 +726,7 @@ impl Nav {
             manage: s.can_manage(),
             section,
             version: env!("CARGO_PKG_VERSION"),
+            assets: super::asset_version(),
         }
     }
 
@@ -737,6 +740,7 @@ impl Nav {
             manage: false,
             section: "",
             version: env!("CARGO_PKG_VERSION"),
+            assets: super::asset_version(),
         }
     }
 }

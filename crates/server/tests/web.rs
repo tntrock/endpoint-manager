@@ -307,6 +307,58 @@ async fn static_assets_served(pool: PgPool) {
             "{path}"
         );
     }
+    // 快取：頁面上的網址帶內容雜湊，可以長期快取；沒帶的（圖示）每次確認，沒變回 304
+    let login = c
+        .get(s.web_url("/login"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    let v = login
+        .split("/static/app.css?v=")
+        .nth(1)
+        .and_then(|r| r.split('"').next())
+        .expect("app.css 要帶 ?v=")
+        .to_string();
+    assert_eq!(v, endpoint_server::web::asset_version());
+    let r = c
+        .get(s.web_url(&format!("/static/app.css?v={v}")))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        r.headers()["cache-control"]
+            .to_str()
+            .unwrap()
+            .contains("immutable")
+    );
+    let r = c
+        .get(s.web_url("/static/app.css?v=old"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.headers()["cache-control"], "no-cache");
+    let r = c.get(s.web_url("/static/icons.svg")).send().await.unwrap();
+    assert_eq!(r.headers()["cache-control"], "no-cache");
+    let etag = r.headers()["etag"].to_str().unwrap().to_string();
+    assert!(etag.contains(&v), "{etag}");
+    let r = c
+        .get(s.web_url("/static/icons.svg"))
+        .header("if-none-match", &etag)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 304);
+    assert!(r.bytes().await.unwrap().is_empty());
+    let r = c
+        .get(s.web_url("/static/icons.svg"))
+        .header("if-none-match", "\"stale\"")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
     let css = c
         .get(s.web_url("/static/app.css"))
         .send()
@@ -337,7 +389,7 @@ async fn static_assets_served(pool: PgPool) {
 #[sqlx::test(migrations = false)]
 async fn static_links_carry_version(pool: PgPool) {
     let s = TestServer::start(pool).await;
-    let v = env!("CARGO_PKG_VERSION");
+    let v = endpoint_server::web::asset_version();
     let (_, login) = s.page(&s.web_client(), "/login").await;
     let admin = s.admin_client().await;
     let (_, home) = s.page(&admin, "/").await;
