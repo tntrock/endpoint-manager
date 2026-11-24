@@ -49,6 +49,8 @@ TPM 金鑰與遠端證明仍留待之後。
 
 ## 4. 擴增錯誤設定（misconfig）偵測
 
+規格：`docs/superpowers/specs/2026-11-24-misconfig-design.md`。分四期：只改伺服器的規則 → 共用 → 對外服務與遠端登入 → 權限過寬與帳號。
+
 現有的「組態基準範本」已經用登錄檔、安全設定涵蓋一部分 Windows 設定（SMBv1、SMB 簽章、LLMNR、NLA、WDigest、匿名列舉、LSA 保護、UAC、自動執行等）。這一項補上目前**看不到**的錯誤設定。
 
 原則：
