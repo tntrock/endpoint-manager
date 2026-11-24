@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head"><div><h1>對外服務</h1><div class="sub">全部裝置上不是只監聽本機的連接埠，依「連接埠＋程式」分組</div></div></div>
+<form class="filters" method="get" action="/exposure">
+  <input name="q" value="{{ q }}" placeholder="連接埠或程式（例如 3306、mysqld）" aria-label="連接埠或程式">
+  <select name="group" aria-label="群組">{% for o in groups %}<option value="{{ o.value }}" {% if o.selected %}selected{% endif %}>{{ o.label }}</option>{% endfor %}</select>
+  <label><input type="checkbox" name="risky" value="true" {% if risky %}checked{% endif %}> 只看高風險服務</label>
+  <button class="btn primary">篩選</button>
+</form>
+{% if rows.is_empty() %}<p class="muted">沒有符合的連接埠。Agent 0.15.0 以上會回報監聽中的連接埠。</p>{% else %}
+<table id="ports">
+  <tr><th class="num">連接埠</th><th>協定</th><th>程式</th><th>服務</th><th class="num">裝置數</th><th class="num">所有介面</th></tr>
+  {% for r in rows %}<tr>
+    <td class="num"><a href="{{ r.url }}">{{ r.port }}</a></td>
+    <td>{{ r.proto }}</td>
+    <td>{% if r.process.is_empty() %}<span class="muted">未知</span>{% else %}<code>{{ r.process }}</code>{% endif %}</td>
+    <td>{% if !r.service.is_empty() %}<span class="tag bad">{{ r.service }}</span>{% endif %}</td>
+    <td class="num">{{ r.hosts }}</td>
+    <td class="num">{{ r.any_hosts }}</td>
+  </tr>{% endfor %}
+</table>
+{% if truncated %}<p class="muted">結果過多，只顯示前 500 列，請縮小篩選範圍。</p>{% endif %}
+{% endif %}
+<p class="muted">「所有介面」是監聽在 <code>0.0.0.0</code> 或 <code>::</code> 的裝置數。標示的服務（Telnet、FTP、VNC、常見資料庫）可以用合規規則「對外開放的服務」檢查。</p>
+{% endblock %}

@@ -5,6 +5,7 @@ pub mod collect;
 pub mod commands;
 pub mod containers;
 pub mod exec;
+pub mod exposure;
 pub mod install;
 pub mod network;
 pub mod oslog;

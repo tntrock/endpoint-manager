@@ -283,6 +283,20 @@ pub async fn load_payload(
                 }
             }
         }
+        Section::Exposure => {
+            let data: serde_json::Value =
+                sqlx::query_scalar("SELECT data FROM device_exposure WHERE device_id = $1")
+                    .bind(device_id)
+                    .fetch_one(&mut *conn)
+                    .await?;
+            match serde_json::from_value(data) {
+                Ok(v) => InventoryPayload::Exposure(v),
+                Err(e) => {
+                    tracing::warn!(%device_id, error = %e, "對外服務區段 jsonb 無法解析，視為無資料");
+                    return Ok(None);
+                }
+            }
+        }
         Section::Shares => {
             let data: serde_json::Value =
                 sqlx::query_scalar("SELECT data FROM device_shares WHERE device_id = $1")
@@ -518,6 +532,16 @@ async fn write_payload(
             )
             .bind(device_id)
             .bind(json(c))
+            .execute(&mut *conn)
+            .await?;
+        }
+        InventoryPayload::Exposure(v) => {
+            sqlx::query(
+                "INSERT INTO device_exposure (device_id, data) VALUES ($1, $2::jsonb) \
+                 ON CONFLICT (device_id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()",
+            )
+            .bind(device_id)
+            .bind(json(v))
             .execute(&mut *conn)
             .await?;
         }

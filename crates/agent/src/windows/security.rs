@@ -192,24 +192,34 @@ unsafe fn wide(p: *const u16) -> String {
 }
 
 fn local_admins() -> anyhow::Result<Vec<AccountInfo>> {
+    group_members(windows_sys::Win32::Security::WinBuiltinAdministratorsSid)
+}
+
+/// Remote Desktop Users 群組的成員（錯誤設定規格 §5.1）
+pub fn remote_desktop_users() -> anyhow::Result<Vec<AccountInfo>> {
+    group_members(windows_sys::Win32::Security::WinBuiltinRemoteDesktopUsersSid)
+}
+
+/// 內建群組的成員；群組以 SID 指定（非英文版 Windows 的群組名稱不同）
+fn group_members(
+    group: windows_sys::Win32::Security::WELL_KNOWN_SID_TYPE,
+) -> anyhow::Result<Vec<AccountInfo>> {
     use windows_sys::Win32::Foundation::{ERROR_MORE_DATA, LocalFree};
     use windows_sys::Win32::NetworkManagement::NetManagement::{
         LOCALGROUP_MEMBERS_INFO_2, MAX_PREFERRED_LENGTH, NetApiBufferFree, NetLocalGroupGetMembers,
     };
     use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
-    use windows_sys::Win32::Security::{
-        CreateWellKnownSid, LookupAccountSidW, SID_NAME_USE, WinBuiltinAdministratorsSid,
-    };
+    use windows_sys::Win32::Security::{CreateWellKnownSid, LookupAccountSidW, SID_NAME_USE};
 
     // SAFETY: 所有緩衝區不是本函式的堆疊陣列（大小已傳給 API），就是由 API 配置並在
     // 使用後以對應函式（NetApiBufferFree／LocalFree）釋放。
     unsafe {
-        // 以 SID 取得群組名稱：非英文版 Windows 的 Administrators 群組名稱不同
+        // 以 SID 取得群組名稱
         let mut sid = [0u8; 68]; // SECURITY_MAX_SID_SIZE
         let mut sid_len = sid.len() as u32;
         anyhow::ensure!(
             CreateWellKnownSid(
-                WinBuiltinAdministratorsSid,
+                group,
                 std::ptr::null_mut(),
                 sid.as_mut_ptr() as *mut _,
                 &mut sid_len,

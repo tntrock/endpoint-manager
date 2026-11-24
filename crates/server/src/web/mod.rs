@@ -15,6 +15,7 @@ pub mod dashboard;
 pub mod deployments;
 pub mod device_status;
 pub mod devices;
+pub mod exposure;
 pub mod groups;
 pub mod images;
 pub mod integrity;
@@ -259,6 +260,8 @@ pub fn web_router(state: AppState) -> Router {
         .route("/vms", get(vms::list))
         .route("/containers", get(images::list))
         .route("/containers/image", get(images::detail))
+        .route("/exposure", get(exposure::list))
+        .route("/exposure/port", get(exposure::detail))
         .route("/registry", get(registry::query))
         .route(
             "/deployments",

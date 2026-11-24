@@ -234,6 +234,9 @@ impl Collector for WindowsCollector {
         if section == Section::Shares {
             return Ok(InventoryPayload::Shares(super::shares::collect()));
         }
+        if section == Section::Exposure {
+            return Ok(InventoryPayload::Exposure(super::exposure::collect()));
+        }
         let con = wmi()?;
         Ok(match section {
             Section::Basic => {
@@ -297,6 +300,7 @@ impl Collector for WindowsCollector {
             | Section::Network
             | Section::Vms
             | Section::Shares
+            | Section::Exposure
             | Section::Registry
             | Section::Accounts
             | Section::Containers => {

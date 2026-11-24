@@ -78,6 +78,8 @@ pub struct DeviceFacts {
     pub accounts: Option<protocol::AccountsInfo>,
     /// shares 區段（None：從未上傳）
     pub shares: Option<protocol::SharesInfo>,
+    /// exposure 區段（None：從未上傳）
+    pub exposure: Option<protocol::ExposureInfo>,
     /// 評估時的「現在」（病毒碼天數用）：由呼叫端提供，評估本身維持純函式
     pub now: time::OffsetDateTime,
     /// 管理網頁時區的今天：修補的安裝日期是裝置本地日期，「太久沒更新」用它計算天數
@@ -169,6 +171,37 @@ fn no_update_status() -> Option<(Status, Value)> {
 
 fn no_data() -> Option<(Status, Value)> {
     Some((Status::Unknown, json!({"reason": "no_data"})))
+}
+
+/// exposure 區段裡和這條規則有關的讀取錯誤：有的話是「未知」，沒有的話符合
+fn errors_about(info: &protocol::ExposureInfo, keys: &[&str]) -> Option<(Status, Value)> {
+    let errs: Vec<&str> = info
+        .errors
+        .iter()
+        .filter(|e| keys.iter().any(|k| e.contains(k)))
+        .map(String::as_str)
+        .collect();
+    (!errs.is_empty()).then(|| {
+        (
+            Status::Unknown,
+            json!({"reason": "exposure_error", "error": errs.join("；")}),
+        )
+    })
+}
+
+/// 以 S-1- 或 *- 開頭的樣式比對 SID（例如 *-500 是內建 Administrator，改名後也認得），
+/// 其他比對名稱
+fn account_matches(g: &Glob, a: &protocol::AccountInfo) -> bool {
+    let p = g.as_str().trim();
+    // get 以位元組切：非 ASCII 開頭時回 None，不會 panic
+    let sid_pattern = p.len() > 2
+        && (p.get(..2).is_some_and(|x| x.eq_ignore_ascii_case("*-"))
+            || p.get(..4).is_some_and(|x| x.eq_ignore_ascii_case("S-1-")));
+    if sid_pattern {
+        g.is_match(&a.sid)
+    } else {
+        g.is_match(&a.name)
+    }
 }
 
 fn listed(items: &[&SoftwareFact]) -> Value {
@@ -548,6 +581,105 @@ fn check_one(c: &Check, f: &DeviceFacts) -> Option<(Status, Value)> {
                 )
             })
         }
+        Check::ExposedService {
+            ports,
+            any_interface_only,
+            except_processes,
+        } => {
+            let Some(info) = &f.exposure else {
+                return no_data();
+            };
+            let bad: Vec<Value> = info
+                .listening
+                .iter()
+                .filter(|l| !*any_interface_only || l.any_interface())
+                .filter(|l| {
+                    !except_processes
+                        .iter()
+                        .any(|g| l.process.as_deref().is_some_and(|p| g.is_match(p)))
+                })
+                .filter_map(|l| {
+                    let (_, label) = ports.iter().find(|(p, _)| *p == l.port)?;
+                    Some(json!({"service": label, "port": l.port, "proto": l.proto,
+                                "addr": l.addr, "process": l.process}))
+                })
+                .collect();
+            if bad.is_empty() {
+                return errors_about(info, &["連接埠", "/proc/net"]);
+            }
+            Some((
+                Status::Violating,
+                json!({"services": bad.iter().take(MAX_LISTED).collect::<Vec<_>>(),
+                       "total": bad.len()}),
+            ))
+        }
+        Check::FirewallAllowAll { except_rules } => {
+            let Some(info) = &f.exposure else {
+                return no_data();
+            };
+            let Some(rules) = &info.firewall_allow_all else {
+                return errors_about(info, &["防火牆"]).or_else(no_data);
+            };
+            let bad: Vec<&str> = rules
+                .iter()
+                .filter(|r| !except_rules.iter().any(|g| g.is_match(r)))
+                .map(String::as_str)
+                .collect();
+            (!bad.is_empty()).then(|| {
+                (
+                    Status::Violating,
+                    json!({"firewall_rules": bad.iter().take(MAX_LISTED).collect::<Vec<_>>(),
+                           "total": bad.len()}),
+                )
+            })
+        }
+        Check::SshConfig(p) => {
+            let Some(info) = &f.exposure else {
+                return no_data();
+            };
+            // 沒有安裝 sshd：符合；讀取失敗：未知
+            let Some(s) = &info.sshd else {
+                return errors_about(info, &["sshd"]);
+            };
+            let root = s.permit_root_login.as_str();
+            let mut issues = vec![];
+            if p.no_root_login && root != "no" {
+                issues.push("允許 root 登入");
+            } else if p.no_root_password && matches!(root, "yes" | "") {
+                issues.push("允許 root 以密碼登入");
+            }
+            if p.no_password && s.password_authentication {
+                issues.push("允許密碼登入");
+            }
+            if p.no_empty_passwords && s.permit_empty_passwords {
+                issues.push("允許空密碼");
+            }
+            (!issues.is_empty()).then(|| (Status::Violating, json!({"ssh": issues})))
+        }
+        Check::RdpUsers { allowed } => {
+            let Some(info) = &f.exposure else {
+                return no_data();
+            };
+            let Some(r) = &info.rdp else {
+                return errors_about(info, &["遠端桌面"]).or_else(no_data);
+            };
+            if !r.enabled {
+                return None;
+            }
+            let bad: Vec<&str> = r
+                .users
+                .iter()
+                .filter(|a| !allowed.iter().any(|g| account_matches(g, a)))
+                .map(|a| a.name.as_str())
+                .collect();
+            (!bad.is_empty()).then(|| {
+                (
+                    Status::Violating,
+                    json!({"rdp_users": bad.iter().take(MAX_LISTED).collect::<Vec<_>>(),
+                           "total": bad.len()}),
+                )
+            })
+        }
         Check::OpenShare {
             anonymous,
             all_users,
@@ -893,26 +1025,9 @@ fn check_one(c: &Check, f: &DeviceFacts) -> Option<(Status, Value)> {
                 Ok(v) => v,
                 Err(u) => return u,
             };
-            // 以 S-1- 或 *- 開頭的樣式比對 SID（例如 *-500 是內建 Administrator，改名後也認得），
-            // 其他比對名稱
-            let sid_pattern = |g: &&Glob| {
-                let p = g.as_str().trim();
-                // get 以位元組切：非 ASCII 開頭時回 None，不會 panic
-                p.len() > 2
-                    && (p.get(..2).is_some_and(|x| x.eq_ignore_ascii_case("*-"))
-                        || p.get(..4).is_some_and(|x| x.eq_ignore_ascii_case("S-1-")))
-            };
             let bad: Vec<&str> = admins
                 .iter()
-                .filter(|a| {
-                    !allowed.iter().any(|g| {
-                        if sid_pattern(&g) {
-                            g.is_match(&a.sid)
-                        } else {
-                            g.is_match(&a.name)
-                        }
-                    })
-                })
+                .filter(|a| !allowed.iter().any(|g| account_matches(g, a)))
                 .map(|a| a.name.as_str())
                 .collect();
             (!bad.is_empty()).then(|| {
@@ -1133,6 +1248,7 @@ pub fn summarize(d: &Value) -> String {
         Some("absent") => return format!("{} 未設定", s("registry")),
         Some("no_patch_date") => return "沒有可判讀的更新安裝日期".into(),
         Some("share_error") => return format!("無法讀取共用：{}", s("error")),
+        Some("exposure_error") => return format!("無法讀取：{}", s("error")),
         Some("no_update_status") => {
             return "Agent 尚未回報更新狀態（需要 Agent 0.5.0 以上）".into();
         }
@@ -1221,6 +1337,31 @@ pub fn summarize(d: &Value) -> String {
     }
     if d.get("accounts").is_some() {
         return format!("不允許的管理員：{}", list("accounts"));
+    }
+    if let Some(items) = d["services"].as_array() {
+        let names: Vec<String> = items
+            .iter()
+            .map(|i| {
+                let process = i["process"].as_str().unwrap_or("未知程式");
+                format!(
+                    "{} {}/{}（{process}，{}）",
+                    i["service"].as_str().unwrap_or(""),
+                    i["port"].as_u64().unwrap_or_default(),
+                    i["proto"].as_str().unwrap_or(""),
+                    i["addr"].as_str().unwrap_or("")
+                )
+            })
+            .collect();
+        return format!("對外開放的服務：{}", names.join("、"));
+    }
+    if d.get("firewall_rules").is_some() {
+        return format!("防火牆全開規則：{}", list("firewall_rules"));
+    }
+    if d.get("ssh").is_some() {
+        return format!("sshd：{}", list("ssh"));
+    }
+    if d.get("rdp_users").is_some() {
+        return format!("不允許的遠端桌面使用者：{}", list("rdp_users"));
     }
     if let Some(items) = d["shares"].as_array() {
         let names: Vec<String> = items
@@ -1409,6 +1550,7 @@ mod tests {
             containers: None,
             accounts: None,
             shares: None,
+            exposure: None,
             now: time::OffsetDateTime::now_utc(),
             today: time::OffsetDateTime::now_utc().date(),
         }
@@ -2535,6 +2677,190 @@ mod tests {
         // Linux 裝置不適用
         let lx = DeviceFacts { linux: true, ..f };
         assert!(one(&lx, "unquoted_service_path", json!({})).is_none());
+    }
+
+    fn exposure(listening: Vec<(u16, &str, Option<&str>)>) -> protocol::ExposureInfo {
+        protocol::ExposureInfo {
+            listening: listening
+                .into_iter()
+                .map(|(port, addr, process)| protocol::ListenItem {
+                    proto: "tcp".into(),
+                    addr: addr.into(),
+                    port,
+                    process: process.map(Into::into),
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn exposed_service_rule() {
+        let mut f = facts(vec![]);
+        let p = json!({"services": ["mysql", "telnet"], "ports": [8080]});
+        assert_eq!(
+            one(&f, "exposed_service", p.clone()).unwrap().0,
+            Status::Unknown,
+            "沒有資料"
+        );
+        f.exposure = Some(exposure(vec![
+            (3306, "10.0.0.5", Some("mysqld")),
+            (23, "0.0.0.0", None),
+            (443, "0.0.0.0", Some("nginx")),
+            (8080, "::", Some("java")),
+        ]));
+        let (st, d) = one(&f, "exposed_service", p.clone()).unwrap();
+        assert_eq!(st, Status::Violating);
+        assert_eq!(d["total"], 3);
+        assert_eq!(
+            summarize(&d),
+            "對外開放的服務：MySQL 3306/tcp（mysqld，10.0.0.5）、Telnet 23/tcp（未知程式，0.0.0.0）、連接埠 8080 8080/tcp（java，::）"
+        );
+        // 只算所有介面；例外程式
+        let (_, d) = one(
+            &f,
+            "exposed_service",
+            json!({"services": ["mysql", "telnet"], "ports": [8080], "any_interface_only": true,
+                   "except_processes": ["java"]}),
+        )
+        .unwrap();
+        assert_eq!(d["total"], 1);
+        assert_eq!(d["services"][0]["port"], 23);
+        // 沒有違規但讀不到連接埠：未知；只有別的錯誤：符合
+        f.exposure = Some(protocol::ExposureInfo {
+            errors: vec!["無法讀取 TCP 連接埠：x".into()],
+            ..Default::default()
+        });
+        let (st, d) = one(&f, "exposed_service", p.clone()).unwrap();
+        assert_eq!(st, Status::Unknown);
+        assert_eq!(summarize(&d), "無法讀取：無法讀取 TCP 連接埠：x");
+        f.exposure = Some(protocol::ExposureInfo {
+            errors: vec!["無法讀取 sshd 設定：x".into()],
+            ..Default::default()
+        });
+        assert!(one(&f, "exposed_service", p).is_none());
+    }
+
+    #[test]
+    fn firewall_allow_all_rule() {
+        let mut f = facts(vec![]);
+        assert_eq!(
+            one(&f, "firewall_allow_all", json!({})).unwrap().0,
+            Status::Unknown
+        );
+        f.exposure = Some(protocol::ExposureInfo {
+            firewall_allow_all: Some(vec!["Open all".into(), "Lab test".into()]),
+            ..Default::default()
+        });
+        let (st, d) = one(&f, "firewall_allow_all", json!({})).unwrap();
+        assert_eq!(st, Status::Violating);
+        assert_eq!(summarize(&d), "防火牆全開規則：Open all、Lab test");
+        let (_, d) = one(&f, "firewall_allow_all", json!({"except_rules": ["Lab*"]})).unwrap();
+        assert_eq!(d["total"], 1);
+        f.exposure.as_mut().unwrap().firewall_allow_all = Some(vec![]);
+        assert!(one(&f, "firewall_allow_all", json!({})).is_none());
+        // 讀不到防火牆規則：有錯誤是未知，沒有錯誤（舊資料）也是未知
+        f.exposure = Some(protocol::ExposureInfo {
+            errors: vec!["無法讀取防火牆規則：x".into()],
+            ..Default::default()
+        });
+        assert_eq!(
+            one(&f, "firewall_allow_all", json!({})).unwrap().1["reason"],
+            "exposure_error"
+        );
+        f.exposure = Some(protocol::ExposureInfo::default());
+        assert_eq!(
+            one(&f, "firewall_allow_all", json!({})).unwrap().1["reason"],
+            "no_data"
+        );
+    }
+
+    #[test]
+    fn ssh_config_rule() {
+        let sshd = |root: &str, pw: bool, empty: bool| protocol::ExposureInfo {
+            sshd: Some(protocol::SshdInfo {
+                permit_root_login: root.into(),
+                password_authentication: pw,
+                permit_empty_passwords: empty,
+                ports: vec![22],
+            }),
+            ..Default::default()
+        };
+        let mut f = linux(vec![]);
+        let all =
+            json!({"no_root_password": true, "no_password": true, "no_empty_passwords": true});
+        assert_eq!(
+            one(&f, "ssh_config", all.clone()).unwrap().0,
+            Status::Unknown
+        );
+        f.exposure = Some(sshd("yes", true, true));
+        let (st, d) = one(&f, "ssh_config", all.clone()).unwrap();
+        assert_eq!(st, Status::Violating);
+        assert_eq!(
+            summarize(&d),
+            "sshd：允許 root 以密碼登入、允許密碼登入、允許空密碼"
+        );
+        f.exposure = Some(sshd("prohibit-password", false, false));
+        assert!(
+            one(&f, "ssh_config", all.clone()).is_none(),
+            "只用金鑰的 root 符合"
+        );
+        let (_, d) = one(&f, "ssh_config", json!({"no_root_login": true})).unwrap();
+        assert_eq!(d["ssh"], json!(["允許 root 登入"]));
+        f.exposure = Some(sshd("no", false, false));
+        assert!(one(&f, "ssh_config", json!({"no_root_login": true})).is_none());
+        // 沒有安裝 sshd：符合；讀取失敗：未知
+        f.exposure = Some(protocol::ExposureInfo::default());
+        assert!(one(&f, "ssh_config", all.clone()).is_none());
+        f.exposure = Some(protocol::ExposureInfo {
+            errors: vec!["無法讀取 sshd 設定：x".into()],
+            ..Default::default()
+        });
+        assert_eq!(
+            one(&f, "ssh_config", all.clone()).unwrap().0,
+            Status::Unknown
+        );
+        // Windows 不適用
+        assert!(one(&facts(vec![]), "ssh_config", all).is_none());
+    }
+
+    #[test]
+    fn rdp_users_rule() {
+        let user = |name: &str, sid: &str| protocol::AccountInfo {
+            name: name.into(),
+            sid: sid.into(),
+        };
+        let mut f = facts(vec![]);
+        assert_eq!(one(&f, "rdp_users", json!({})).unwrap().0, Status::Unknown);
+        f.exposure = Some(protocol::ExposureInfo {
+            rdp: Some(protocol::RdpInfo {
+                enabled: true,
+                users: vec![
+                    user(r"CORP\helpdesk", "S-1-5-21-9-1105"),
+                    user(r"CORP\Domain Users", "S-1-5-21-9-513"),
+                    user(r"PC\guest", "S-1-5-21-1-501"),
+                ],
+            }),
+            ..Default::default()
+        });
+        let (st, d) = one(
+            &f,
+            "rdp_users",
+            json!({"allowed": [r"CORP\helpdesk", "*-501"]}),
+        )
+        .unwrap();
+        assert_eq!(st, Status::Violating);
+        assert_eq!(summarize(&d), r"不允許的遠端桌面使用者：CORP\Domain Users");
+        f.exposure.as_mut().unwrap().rdp.as_mut().unwrap().enabled = false;
+        assert!(one(&f, "rdp_users", json!({})).is_none(), "遠端桌面沒開");
+        f.exposure = Some(protocol::ExposureInfo {
+            errors: vec!["無法讀取遠端桌面設定：x".into()],
+            ..Default::default()
+        });
+        assert_eq!(
+            one(&f, "rdp_users", json!({})).unwrap().1["reason"],
+            "exposure_error"
+        );
     }
 
     #[test]

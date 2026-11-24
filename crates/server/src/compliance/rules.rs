@@ -7,7 +7,7 @@ use super::matcher::Glob;
 
 pub const MAX_PATTERN_LEN: usize = 256;
 
-pub const KINDS: [&str; 22] = [
+pub const KINDS: [&str; 26] = [
     "forbidden_software",
     "required_software",
     "software_allowlist",
@@ -30,7 +30,27 @@ pub const KINDS: [&str; 22] = [
     "unquoted_service_path",
     "extra_root_account",
     "open_share",
+    "exposed_service",
+    "firewall_allow_all",
+    "ssh_config",
+    "rdp_users",
 ];
+
+/// 對外開放的服務：內建的服務與連接埠（錯誤設定規格 §5.2）
+pub const SERVICE_PRESETS: [(&str, &str, &[u16]); 9] = [
+    ("telnet", "Telnet", &[23]),
+    ("ftp", "FTP", &[21]),
+    ("vnc", "VNC", &[5900, 5901, 5902, 5903]),
+    ("redis", "Redis", &[6379]),
+    ("mongodb", "MongoDB", &[27017]),
+    ("elasticsearch", "Elasticsearch", &[9200]),
+    ("mysql", "MySQL", &[3306]),
+    ("postgresql", "PostgreSQL", &[5432]),
+    ("memcached", "Memcached", &[11211]),
+];
+
+/// 自訂連接埠最多幾個
+pub const MAX_CUSTOM_PORTS: usize = 50;
 
 /// 多重連線規則：回溯天數上限
 pub const MAX_LOOKBACK_DAYS: u32 = 90;
@@ -63,6 +83,10 @@ pub fn kind_label(kind: &str) -> &'static str {
         "unquoted_service_path" => "服務路徑沒加引號",
         "extra_root_account" => "多餘的 UID 0 帳號",
         "open_share" => "開放的共用",
+        "exposed_service" => "對外開放的服務",
+        "firewall_allow_all" => "防火牆全開規則",
+        "ssh_config" => "sshd 設定",
+        "rdp_users" => "遠端桌面使用者",
         _ => "未知類型",
     }
 }
@@ -99,7 +123,8 @@ pub fn kind_platform(kind: &str) -> Platform {
         "forbidden_image" | "container_privilege" | "unpinned_image" | "extra_root_account" => {
             Platform::Linux
         }
-        "open_share" => Platform::Both,
+        "open_share" | "exposed_service" => Platform::Both,
+        "ssh_config" => Platform::Linux,
         _ => Platform::Windows,
     }
 }
@@ -233,6 +258,37 @@ pub enum Params {
         except_accounts: Vec<String>,
     },
     OpenShare(OpenShareParams),
+    ExposedService {
+        /// 內建服務的代號（[`SERVICE_PRESETS`]）
+        services: Vec<String>,
+        /// 自訂連接埠
+        ports: Vec<u16>,
+        /// 只算監聽在所有介面的
+        any_interface_only: bool,
+        /// 例外程式（萬用字元）
+        except_processes: Vec<String>,
+    },
+    FirewallAllowAll {
+        /// 例外規則名稱（萬用字元）
+        except_rules: Vec<String>,
+    },
+    SshConfig(SshParams),
+    RdpUsers {
+        allowed: Vec<String>,
+    },
+}
+
+/// sshd 設定規則：勾選的項目（錯誤設定規格 §5.2）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SshParams {
+    /// root 不能以密碼登入（`prohibit-password` 視為符合）
+    pub no_root_password: bool,
+    /// root 完全不能登入
+    pub no_root_login: bool,
+    /// 不允許密碼登入
+    pub no_password: bool,
+    /// 不允許空密碼
+    pub no_empty_passwords: bool,
 }
 
 /// 開放的共用（錯誤設定規格 §4.2）
@@ -436,6 +492,19 @@ pub enum Check {
         no_root_squash: bool,
         except_shares: Vec<Glob>,
     },
+    ExposedService {
+        /// (連接埠, 顯示名稱)
+        ports: Vec<(u16, String)>,
+        any_interface_only: bool,
+        except_processes: Vec<Glob>,
+    },
+    FirewallAllowAll {
+        except_rules: Vec<Glob>,
+    },
+    SshConfig(SshParams),
+    RdpUsers {
+        allowed: Vec<Glob>,
+    },
 }
 
 impl Check {
@@ -446,7 +515,8 @@ impl Check {
             | Check::ContainerPrivilege { .. }
             | Check::UnpinnedImage { .. }
             | Check::ExtraRootAccount { .. } => Platform::Linux,
-            Check::OpenShare { .. } => Platform::Both,
+            Check::OpenShare { .. } | Check::ExposedService { .. } => Platform::Both,
+            Check::SshConfig(_) => Platform::Linux,
             _ => Platform::Windows,
         }
     }
@@ -496,6 +566,46 @@ struct RawUnquoted {
 struct RawExtraRoot {
     #[serde(default)]
     except_accounts: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawExposed {
+    #[serde(default)]
+    services: Vec<String>,
+    #[serde(default)]
+    ports: Vec<u32>,
+    #[serde(default)]
+    any_interface_only: bool,
+    #[serde(default)]
+    except_processes: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawFirewallAll {
+    #[serde(default)]
+    except_rules: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawSsh {
+    #[serde(default)]
+    no_root_password: bool,
+    #[serde(default)]
+    no_root_login: bool,
+    #[serde(default)]
+    no_password: bool,
+    #[serde(default)]
+    no_empty_passwords: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawRdpUsers {
+    #[serde(default)]
+    allowed: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -961,6 +1071,67 @@ impl Params {
                     except_accounts: exceptions("例外帳號", r.except_accounts)?,
                 })
             }
+            "exposed_service" => {
+                let r: RawExposed = from(v)?;
+                let mut services = vec![];
+                for s in r.services {
+                    let s = s.trim().to_string();
+                    if s.is_empty() || services.contains(&s) {
+                        continue;
+                    }
+                    if !SERVICE_PRESETS.iter().any(|(k, _, _)| *k == s) {
+                        return Err(format!("不認得的服務：{s}"));
+                    }
+                    services.push(s);
+                }
+                if r.ports.len() > MAX_CUSTOM_PORTS {
+                    return Err(format!("自訂連接埠最多 {MAX_CUSTOM_PORTS} 個"));
+                }
+                let mut ports = vec![];
+                for p in r.ports {
+                    let p = u16::try_from(p)
+                        .ok()
+                        .filter(|p| *p > 0)
+                        .ok_or_else(|| format!("連接埠必須是 1–65535：{p}"))?;
+                    if !ports.contains(&p) {
+                        ports.push(p);
+                    }
+                }
+                if services.is_empty() && ports.is_empty() {
+                    return Err("至少要選一個服務或填一個連接埠".into());
+                }
+                Ok(Params::ExposedService {
+                    services,
+                    ports,
+                    any_interface_only: r.any_interface_only,
+                    except_processes: exceptions("例外程式", r.except_processes)?,
+                })
+            }
+            "firewall_allow_all" => {
+                let r: RawFirewallAll = from(v)?;
+                Ok(Params::FirewallAllowAll {
+                    except_rules: exceptions("例外規則", r.except_rules)?,
+                })
+            }
+            "ssh_config" => {
+                let r: RawSsh = from(v)?;
+                if !(r.no_root_password || r.no_root_login || r.no_password || r.no_empty_passwords)
+                {
+                    return Err("sshd 設定規則至少要勾選一項".into());
+                }
+                Ok(Params::SshConfig(SshParams {
+                    no_root_password: r.no_root_password,
+                    no_root_login: r.no_root_login,
+                    no_password: r.no_password,
+                    no_empty_passwords: r.no_empty_passwords,
+                }))
+            }
+            "rdp_users" => {
+                let r: RawRdpUsers = from(v)?;
+                Ok(Params::RdpUsers {
+                    allowed: exceptions("允許的成員", r.allowed)?,
+                })
+            }
             "open_share" => {
                 let r: RawOpenShare = from(v)?;
                 if !r.anonymous && !r.all_users && !r.no_root_squash {
@@ -1018,6 +1189,10 @@ impl Params {
             Params::UnquotedServicePath { .. } => "unquoted_service_path",
             Params::ExtraRootAccount { .. } => "extra_root_account",
             Params::OpenShare(_) => "open_share",
+            Params::ExposedService { .. } => "exposed_service",
+            Params::FirewallAllowAll { .. } => "firewall_allow_all",
+            Params::SshConfig(_) => "ssh_config",
+            Params::RdpUsers { .. } => "rdp_users",
         }
     }
 
@@ -1207,6 +1382,45 @@ impl Params {
                     m.insert("except_accounts".into(), json!(except_accounts));
                 }
             }
+            Params::ExposedService {
+                services,
+                ports,
+                any_interface_only,
+                except_processes,
+            } => {
+                if !services.is_empty() {
+                    m.insert("services".into(), json!(services));
+                }
+                if !ports.is_empty() {
+                    m.insert("ports".into(), json!(ports));
+                }
+                if *any_interface_only {
+                    m.insert("any_interface_only".into(), json!(true));
+                }
+                if !except_processes.is_empty() {
+                    m.insert("except_processes".into(), json!(except_processes));
+                }
+            }
+            Params::FirewallAllowAll { except_rules } => {
+                if !except_rules.is_empty() {
+                    m.insert("except_rules".into(), json!(except_rules));
+                }
+            }
+            Params::SshConfig(p) => {
+                for (k, on) in [
+                    ("no_root_password", p.no_root_password),
+                    ("no_root_login", p.no_root_login),
+                    ("no_password", p.no_password),
+                    ("no_empty_passwords", p.no_empty_passwords),
+                ] {
+                    if on {
+                        m.insert(k.into(), json!(true));
+                    }
+                }
+            }
+            Params::RdpUsers { allowed } => {
+                m.insert("allowed".into(), json!(allowed));
+            }
             Params::OpenShare(p) => {
                 for (k, on) in [
                     ("anonymous", p.anonymous),
@@ -1362,6 +1576,36 @@ impl Params {
             },
             Params::ExtraRootAccount { except_accounts } => Check::ExtraRootAccount {
                 except_accounts: except_accounts.iter().map(|i| Glob::new(i)).collect(),
+            },
+            Params::ExposedService {
+                services,
+                ports,
+                any_interface_only,
+                except_processes,
+            } => {
+                let mut list: Vec<(u16, String)> = vec![];
+                for (key, label, ps) in SERVICE_PRESETS {
+                    if services.iter().any(|s| s == key) {
+                        list.extend(ps.iter().map(|p| (*p, label.to_string())));
+                    }
+                }
+                for p in ports {
+                    if !list.iter().any(|(x, _)| x == p) {
+                        list.push((*p, format!("連接埠 {p}")));
+                    }
+                }
+                Check::ExposedService {
+                    ports: list,
+                    any_interface_only: *any_interface_only,
+                    except_processes: except_processes.iter().map(|i| Glob::new(i)).collect(),
+                }
+            }
+            Params::FirewallAllowAll { except_rules } => Check::FirewallAllowAll {
+                except_rules: except_rules.iter().map(|i| Glob::new(i)).collect(),
+            },
+            Params::SshConfig(p) => Check::SshConfig(*p),
+            Params::RdpUsers { allowed } => Check::RdpUsers {
+                allowed: allowed.iter().map(|i| Glob::new(i)).collect(),
             },
             Params::OpenShare(p) => Check::OpenShare {
                 anonymous: p.anonymous,
@@ -1666,6 +1910,91 @@ mod tests {
             assert!(KINDS.contains(&k));
             assert_ne!(kind_label(k), "未知類型");
         }
+    }
+
+    #[test]
+    fn exposure_params() {
+        let p = Params::parse(
+            "exposed_service",
+            &json!({"services": ["mysql", " vnc ", "mysql", ""], "ports": [8080, 8080],
+                    "any_interface_only": true, "except_processes": ["mysqld"]}),
+        )
+        .unwrap();
+        assert_eq!(
+            p.to_json(),
+            json!({"services": ["mysql", "vnc"], "ports": [8080], "any_interface_only": true,
+                   "except_processes": ["mysqld"]})
+        );
+        assert_eq!(Params::parse(p.kind(), &p.to_json()).unwrap(), p, "往返");
+        let Check::ExposedService { ports, .. } = p.compile() else {
+            unreachable!()
+        };
+        assert_eq!(ports.len(), 6, "VNC 四個、MySQL、自訂：{ports:?}");
+        assert!(ports.contains(&(8080, "連接埠 8080".to_string())));
+        assert_eq!(p.compile().platform(), Platform::Both);
+        // 自訂連接埠和內建的重複：用內建的名稱
+        let p = Params::parse(
+            "exposed_service",
+            &json!({"services": ["redis"], "ports": [6379]}),
+        )
+        .unwrap();
+        let Check::ExposedService { ports, .. } = p.compile() else {
+            unreachable!()
+        };
+        assert_eq!(ports, [(6379, "Redis".to_string())]);
+        for bad in [
+            json!({}),
+            json!({"services": ["gopher"]}),
+            json!({"ports": [0]}),
+            json!({"ports": [70000]}),
+            json!({"ports": vec![1; MAX_CUSTOM_PORTS + 1]}),
+        ] {
+            assert!(Params::parse("exposed_service", &bad).is_err(), "{bad}");
+        }
+
+        let p = Params::parse("firewall_allow_all", &json!({"except_rules": ["Lab*"]})).unwrap();
+        assert_eq!(Params::parse(p.kind(), &p.to_json()).unwrap(), p);
+        assert_eq!(p.compile().platform(), Platform::Windows);
+        assert_eq!(
+            Params::parse("firewall_allow_all", &json!({}))
+                .unwrap()
+                .to_json(),
+            json!({})
+        );
+
+        let p = Params::parse(
+            "ssh_config",
+            &json!({"no_empty_passwords": true, "no_root_password": true}),
+        )
+        .unwrap();
+        assert_eq!(
+            p.to_json(),
+            json!({"no_root_password": true, "no_empty_passwords": true})
+        );
+        assert_eq!(Params::parse(p.kind(), &p.to_json()).unwrap(), p);
+        assert_eq!(p.compile().platform(), Platform::Linux);
+        assert!(Params::parse("ssh_config", &json!({})).is_err());
+        let p = Params::parse(
+            "ssh_config",
+            &json!({"no_root_login": true, "no_password": true}),
+        )
+        .unwrap();
+        assert_eq!(Params::parse(p.kind(), &p.to_json()).unwrap(), p);
+
+        let p = Params::parse(
+            "rdp_users",
+            &json!({"allowed": [" *-544 ", "CORP\\helpdesk"]}),
+        )
+        .unwrap();
+        assert_eq!(p.to_json(), json!({"allowed": ["*-544", "CORP\\helpdesk"]}));
+        assert_eq!(p.compile().platform(), Platform::Windows);
+        assert_eq!(
+            Params::parse("rdp_users", &json!({})).unwrap().to_json(),
+            json!({"allowed": []})
+        );
+        assert_eq!(kind_platform("ssh_config"), Platform::Linux);
+        assert_eq!(kind_platform("exposed_service"), Platform::Both);
+        assert_eq!(kind_platform("rdp_users"), Platform::Windows);
     }
 
     #[test]

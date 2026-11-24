@@ -85,6 +85,22 @@ pub struct ParamFields {
     pub sh_all_users: bool,
     pub sh_read: bool,
     pub sh_nrs: bool,
+    /// 對外開放的服務：勾選的內建服務、自訂連接埠（每行一個）、只算所有介面
+    pub ex_services: Vec<String>,
+    pub ex_ports: String,
+    pub ex_any: bool,
+    /// sshd 設定
+    pub ssh_root_pw: bool,
+    pub ssh_root: bool,
+    pub ssh_pw: bool,
+    pub ssh_empty: bool,
+}
+
+impl ParamFields {
+    /// 對外開放的服務：這個內建服務有沒有勾選
+    pub fn has_service(&self, key: impl AsRef<str>) -> bool {
+        self.ex_services.iter().any(|s| s == key.as_ref())
+    }
 }
 
 fn lines(v: &str) -> Vec<&str> {
@@ -158,6 +174,13 @@ pub fn parse_form(raw: &[u8]) -> RuleForm {
             "p_sh_all_users" => f.p.sh_all_users = v == "1",
             "p_sh_read" => f.p.sh_read = v == "1",
             "p_sh_nrs" => f.p.sh_nrs = v == "1",
+            "p_ex_service" => f.p.ex_services.push(v),
+            "p_ex_ports" => f.p.ex_ports = v,
+            "p_ex_any" => f.p.ex_any = v == "1",
+            "p_ssh_root_pw" => f.p.ssh_root_pw = v == "1",
+            "p_ssh_root" => f.p.ssh_root = v == "1",
+            "p_ssh_pw" => f.p.ssh_pw = v == "1",
+            "p_ssh_empty" => f.p.ssh_empty = v == "1",
             _ => {}
         }
     }
@@ -273,6 +296,29 @@ pub fn form_to_input(f: &RuleForm) -> Result<RuleInput, String> {
         "unpinned_image" => json!({ "except_images": lines(&p.img_except) }),
         "unquoted_service_path" => json!({ "except_services": lines(&p.except_names) }),
         "extra_root_account" => json!({ "except_accounts": lines(&p.except_names) }),
+        "exposed_service" => {
+            let mut ports = vec![];
+            for l in lines(&p.ex_ports) {
+                ports.push(
+                    l.parse::<u32>()
+                        .map_err(|_| format!("連接埠必須是數字：{l}"))?,
+                );
+            }
+            json!({
+                "services": p.ex_services,
+                "ports": ports,
+                "any_interface_only": p.ex_any,
+                "except_processes": lines(&p.except_names),
+            })
+        }
+        "firewall_allow_all" => json!({ "except_rules": lines(&p.except_names) }),
+        "ssh_config" => json!({
+            "no_root_password": p.ssh_root_pw,
+            "no_root_login": p.ssh_root,
+            "no_password": p.ssh_pw,
+            "no_empty_passwords": p.ssh_empty,
+        }),
+        "rdp_users" => json!({ "allowed": lines(&p.admins_allowed) }),
         "open_share" => json!({
             "anonymous": p.sh_anonymous,
             "all_users": p.sh_all_users,
@@ -358,12 +404,36 @@ pub fn params_to_form(kind: &str, v: &Value) -> ParamFields {
         except_names: match kind {
             "unquoted_service_path" => joined(v, "except_services"),
             "open_share" => joined(v, "except_shares"),
+            "exposed_service" => joined(v, "except_processes"),
+            "firewall_allow_all" => joined(v, "except_rules"),
             _ => joined(v, "except_accounts"),
         },
         sh_anonymous: b("anonymous"),
         sh_all_users: b("all_users"),
         sh_read: v["access"].as_str() == Some("read"),
         sh_nrs: b("no_root_squash"),
+        ex_services: v["services"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        ex_ports: v["ports"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_u64().map(|n| n.to_string()))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default(),
+        ex_any: b("any_interface_only"),
+        ssh_root_pw: b("no_root_password"),
+        ssh_root: b("no_root_login"),
+        ssh_pw: b("no_password"),
+        ssh_empty: b("no_empty_passwords"),
         admins_allowed: v["allowed"]
             .as_array()
             .map(|a| {
@@ -633,6 +703,8 @@ struct RuleFormPage {
     kind_label: &'static str,
     /// 適用的作業系統
     platform: &'static str,
+    /// 對外開放的服務：(代號, 名稱, 連接埠)
+    presets: Vec<(&'static str, &'static str, String)>,
     name: String,
     description: String,
     enabled: bool,
@@ -660,6 +732,19 @@ pub(super) async fn group_checks(
             label: name,
         })
         .collect())
+}
+
+fn presets() -> Vec<(&'static str, &'static str, String)> {
+    crate::compliance::rules::SERVICE_PRESETS
+        .iter()
+        .map(|(k, l, ps)| {
+            (
+                *k,
+                *l,
+                ps.iter().map(u16::to_string).collect::<Vec<_>>().join("、"),
+            )
+        })
+        .collect()
 }
 
 fn severities(current: &str) -> Vec<SelectOption> {
@@ -692,6 +777,7 @@ pub async fn new_form(
         nav: Nav::new(&s, "compliance"),
         id: None,
         kind_label: kind_label(&q.kind),
+        presets: presets(),
         platform: kind_platform(&q.kind).label(),
         kind: q.kind,
         name: String::new(),
@@ -746,6 +832,7 @@ pub async fn edit_form(
         nav: Nav::new(&s, "compliance"),
         id: Some(id),
         kind_label: kind_label(&kind),
+        presets: presets(),
         platform: kind_platform(&kind).label(),
         p: params_to_form(&kind, &params),
         kind,
@@ -829,6 +916,7 @@ async fn saved_or_form(
         nav: Nav::new(s, "compliance"),
         id,
         kind_label: kind_label(&f.kind),
+        presets: presets(),
         platform: kind_platform(&f.kind).label(),
         severities: severities(&f.severity),
         include: group_checks(st, &f.include).await.map_err(db_error)?,

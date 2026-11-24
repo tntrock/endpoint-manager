@@ -996,6 +996,7 @@ struct AccountsTab {
     unparsed: Vec<String>,
     system_user_count: u32,
     shares: Option<super::shares::SharesCard>,
+    exposure: Option<super::exposure::ExposureCard>,
 }
 
 /// 權限來源的顯示文字：uid0、group:<群組>、sudoers:<檔案>
@@ -1012,6 +1013,7 @@ fn source_label(source: &str) -> String {
 /// 呼叫端已確認裝置在範圍內且是 Linux
 async fn accounts_tab(st: &AppState, _s: &Session, id: Uuid) -> Result<Response, AppError> {
     let shares = super::shares::load(st, id).await?;
+    let exposure = super::exposure::load(st, id).await?;
     let data: Option<serde_json::Value> =
         sqlx::query_scalar("SELECT data FROM device_accounts WHERE device_id = $1")
             .bind(id)
@@ -1027,6 +1029,7 @@ async fn accounts_tab(st: &AppState, _s: &Session, id: Uuid) -> Result<Response,
             unparsed: vec![],
             system_user_count: 0,
             shares,
+            exposure,
         }));
     };
     let mut privileged: Vec<PrivilegeRow> = a
@@ -1069,6 +1072,7 @@ async fn accounts_tab(st: &AppState, _s: &Session, id: Uuid) -> Result<Response,
         unparsed: a.sudoers_unparsed,
         system_user_count: a.system_user_count,
         shares,
+        exposure,
     }))
 }
 

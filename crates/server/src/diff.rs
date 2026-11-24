@@ -162,6 +162,37 @@ pub fn items_of(p: &InventoryPayload) -> BTreeMap<String, String> {
                 ));
             }
         }
+        InventoryPayload::Exposure(e) => {
+            // 監聽的連接埠新增、移除；位址改變也記（例如資料庫從只綁內部網卡改成所有介面）
+            for l in &e.listening {
+                pairs.push((
+                    format!("{}/{}|{}", l.port, l.proto, opt(&l.process)),
+                    l.addr.clone(),
+                ));
+            }
+            if let Some(f) = &e.firewall_allow_all {
+                for r in f {
+                    pairs.push((format!("firewall:{r}"), "allow_all".into()));
+                }
+            }
+            if let Some(s) = &e.sshd {
+                pairs.push(("sshd.permitrootlogin".into(), s.permit_root_login.clone()));
+                pairs.push((
+                    "sshd.passwordauthentication".into(),
+                    s.password_authentication.to_string(),
+                ));
+                pairs.push((
+                    "sshd.permitemptypasswords".into(),
+                    s.permit_empty_passwords.to_string(),
+                ));
+            }
+            if let Some(r) = &e.rdp {
+                pairs.push(("rdp.enabled".into(), r.enabled.to_string()));
+                for u in &r.users {
+                    pairs.push((format!("rdp.user:{}", u.name), u.sid.clone()));
+                }
+            }
+        }
         InventoryPayload::Shares(s) => {
             // 共用的新增、移除與權限改變
             for x in &s.shares {

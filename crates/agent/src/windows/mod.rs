@@ -3,6 +3,7 @@
 pub mod collect;
 pub mod commands;
 pub mod eventlog;
+pub mod exposure;
 pub mod install;
 pub mod netnotify;
 pub mod network;

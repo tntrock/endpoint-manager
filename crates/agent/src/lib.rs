@@ -8,6 +8,7 @@ pub mod commands;
 pub mod config;
 pub mod deploy;
 pub mod eventpush;
+pub mod exposure;
 pub mod journal;
 pub mod lifecycle;
 #[cfg(target_os = "linux")]

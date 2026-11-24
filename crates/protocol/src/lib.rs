@@ -37,10 +37,11 @@ pub enum Section {
     Network,
     Vms,
     Shares,
+    Exposure,
 }
 
 impl Section {
-    pub const ALL: [Section; 12] = [
+    pub const ALL: [Section; 13] = [
         Section::Basic,
         Section::Hardware,
         Section::Software,
@@ -53,10 +54,11 @@ impl Section {
         Section::Network,
         Section::Vms,
         Section::Shares,
+        Section::Exposure,
     ];
 
     /// Windows Agent 回報的區段
-    pub const WINDOWS: [Section; 10] = [
+    pub const WINDOWS: [Section; 11] = [
         Section::Basic,
         Section::Hardware,
         Section::Software,
@@ -67,10 +69,11 @@ impl Section {
         Section::Network,
         Section::Vms,
         Section::Shares,
+        Section::Exposure,
     ];
 
     /// Linux Agent 回報的區段
-    pub const LINUX: [Section; 9] = [
+    pub const LINUX: [Section; 10] = [
         Section::Basic,
         Section::Hardware,
         Section::Software,
@@ -80,6 +83,7 @@ impl Section {
         Section::Network,
         Section::Vms,
         Section::Shares,
+        Section::Exposure,
     ];
 
     /// 第三期以前就有的區段：新版 Agent 在確認伺服器支援前只回報這些
@@ -106,6 +110,7 @@ impl Section {
             Section::Network => "network",
             Section::Vms => "vms",
             Section::Shares => "shares",
+            Section::Exposure => "exposure",
         }
     }
 
@@ -398,7 +403,11 @@ impl Section {
     pub fn needs_announcement(self) -> bool {
         matches!(
             self,
-            Section::Containers | Section::Network | Section::Vms | Section::Shares
+            Section::Containers
+                | Section::Network
+                | Section::Vms
+                | Section::Shares
+                | Section::Exposure
         )
     }
 }
@@ -678,6 +687,70 @@ pub struct AccountsInfo {
     pub sudoers_unparsed: Vec<String>,
 }
 
+/// 每台最多回報的監聽連接埠數
+pub const MAX_LISTENING: usize = 500;
+
+/// 監聽中的連接埠（只回報不是只監聽本機的）
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct ListenItem {
+    /// `tcp` 或 `udp`
+    pub proto: String,
+    /// 監聽的位址；`0.0.0.0`、`::` 是所有介面
+    pub addr: String,
+    pub port: u16,
+    /// 程式名稱（不含參數）；讀不到時沒有
+    #[serde(default)]
+    pub process: Option<String>,
+}
+
+impl ListenItem {
+    /// 監聽在所有介面
+    pub fn any_interface(&self) -> bool {
+        matches!(self.addr.as_str(), "0.0.0.0" | "::" | "*" | "")
+    }
+}
+
+/// sshd 實際生效的設定（`sshd -T`）
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct SshdInfo {
+    /// `yes`、`no`、`prohibit-password`、`forced-commands-only`
+    pub permit_root_login: String,
+    pub password_authentication: bool,
+    pub permit_empty_passwords: bool,
+    #[serde(default)]
+    pub ports: Vec<u16>,
+}
+
+/// Windows 遠端桌面
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct RdpInfo {
+    pub enabled: bool,
+    /// Remote Desktop Users 群組的成員
+    #[serde(default)]
+    pub users: Vec<AccountInfo>,
+}
+
+/// 對外開放的服務與遠端登入（錯誤設定規格 §5）
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct ExposureInfo {
+    pub listening: Vec<ListenItem>,
+    /// 超過 [`MAX_LISTENING`] 被截斷
+    #[serde(default)]
+    pub truncated: bool,
+    /// Windows：任何來源、任何連接埠都允許連入的防火牆規則名稱（Linux 沒有）
+    #[serde(default)]
+    pub firewall_allow_all: Option<Vec<String>>,
+    /// Linux：sshd 設定（沒有安裝 sshd 時沒有）
+    #[serde(default)]
+    pub sshd: Option<SshdInfo>,
+    /// Windows：遠端桌面
+    #[serde(default)]
+    pub rdp: Option<RdpInfo>,
+    /// 部分項目讀取失敗，其他照常回報
+    #[serde(default)]
+    pub errors: Vec<String>,
+}
+
 /// 每台最多回報的共用數
 pub const MAX_SHARES: usize = 500;
 
@@ -950,6 +1023,7 @@ pub enum InventoryPayload {
     Network(NetworkInfo),
     Vms(VmsInfo),
     Shares(SharesInfo),
+    Exposure(ExposureInfo),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -995,6 +1069,7 @@ impl InventoryPayload {
             InventoryPayload::Network(_) => Section::Network,
             InventoryPayload::Vms(_) => Section::Vms,
             InventoryPayload::Shares(_) => Section::Shares,
+            InventoryPayload::Exposure(_) => Section::Exposure,
         }
     }
 
@@ -1037,6 +1112,19 @@ impl InventoryPayload {
                 s.errors.sort();
                 for x in &mut s.shares {
                     x.clients.sort();
+                }
+            }
+            InventoryPayload::Exposure(e) => {
+                e.listening.sort();
+                e.errors.sort();
+                if let Some(f) = &mut e.firewall_allow_all {
+                    f.sort();
+                }
+                if let Some(r) = &mut e.rdp {
+                    r.users.sort();
+                }
+                if let Some(s) = &mut e.sshd {
+                    s.ports.sort();
                 }
             }
             // DNS 的順序有意義（先問哪一台），不排序
@@ -1092,6 +1180,18 @@ impl InventoryPayload {
                     return Err(ValidationError::TooManyItems { count: v.vms.len() });
                 }
                 v.platforms.len() + v.vms.len()
+            }
+            InventoryPayload::Exposure(e) => {
+                if e.listening.len() > MAX_LISTENING {
+                    return Err(ValidationError::TooManyItems {
+                        count: e.listening.len(),
+                    });
+                }
+                e.listening.len()
+                    + e.errors.len()
+                    + e.firewall_allow_all.as_ref().map_or(0, Vec::len)
+                    + e.rdp.as_ref().map_or(0, |r| r.users.len())
+                    + e.sshd.as_ref().map_or(0, |s| s.ports.len())
             }
             InventoryPayload::Shares(s) => {
                 if s.shares.len() > MAX_SHARES {
@@ -1233,7 +1333,13 @@ mod tests {
         assert_eq!(Section::parse("accounts"), Some(Section::Accounts));
         assert!(!Section::WINDOWS.contains(&Section::Accounts));
         assert!(!Section::LINUX.contains(&Section::Registry));
-        assert_eq!(Section::ALL.len(), 12);
+        assert_eq!(Section::ALL.len(), 13);
+        assert!(
+            Section::WINDOWS.contains(&Section::Exposure)
+                && Section::LINUX.contains(&Section::Exposure)
+        );
+        assert!(Section::Exposure.needs_announcement());
+        assert_eq!(Section::parse("exposure"), Some(Section::Exposure));
         assert!(
             Section::WINDOWS.contains(&Section::Shares)
                 && Section::LINUX.contains(&Section::Shares)
@@ -1292,6 +1398,58 @@ mod tests {
         }))
         .unwrap();
         assert!(back.errors.is_empty() && back.shares[0].clients.is_empty());
+    }
+
+    #[test]
+    fn exposure_hash_ignores_order_and_validates() {
+        let l = |port: u16, addr: &str| ListenItem {
+            proto: "tcp".into(),
+            addr: addr.into(),
+            port,
+            process: Some("svc".into()),
+        };
+        let info = |rev: bool| {
+            let mut listening = vec![l(22, "0.0.0.0"), l(80, "10.0.0.5")];
+            let mut fw = vec!["a".to_string(), "b".to_string()];
+            let mut ports = vec![22, 2222];
+            if rev {
+                listening.reverse();
+                fw.reverse();
+                ports.reverse();
+            }
+            InventoryPayload::Exposure(ExposureInfo {
+                listening,
+                truncated: false,
+                firewall_allow_all: Some(fw),
+                sshd: Some(SshdInfo {
+                    permit_root_login: "no".into(),
+                    password_authentication: false,
+                    permit_empty_passwords: false,
+                    ports,
+                }),
+                rdp: Some(RdpInfo {
+                    enabled: true,
+                    users: vec![],
+                }),
+                errors: vec![],
+            })
+        };
+        assert_eq!(info(false).canonical_hash(), info(true).canonical_hash());
+        assert_eq!(info(false).section(), Section::Exposure);
+        assert_eq!(info(false).validate(), Ok(()));
+        assert!(l(1, "0.0.0.0").any_interface() && l(1, "::").any_interface());
+        assert!(!l(1, "10.0.0.5").any_interface());
+        let big = InventoryPayload::Exposure(ExposureInfo {
+            listening: (0..=MAX_LISTENING as u16).map(|p| l(p, "::")).collect(),
+            ..Default::default()
+        });
+        assert!(matches!(
+            big.validate(),
+            Err(ValidationError::TooManyItems { .. })
+        ));
+        let back: ExposureInfo =
+            serde_json::from_value(serde_json::json!({"listening": []})).unwrap();
+        assert_eq!(back, ExposureInfo::default());
     }
 
     fn accounts(rev: bool) -> InventoryPayload {

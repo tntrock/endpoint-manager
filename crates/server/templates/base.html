@@ -26,6 +26,7 @@
     {% call m::link(nav.section, "software", "/software", "software", "軟體", "") %}{% endcall %}
     {% call m::link(nav.section, "images", "/containers", "container", "容器映像", "") %}{% endcall %}
     {% call m::link(nav.section, "vms", "/vms", "vm", "虛擬機", "") %}{% endcall %}
+    {% call m::link(nav.section, "exposure", "/exposure", "port", "對外服務", "") %}{% endcall %}
     {% call m::link(nav.section, "registry", "/registry", "registry", "登錄檔", "") %}{% endcall %}
     {% if nav.platform %}{% call m::link(nav.section, "netdevices", "/netdevices", "network", "網路設備", "") %}{% endcall %}{% endif %}
     <div class="nav-group">安全與合規</div>

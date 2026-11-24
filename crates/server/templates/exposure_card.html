@@ -1,0 +1,14 @@
+{% if let Some(x) = exposure %}
+<h2>對外服務</h2>
+{% for e in x.errors %}<p class="error">讀取失敗：{{ e }}</p>{% endfor %}
+{% if x.rows.is_empty() %}<p class="muted">沒有監聽在本機以外的連接埠。</p>{% else %}
+<table id="listening">
+  <tr><th class="num">連接埠</th><th>協定</th><th>位址</th><th>程式</th></tr>
+  {% for r in x.rows %}<tr><td class="num">{{ r.port }}</td><td>{{ r.proto }}</td><td>{{ r.addr }}{% if r.any %} <span class="faint">所有介面</span>{% endif %}</td><td>{% if !r.service.is_empty() %}<span class="tag bad">{{ r.service }}</span> {% endif %}{{ r.process }}</td></tr>{% endfor %}
+</table>
+{% if x.truncated %}<p class="muted">只列出前 500 個。</p>{% endif %}
+{% endif %}
+{% if let Some(f) = x.firewall %}<p>防火牆全開規則：{% if f.is_empty() %}沒有{% else %}{% for r in f %}<span class="tag bad">{{ r }}</span> {% endfor %}{% endif %}</p>{% endif %}
+{% if let Some(r) = x.rdp %}<p>遠端桌面：{% if r.0 %}開啟{% if !r.1.is_empty() %}，Remote Desktop Users：{% for u in r.1 %}{{ u }}{% if !loop.last %}、{% endif %}{% endfor %}{% endif %}{% else %}關閉{% endif %}</p>{% endif %}
+{% if let Some(s) = x.sshd %}<p>sshd：PermitRootLogin <code>{{ s.root }}</code>、密碼登入{% if s.password %}允許{% else %}不允許{% endif %}、空密碼{% if s.empty %}<span class="tag bad">允許</span>{% else %}不允許{% endif %}{% if !s.ports.is_empty() %}、連接埠 {{ s.ports }}{% endif %}</p>{% endif %}
+{% endif %}

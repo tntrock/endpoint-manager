@@ -322,6 +322,7 @@ impl Collector for Fake {
                 truncated: false,
             }),
             Section::Shares => InventoryPayload::Shares(protocol::SharesInfo::default()),
+            Section::Exposure => InventoryPayload::Exposure(protocol::ExposureInfo::default()),
             Section::Network => InventoryPayload::Network(protocol::NetworkInfo {
                 interfaces: vec![protocol::NetInterface {
                     name: "Ethernet".into(),
