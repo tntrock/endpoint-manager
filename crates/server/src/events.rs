@@ -223,6 +223,12 @@ pub async fn ingest(
     if inserted.is_empty() {
         return Ok(ack);
     }
+    let lifecycle: Vec<(OffsetDateTime, &str, &serde_json::Value)> = list
+        .iter()
+        .filter(|e| inserted.contains(&e.seq))
+        .map(|e| (e.at, e.event.kind.as_str(), &e.event.data))
+        .collect();
+    crate::findings::record_lifecycle(conn, device_id, &lifecycle).await?;
 
     sqlx::query("INSERT INTO device_net_state (device_id) VALUES ($1) ON CONFLICT DO NOTHING")
         .bind(device_id)

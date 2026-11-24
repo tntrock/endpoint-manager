@@ -156,6 +156,10 @@ pub(crate) fn recovered(what: &str) {
 pub struct WindowsCollector;
 
 impl Collector for WindowsCollector {
+    fn service_start_type(&self) -> Option<&'static str> {
+        super::oslog::start_type()
+    }
+
     fn identity(&self) -> anyhow::Result<Identity> {
         let con = wmi()?;
         let cs = computer_system(&con).ok();

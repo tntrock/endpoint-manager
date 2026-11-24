@@ -41,6 +41,8 @@ pub fn configure(
 ) -> anyhow::Result<()> {
     prepare_data_dir(data)?;
     apply_install_config(data, server_url, token, root_ca, signing_keys)?;
+    // 接下來的重新啟動是設定造成的，不是有人停掉 Agent
+    let _ = crate::lifecycle::plan_stop(data, protocol::stop_reason::RECONFIGURE);
     // 沒有 systemd（容器、WSL）或啟動失敗都不讓安裝失敗
     match run_capture("systemctl", &["restart", "endpoint-agent"], CMD_TIMEOUT) {
         Ok(_) => {}

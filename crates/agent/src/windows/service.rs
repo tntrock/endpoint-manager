@@ -13,6 +13,8 @@ use windows_service::{define_windows_service, service_dispatcher};
 use super::eventlog::EventLog;
 
 pub const SERVICE_NAME: &str = "EndpointManagerAgent";
+/// 安裝程式設定的顯示名稱（installer/agent.wxs）：服務控制管理員的事件以它稱呼服務
+pub const DISPLAY_NAME: &str = "Endpoint Manager Agent";
 
 define_windows_service!(ffi_service_main, service_main);
 
@@ -60,6 +62,14 @@ fn run_service() -> anyhow::Result<()> {
     let (tx, rx) = watch::channel(false);
     let handle = service_control_handler::register(SERVICE_NAME, move |ev| match ev {
         ServiceControl::Stop | ServiceControl::Shutdown => {
+            use protocol::stop_reason::*;
+            crate::lifecycle::set_stop_reason(if matches!(ev, ServiceControl::Shutdown) {
+                SHUTDOWN
+            } else if super::oslog::installer_running() {
+                UPGRADE
+            } else {
+                SERVICE_STOP
+            });
             let _ = tx.send(true);
             ServiceControlHandlerResult::NoError
         }

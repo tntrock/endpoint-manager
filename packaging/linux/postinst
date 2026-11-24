@@ -4,6 +4,8 @@ set -e
 systemctl daemon-reload || true
 systemctl enable endpoint-agent || true
 if [ "$1" = configure ] && [ -n "$2" ]; then
+    # 讓 Agent 知道這次停止是升級，不是有人停掉它
+    [ -d /var/lib/endpoint-manager ] && echo upgrade > /var/lib/endpoint-manager/planned_stop || true
     systemctl try-restart endpoint-agent || true
 fi
 exit 0

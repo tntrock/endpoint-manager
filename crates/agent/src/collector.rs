@@ -32,6 +32,11 @@ pub trait Collector: Send + Sync + 'static {
         None
     }
 
+    /// Agent 服務的啟動類型（`protocol::start_type`）；沒有安裝成服務時為 None
+    fn service_start_type(&self) -> Option<&'static str> {
+        None
+    }
+
     /// 讀取伺服器指定的登錄檔值（registry 區段）。預設回空清單（測試用的假收集器）。
     fn collect_registry(&self, _queries: &[RegistryQuery]) -> anyhow::Result<InventoryPayload> {
         Ok(InventoryPayload::Registry(vec![]))

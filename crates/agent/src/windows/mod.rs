@@ -6,6 +6,7 @@ pub mod eventlog;
 pub mod install;
 pub mod netnotify;
 pub mod network;
+pub mod oslog;
 pub mod registry;
 pub mod regwatch;
 pub mod secdir;
@@ -103,7 +104,15 @@ pub async fn run(dir: &Path, shutdown: watch::Receiver<bool>) -> anyhow::Result<
         agent.push_target(),
         shutdown.clone(),
     ));
+    crate::lifecycle::begin(dir, &agent, shutdown.clone()).await;
+    tokio::spawn(oslog::run(
+        dir.to_path_buf(),
+        agent.journal(),
+        shutdown.clone(),
+    ));
+    let (journal, target, stopped) = (agent.journal(), agent.push_target(), shutdown.clone());
     run_agent(agent, shutdown, rx).await;
+    crate::lifecycle::end(dir, &journal, &target, *stopped.borrow()).await;
     Ok(())
 }
 
