@@ -138,6 +138,18 @@ pub fn sanitize(p: &mut InventoryPayload) {
                 fix_opt(&mut x.os_hint);
             }
         }
+        InventoryPayload::Permissions(p) => {
+            p.items.truncate(protocol::MAX_PERMISSIONS);
+            for x in &mut p.items {
+                fix(&mut x.kind);
+                fix(&mut x.path);
+                fix_opt(&mut x.name);
+                x.granted_to.truncate(10);
+                x.granted_to.iter_mut().for_each(fix);
+            }
+            p.errors.truncate(20);
+            p.errors.iter_mut().for_each(fix);
+        }
         InventoryPayload::Exposure(e) => {
             e.listening.truncate(protocol::MAX_LISTENING);
             for l in &mut e.listening {

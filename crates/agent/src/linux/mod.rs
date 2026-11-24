@@ -10,6 +10,7 @@ pub mod install;
 pub mod network;
 pub mod oslog;
 pub mod packages;
+pub mod permissions;
 pub mod services;
 pub mod shares;
 pub mod system;

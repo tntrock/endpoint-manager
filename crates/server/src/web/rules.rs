@@ -330,6 +330,7 @@ pub fn form_to_input(f: &RuleForm) -> Result<RuleInput, String> {
             "no_empty_passwords": p.ssh_empty,
         }),
         "rdp_users" => json!({ "allowed": lines(&p.admins_allowed) }),
+        "weak_permissions" => json!({ "except_paths": lines(&p.except_names) }),
         "account_flags" => json!({
             "no_password": p.acc_no_password,
             "guest_disabled": p.acc_guest,
@@ -425,6 +426,7 @@ pub fn params_to_form(kind: &str, v: &Value) -> ParamFields {
             "open_share" => joined(v, "except_shares"),
             "exposed_service" => joined(v, "except_processes"),
             "firewall_allow_all" => joined(v, "except_rules"),
+            "weak_permissions" => joined(v, "except_paths"),
             _ => joined(v, "except_accounts"),
         },
         sh_anonymous: b("anonymous"),
@@ -1202,7 +1204,7 @@ mod tests {
     #[test]
     fn misconfig_forms_roundtrip() {
         type Case<'a> = (&'a str, Vec<(&'a str, &'a str)>, Value);
-        let cases: [Case; 8] = [
+        let cases: [Case; 9] = [
             (
                 "exposed_service",
                 vec![
@@ -1257,6 +1259,11 @@ mod tests {
                 "extra_root_account",
                 vec![("p_except_names", "toor")],
                 json!({"except_accounts": ["toor"]}),
+            ),
+            (
+                "weak_permissions",
+                vec![("p_except_names", "C:\\Vendor\\*\n/usr/local/bin/x")],
+                json!({"except_paths": ["C:\\Vendor\\*", "/usr/local/bin/x"]}),
             ),
             (
                 "account_flags",

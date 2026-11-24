@@ -1001,6 +1001,7 @@ struct AccountsTab {
     system_user_count: u32,
     shares: Option<super::shares::SharesCard>,
     exposure: Option<super::exposure::ExposureCard>,
+    permissions: Option<super::permissions::PermissionsCard>,
 }
 
 /// 權限來源的顯示文字：uid0、group:<群組>、sudoers:<檔案>
@@ -1018,6 +1019,7 @@ fn source_label(source: &str) -> String {
 async fn accounts_tab(st: &AppState, _s: &Session, id: Uuid) -> Result<Response, AppError> {
     let shares = super::shares::load(st, id).await?;
     let exposure = super::exposure::load(st, id).await?;
+    let permissions = super::permissions::load(st, id).await?;
     let data: Option<serde_json::Value> =
         sqlx::query_scalar("SELECT data FROM device_accounts WHERE device_id = $1")
             .bind(id)
@@ -1034,6 +1036,7 @@ async fn accounts_tab(st: &AppState, _s: &Session, id: Uuid) -> Result<Response,
             system_user_count: 0,
             shares,
             exposure,
+            permissions,
         }));
     };
     let mut privileged: Vec<PrivilegeRow> = a
@@ -1079,6 +1082,7 @@ async fn accounts_tab(st: &AppState, _s: &Session, id: Uuid) -> Result<Response,
         system_user_count: a.system_user_count,
         shares,
         exposure,
+        permissions,
     }))
 }
 

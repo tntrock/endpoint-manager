@@ -62,6 +62,7 @@ pub fn section_label(section: &str) -> &str {
         "vms" => "虛擬機",
         "shares" => "共用",
         "exposure" => "對外服務",
+        "permissions" => "權限過寬",
         other => other,
     }
 }

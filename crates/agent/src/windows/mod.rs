@@ -9,6 +9,7 @@ pub mod install;
 pub mod netnotify;
 pub mod network;
 pub mod oslog;
+pub mod permissions;
 pub mod registry;
 pub mod regwatch;
 pub mod secdir;

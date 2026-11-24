@@ -604,10 +604,14 @@ Windows 與 Linux 裝置在同一份清單：
   - 不允許 sudo 免密碼執行任何指令（Linux 的 `NOPASSWD: ALL`）。
   - 自動登入不能存密碼（Windows，登錄檔 Winlogon 的 `DefaultPassword`）：Agent 只查這個值有沒有、是不是空的，不讀內容。
   - Windows 的帳號區段從 Agent 0.15.0 開始回報本機帳號（不含網域帳號），列在裝置頁「安全設定」分頁的「本機帳號」。Linux 的「帳號與權限」分頁會標出空密碼的帳號與免密碼 ALL 的 sudo 規則。舊版 Agent 的結果為「未知」。
+- **權限過寬**（Windows、Linux）：一般使用者可以改寫的系統檔案；可設例外路徑或名稱（萬用字元）。資料來自 Agent 新的「權限」區段，每天檢查一次（跟「硬體」同一個間隔），需要 Agent 0.15.0 以上。
+  - Windows：服務的執行檔與所在資料夾、以 SYSTEM 執行的排程工作的程式（讀 `C:\Windows\System32\Tasks` 的工作定義）。Everyone、Authenticated Users、Users、Interactive 可以寫入、修改或改權限就算；資料夾只算「新增檔案」。執行檔不存在的服務不算。
+  - Linux：`/etc` 底下所有人可寫入的一般檔案（不跟隨符號連結、不跨檔案系統）、所有人讀得到的 `/etc/shadow`、`/etc/gshadow`，以及 `/usr/bin`、`/usr/sbin`、`/bin`、`/sbin`、`/usr/local/bin`、`/usr/local/sbin` 裡不屬於任何套件的 SUID／SGID 程式（以 `dpkg -S` 或 `rpm -qf` 逐一查詢）。
+  - 裝置頁「安全設定」分頁（Linux 在「帳號與權限」分頁）列出找到的項目。
 
 每種規則有固定的適用平台（新增規則的選單與表單上會標示）。其他作業系統的裝置不檢查，也不算「未知」。
 
-「合規 → 範本」有 37 條內建範本，例如 SMBv1、NTLMv2、LSA 保護、UAC、WinRM 的 Basic 驗證、「一律以提高的權限安裝」、自動登入，每條都附文件出處。自動登入只檢查有沒有開，不讀取密碼。
+「合規 → 範本」有 38 條內建範本，例如 SMBv1、NTLMv2、LSA 保護、UAC、WinRM 的 Basic 驗證、「一律以提高的權限安裝」、自動登入，每條都附文件出處。自動登入只檢查有沒有開，不讀取密碼。
 
 登錄檔讀取的限制：
 

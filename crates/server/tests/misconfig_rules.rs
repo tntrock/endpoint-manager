@@ -1,5 +1,5 @@
 //! 錯誤設定偵測：服務路徑沒加引號（Windows）、多餘的 UID 0 帳號（Linux）、規則的適用平台（第一期），
-//! 開放的共用（第二期），對外開放的服務與遠端登入（第三期），帳號設定（第四期）。
+//! 開放的共用（第二期），對外開放的服務與遠端登入（第三期），帳號設定與權限過寬（第四期）。
 mod common;
 
 use std::collections::BTreeMap;
@@ -10,8 +10,9 @@ use endpoint_server::compliance::rules::{Params, Rule, Severity};
 use endpoint_server::compliance::{preview, worker};
 use protocol::{
     AccountInfo, AccountsInfo, CheckinRequest, ExposureInfo, InventoryPayload, InventoryUpload,
-    ListenItem, LocalUser, OsFamily, PrincipalKind, PrivilegeEntry, RdpInfo, SCHEMA_VERSION,
-    ServiceItem, ShareAccess, ShareItem, SharesInfo, SshdInfo,
+    ListenItem, LocalUser, OsFamily, PermissionItem, PermissionsInfo, PrincipalKind,
+    PrivilegeEntry, RdpInfo, SCHEMA_VERSION, ServiceItem, ShareAccess, ShareItem, SharesInfo,
+    SshdInfo,
 };
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -686,4 +687,103 @@ async fn account_flags_rule(pool: PgPool) {
         .page(&c, &format!("/devices/{}/tab/security", win.device_id))
         .await;
     assert!(html.contains("Agent 版本太舊"), "{html}");
+}
+
+#[sqlx::test(migrations = false)]
+async fn weak_permissions_rule(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(2).await;
+    let lin = s.enroll_ok(&tok, None, None).await;
+    let win = s.enroll_ok(&tok, None, None).await;
+    checkin_linux(&s, &lin).await;
+    let rule = admin::create_rule(
+        &s.pool,
+        &input(
+            "權限",
+            "weak_permissions",
+            json!({"except_paths": ["Vendor*"]}),
+        ),
+        "admin",
+    )
+    .await
+    .unwrap();
+    worker::recompute_all(&s.pool).await.unwrap();
+    for a in [&lin, &win] {
+        let r = results(&s, a).await;
+        assert_eq!((r.len(), r[0].1.as_str()), (1, "unknown"), "{r:?}");
+    }
+    let item = |kind: &str, path: &str, name: Option<&str>, who: &str| PermissionItem {
+        kind: kind.into(),
+        path: path.into(),
+        name: name.map(Into::into),
+        granted_to: vec![who.into()],
+    };
+    put(
+        &s,
+        &win,
+        InventoryPayload::Permissions(PermissionsInfo {
+            items: vec![
+                item("service_binary", r"C:\Apps\a.exe", Some("AppSvc"), "Users"),
+                item("service_dir", r"C:\V\x", Some("VendorSvc"), "Everyone"),
+            ],
+            ..Default::default()
+        }),
+    )
+    .await;
+    let r = results(&s, &win).await;
+    assert_eq!((r[0].0, r[0].1.as_str()), (rule, "violating"));
+    assert_eq!(r[0].2["total"], 1, "名稱在例外：{r:?}");
+    put(
+        &s,
+        &lin,
+        InventoryPayload::Permissions(PermissionsInfo {
+            items: vec![item("suid", "/usr/local/bin/x", None, "SUID")],
+            errors: vec!["x".into()],
+            ..Default::default()
+        }),
+    )
+    .await;
+    assert_eq!(results(&s, &lin).await[0].1, "violating");
+
+    let c = s.admin_client().await;
+    let (_, html) = s
+        .page(&c, &format!("/devices/{}/tab/security", win.device_id))
+        .await;
+    assert!(
+        html.contains("id=\"permissions\"") && html.contains("服務執行檔可改寫"),
+        "{html}"
+    );
+    let (_, html) = s
+        .page(&c, &format!("/devices/{}/tab/accounts", lin.device_id))
+        .await;
+    assert!(html.contains("不屬於任何套件的 SUID 程式"), "{html}");
+    assert!(html.contains("讀取失敗：x"), "{html}");
+    let (_, html) = s
+        .page(&c, &format!("/devices/{}/tab/compliance", win.device_id))
+        .await;
+    assert!(
+        html.contains(r"權限過寬：服務執行檔可改寫 C:\Apps\a.exe（AppSvc；Users）"),
+        "{html}"
+    );
+    let (_, html) = s.page(&c, &format!("/compliance/rules/{rule}")).await;
+    assert!(html.contains("適用於：Windows、Linux"), "{html}");
+
+    // 修好：符合；只剩讀取失敗：未知
+    put(
+        &s,
+        &win,
+        InventoryPayload::Permissions(PermissionsInfo::default()),
+    )
+    .await;
+    assert!(results(&s, &win).await.is_empty());
+    put(
+        &s,
+        &lin,
+        InventoryPayload::Permissions(PermissionsInfo {
+            errors: vec!["x".into()],
+            ..Default::default()
+        }),
+    )
+    .await;
+    assert_eq!(results(&s, &lin).await[0].1, "unknown");
 }

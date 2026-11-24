@@ -27,6 +27,7 @@ pub mod network;
 pub mod notify;
 pub mod packages;
 pub mod password;
+pub mod permissions;
 pub mod registry;
 pub mod report;
 pub mod rules;
