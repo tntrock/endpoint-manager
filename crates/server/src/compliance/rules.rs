@@ -7,7 +7,7 @@ use super::matcher::Glob;
 
 pub const MAX_PATTERN_LEN: usize = 256;
 
-pub const KINDS: [&str; 19] = [
+pub const KINDS: [&str; 21] = [
     "forbidden_software",
     "required_software",
     "software_allowlist",
@@ -27,6 +27,8 @@ pub const KINDS: [&str; 19] = [
     "forbidden_image",
     "container_privilege",
     "unpinned_image",
+    "unquoted_service_path",
+    "extra_root_account",
 ];
 
 /// 多重連線規則：回溯天數上限
@@ -57,7 +59,45 @@ pub fn kind_label(kind: &str) -> &'static str {
         "forbidden_image" => "禁止映像",
         "container_privilege" => "容器權限",
         "unpinned_image" => "映像未固定版本",
+        "unquoted_service_path" => "服務路徑沒加引號",
+        "extra_root_account" => "多餘的 UID 0 帳號",
         _ => "未知類型",
+    }
+}
+
+/// 規則適用的作業系統（錯誤設定規格 §2）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Platform {
+    Windows,
+    Linux,
+    Both,
+}
+
+impl Platform {
+    pub fn covers(self, linux: bool) -> bool {
+        match self {
+            Platform::Windows => !linux,
+            Platform::Linux => linux,
+            Platform::Both => true,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Platform::Windows => "Windows",
+            Platform::Linux => "Linux",
+            Platform::Both => "Windows、Linux",
+        }
+    }
+}
+
+/// 依規則種類決定適用的作業系統；不認得的種類跟舊版一樣只對 Windows
+pub fn kind_platform(kind: &str) -> Platform {
+    match kind {
+        "forbidden_image" | "container_privilege" | "unpinned_image" | "extra_root_account" => {
+            Platform::Linux
+        }
+        _ => Platform::Windows,
     }
 }
 
@@ -180,6 +220,14 @@ pub enum Params {
     },
     UnpinnedImage {
         except_images: Vec<String>,
+    },
+    UnquotedServicePath {
+        /// 例外服務名稱（萬用字元）
+        except_services: Vec<String>,
+    },
+    ExtraRootAccount {
+        /// 例外帳號（萬用字元）
+        except_accounts: Vec<String>,
     },
 }
 
@@ -356,17 +404,24 @@ pub enum Check {
     UnpinnedImage {
         except_images: Vec<Glob>,
     },
+    UnquotedServicePath {
+        except_services: Vec<Glob>,
+    },
+    ExtraRootAccount {
+        except_accounts: Vec<Glob>,
+    },
 }
 
 impl Check {
-    /// 只評估 Linux 裝置的規則（容器）；其他規則只評估 Windows 裝置
-    pub fn linux_only(&self) -> bool {
-        matches!(
-            self,
+    /// 規則適用的作業系統
+    pub fn platform(&self) -> Platform {
+        match self {
             Check::ForbiddenImage { .. }
-                | Check::ContainerPrivilege { .. }
-                | Check::UnpinnedImage { .. }
-        )
+            | Check::ContainerPrivilege { .. }
+            | Check::UnpinnedImage { .. }
+            | Check::ExtraRootAccount { .. } => Platform::Linux,
+            _ => Platform::Windows,
+        }
     }
 }
 
@@ -402,14 +457,33 @@ struct RawUnpinned {
     except_images: Vec<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawUnquoted {
+    #[serde(default)]
+    except_services: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawExtraRoot {
+    #[serde(default)]
+    except_accounts: Vec<String>,
+}
+
 /// 例外映像：去空白、去重；最多 MAX_EXCEPTIONS 個
 fn image_exceptions(v: Vec<String>) -> Result<Vec<String>, String> {
+    exceptions("例外映像", v)
+}
+
+/// 例外清單：去空白、去重；最多 MAX_EXCEPTIONS 個
+fn exceptions(field: &str, v: Vec<String>) -> Result<Vec<String>, String> {
     if v.len() > MAX_EXCEPTIONS {
         return Err(format!("例外最多 {MAX_EXCEPTIONS} 個"));
     }
     let mut out = vec![];
     for i in v {
-        if let Some(i) = opt("例外映像", Some(i))?
+        if let Some(i) = opt(field, Some(i))?
             && !out.contains(&i)
         {
             out.push(i);
@@ -832,6 +906,18 @@ impl Params {
                     except_images: image_exceptions(r.except_images)?,
                 })
             }
+            "unquoted_service_path" => {
+                let r: RawUnquoted = from(v)?;
+                Ok(Params::UnquotedServicePath {
+                    except_services: exceptions("例外服務", r.except_services)?,
+                })
+            }
+            "extra_root_account" => {
+                let r: RawExtraRoot = from(v)?;
+                Ok(Params::ExtraRootAccount {
+                    except_accounts: exceptions("例外帳號", r.except_accounts)?,
+                })
+            }
             _ => Err(format!("未知的規則類型：{kind}")),
         }
     }
@@ -868,6 +954,8 @@ impl Params {
             Params::ForbiddenImage { .. } => "forbidden_image",
             Params::ContainerPrivilege { .. } => "container_privilege",
             Params::UnpinnedImage { .. } => "unpinned_image",
+            Params::UnquotedServicePath { .. } => "unquoted_service_path",
+            Params::ExtraRootAccount { .. } => "extra_root_account",
         }
     }
 
@@ -1047,6 +1135,16 @@ impl Params {
                     m.insert("except_images".into(), json!(except_images));
                 }
             }
+            Params::UnquotedServicePath { except_services } => {
+                if !except_services.is_empty() {
+                    m.insert("except_services".into(), json!(except_services));
+                }
+            }
+            Params::ExtraRootAccount { except_accounts } => {
+                if !except_accounts.is_empty() {
+                    m.insert("except_accounts".into(), json!(except_accounts));
+                }
+            }
         }
         Value::Object(m)
     }
@@ -1178,6 +1276,12 @@ impl Params {
             },
             Params::UnpinnedImage { except_images } => Check::UnpinnedImage {
                 except_images: except_images.iter().map(|i| Glob::new(i)).collect(),
+            },
+            Params::UnquotedServicePath { except_services } => Check::UnquotedServicePath {
+                except_services: except_services.iter().map(|i| Glob::new(i)).collect(),
+            },
+            Params::ExtraRootAccount { except_accounts } => Check::ExtraRootAccount {
+                except_accounts: except_accounts.iter().map(|i| Glob::new(i)).collect(),
             },
         }
     }
@@ -1429,7 +1533,7 @@ mod tests {
             json!({"image": "*xmrig*", "running_only": true})
         );
         assert_eq!(p.kind(), "forbidden_image");
-        assert!(p.compile().linux_only());
+        assert!(p.compile().platform() == Platform::Linux);
         let p = Params::parse(
             "container_privilege",
             &json!({"privileged": true, "except_images": [" portainer/* ", "", "portainer/*"]}),
@@ -1440,15 +1544,16 @@ mod tests {
             json!({"privileged": true, "except_images": ["portainer/*"]})
         );
         assert_eq!(Params::parse(p.kind(), &p.to_json()).unwrap(), p, "往返");
-        assert!(p.compile().linux_only());
+        assert!(p.compile().platform() == Platform::Linux);
         let p = Params::parse("unpinned_image", &json!({})).unwrap();
         assert_eq!((p.kind(), p.to_json()), ("unpinned_image", json!({})));
-        assert!(p.compile().linux_only());
+        assert!(p.compile().platform() == Platform::Linux);
         assert!(
-            !Params::parse("dual_homed", &json!({}))
+            Params::parse("dual_homed", &json!({}))
                 .unwrap()
                 .compile()
-                .linux_only()
+                .platform()
+                == Platform::Windows
         );
         for (kind, bad) in [
             ("forbidden_image", json!({})),
@@ -1474,6 +1579,45 @@ mod tests {
             assert!(KINDS.contains(&k));
             assert_ne!(kind_label(k), "未知類型");
         }
+    }
+
+    #[test]
+    fn misconfig_params_and_platforms() {
+        let p = Params::parse(
+            "unquoted_service_path",
+            &json!({"except_services": [" Vendor* ", "Vendor*", ""]}),
+        )
+        .unwrap();
+        assert_eq!(p.to_json(), json!({"except_services": ["Vendor*"]}));
+        assert_eq!(Params::parse(p.kind(), &p.to_json()).unwrap(), p, "往返");
+        assert_eq!(p.compile().platform(), Platform::Windows);
+        let p = Params::parse("extra_root_account", &json!({})).unwrap();
+        assert_eq!((p.kind(), p.to_json()), ("extra_root_account", json!({})));
+        assert_eq!(p.compile().platform(), Platform::Linux);
+        let p = Params::parse("extra_root_account", &json!({"except_accounts": ["toor"]})).unwrap();
+        assert_eq!(Params::parse(p.kind(), &p.to_json()).unwrap(), p);
+        for (kind, bad) in [
+            ("unquoted_service_path", json!({"x": 1})),
+            (
+                "extra_root_account",
+                json!({"except_accounts": vec!["a"; MAX_EXCEPTIONS + 1]}),
+            ),
+        ] {
+            assert!(Params::parse(kind, &bad).is_err(), "{kind} {bad}");
+        }
+        // 種類與編譯後的規則對同一個平台
+        for k in KINDS {
+            assert_ne!(kind_label(k), "未知類型");
+        }
+        assert_eq!(kind_platform("extra_root_account"), Platform::Linux);
+        assert_eq!(kind_platform("unquoted_service_path"), Platform::Windows);
+        assert_eq!(kind_platform("bogus"), Platform::Windows);
+        assert!(Platform::Both.covers(true) && Platform::Both.covers(false));
+        assert!(Platform::Windows.covers(false) && !Platform::Windows.covers(true));
+        assert!(Platform::Linux.covers(true) && !Platform::Linux.covers(false));
+        assert_eq!(Platform::Both.label(), "Windows、Linux");
+        assert_eq!(Platform::Linux.label(), "Linux");
+        assert_eq!(Platform::Windows.label(), "Windows");
     }
 
     #[test]

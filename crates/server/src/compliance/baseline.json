@@ -218,5 +218,75 @@
     "kind": "registry_value",
     "params": {"path": "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell\\ScriptBlockLogging", "name": "EnableScriptBlockLogging", "op": "equals", "expected": "1"},
     "source": "https://learn.microsoft.com/powershell/module/microsoft.powershell.core/about/about_logging?view=powershell-5.1"
+  },
+  {
+    "key": "always_install_elevated_off",
+    "category": "系統強化",
+    "name": "停用「一律以提高的權限安裝」",
+    "description": "Installer\\AlwaysInstallElevated 不能是 1（未設定視為符合）。開啟時任何使用者都能以 SYSTEM 權限安裝 MSI，等於直接取得系統權限。",
+    "severity": "high",
+    "kind": "registry_value",
+    "params": {"path": "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\Installer", "name": "AlwaysInstallElevated", "op": "not_equals", "expected": "1", "absent_ok": true},
+    "source": "https://learn.microsoft.com/windows/win32/msi/alwaysinstallelevated"
+  },
+  {
+    "key": "winrm_no_basic_auth",
+    "category": "網路與防火牆",
+    "name": "WinRM 不允許 Basic 驗證",
+    "description": "WinRM 服務的「允許基本驗證」不能開啟（WinRM\\Service\\AllowBasic ≠ 1，未設定視為符合）。Basic 驗證以可還原的方式傳送密碼。",
+    "severity": "high",
+    "kind": "registry_value",
+    "params": {"path": "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\WinRM\\Service", "name": "AllowBasic", "op": "not_equals", "expected": "1", "absent_ok": true},
+    "source": "https://learn.microsoft.com/windows/win32/winrm/authentication-for-remote-connections"
+  },
+  {
+    "key": "winrm_no_unencrypted",
+    "category": "網路與防火牆",
+    "name": "WinRM 不允許未加密的流量",
+    "description": "WinRM 服務的「允許未加密的流量」不能開啟（WinRM\\Service\\AllowUnencryptedTraffic ≠ 1，未設定視為符合）。",
+    "severity": "high",
+    "kind": "registry_value",
+    "params": {"path": "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\WinRM\\Service", "name": "AllowUnencryptedTraffic", "op": "not_equals", "expected": "1", "absent_ok": true},
+    "source": "https://learn.microsoft.com/windows/win32/winrm/installation-and-configuration-for-windows-remote-management"
+  },
+  {
+    "key": "autologon_off",
+    "category": "帳號與密碼",
+    "name": "不使用自動登入",
+    "description": "Winlogon\\AutoAdminLogon 不能是 1（未設定視為符合）。開啟時密碼通常以明文存在登錄檔裡；Agent 不讀取密碼本身，只檢查是否開啟。資訊站、展示機這類刻意設定的電腦可以用豁免或排除群組。",
+    "severity": "medium",
+    "kind": "registry_value",
+    "params": {"path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon", "name": "AutoAdminLogon", "op": "not_equals", "expected": "1", "absent_ok": true},
+    "source": "https://learn.microsoft.com/troubleshoot/windows-server/user-profiles-and-logon/turn-on-automatic-logon"
+  },
+  {
+    "key": "restrict_null_session_access",
+    "category": "網路與防火牆",
+    "name": "限制匿名存取具名管道與共用",
+    "description": "「網路存取：限制匿名存取具名管道和共用」＝啟用（LanManServer\\Parameters\\RestrictNullSessAccess = 1）。未設定視為符合（Windows 預設是 1）。",
+    "severity": "medium",
+    "kind": "registry_value",
+    "params": {"path": "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanManServer\\Parameters", "name": "RestrictNullSessAccess", "op": "equals", "expected": "1", "absent_ok": true},
+    "source": "https://learn.microsoft.com/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/network-access-restrict-anonymous-access-to-named-pipes-and-shares"
+  },
+  {
+    "key": "unquoted_service_paths",
+    "category": "系統強化",
+    "name": "服務路徑要加引號",
+    "description": "服務的執行檔路徑含有空白卻沒有加引號時，有權限在上層資料夾建立檔案的人可以讓服務以 SYSTEM 身分執行自己的程式。Windows 目錄底下的服務不檢查。",
+    "severity": "high",
+    "kind": "unquoted_service_path",
+    "params": {},
+    "source": "https://learn.microsoft.com/windows/win32/api/winsvc/nf-winsvc-createservicea"
+  },
+  {
+    "key": "linux_single_root",
+    "category": "帳號與密碼",
+    "name": "Linux：只有 root 是 UID 0",
+    "description": "root 以外還有 UID 0 的帳號時算違規：UID 0 就是 root，可能是有人留下的後門帳號。只檢查 Linux 裝置。",
+    "severity": "high",
+    "kind": "extra_root_account",
+    "params": {},
+    "source": "https://man7.org/linux/man-pages/man5/passwd.5.html"
   }
 ]

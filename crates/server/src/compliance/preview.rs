@@ -18,7 +18,10 @@ pub struct PreviewCount {
 
 pub async fn preview(pool: &PgPool, rule: Rule) -> Result<PreviewCount, sqlx::Error> {
     // 「檢查幾台」只算規則適用的作業系統
-    let linux = rule.check.as_ref().is_ok_and(|c| c.linux_only());
+    let platform = rule
+        .check
+        .as_ref()
+        .map_or(super::rules::Platform::Windows, |c| c.platform());
     let set = RuleSet::new(0, vec![rule]);
     let mut count = PreviewCount::default();
     let mut cursor: Option<Uuid> = None;
@@ -37,7 +40,7 @@ pub async fn preview(pool: &PgPool, rule: Rule) -> Result<PreviewCount, sqlx::Er
             break;
         };
         for (_, facts) in load_facts_bulk(&mut conn, &ids).await? {
-            if facts.linux != linux {
+            if !platform.covers(facts.linux) {
                 continue;
             }
             count.devices += 1;

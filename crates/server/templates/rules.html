@@ -6,7 +6,7 @@
   {% if nav.platform %}
   <div class="actions">
     <a class="btn" href="/compliance/rules/templates">從範本建立</a>
-    <details class="user"><summary class="btn primary">＋ 新增規則</summary><div class="menu">{% for k in kinds %}<a href="/compliance/rules/new?kind={{ k.0 }}">{{ k.1 }}</a>{% endfor %}</div></details>
+    <details class="user"><summary class="btn primary">＋ 新增規則</summary><div class="menu">{% for k in kinds %}<a href="/compliance/rules/new?kind={{ k.0 }}">{{ k.1 }} <span class="faint">{{ k.2 }}</span></a>{% endfor %}</div></details>
   </div>
   {% endif %}
 </div>

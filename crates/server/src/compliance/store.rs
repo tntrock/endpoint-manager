@@ -77,6 +77,22 @@ async fn load_containers(
         .collect())
 }
 
+/// accounts 區段（一次讀一批裝置）；jsonb 壞掉的當成沒有資料
+async fn load_accounts(
+    conn: &mut PgConnection,
+    ids: &[Uuid],
+) -> Result<HashMap<Uuid, protocol::AccountsInfo>, sqlx::Error> {
+    let rows: Vec<(Uuid, Value)> =
+        sqlx::query_as("SELECT device_id, data FROM device_accounts WHERE device_id = ANY($1)")
+            .bind(ids)
+            .fetch_all(&mut *conn)
+            .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(id, v)| serde_json::from_value(v).ok().map(|a| (id, a)))
+        .collect())
+}
+
 /// security／registry／services 的事實（一次讀一批裝置）
 #[derive(Default)]
 struct ConfigFacts {
@@ -130,17 +146,19 @@ async fn load_config(conn: &mut PgConnection, ids: &[Uuid]) -> Result<ConfigFact
             .or_default()
             .insert(registry_key(&v.path, &v.name), v);
     }
-    let rows: Vec<(Uuid, String, String, String)> = sqlx::query_as(
-        "SELECT device_id, name, start_mode, state FROM device_services WHERE device_id = ANY($1)",
+    let rows: Vec<(Uuid, String, String, String, Option<String>)> = sqlx::query_as(
+        "SELECT device_id, name, start_mode, state, binary_path FROM device_services \
+         WHERE device_id = ANY($1)",
     )
     .bind(ids)
     .fetch_all(&mut *conn)
     .await?;
-    for (id, name, start_mode, state) in rows {
+    for (id, name, start_mode, state, binary_path) in rows {
         out.services.entry(id).or_default().push(ServiceFact {
             name,
             start_mode,
             state,
+            binary_path,
         });
     }
     let rows: Vec<UpdateDbRow> = sqlx::query_as(
@@ -280,10 +298,16 @@ pub async fn load_facts(
     } else {
         None
     };
+    let accounts = if has("accounts") {
+        load_accounts(conn, &[id]).await?.remove(&id)
+    } else {
+        None
+    };
     let now = time::OffsetDateTime::now_utc();
     Ok(Some(DeviceFacts {
         network,
         containers,
+        accounts,
         linux,
         active,
         group_id,
@@ -555,6 +579,7 @@ pub async fn load_facts_bulk(
     let mut cfg = load_config(conn, ids).await?;
     let (mut periods, sites) = load_network(conn, ids).await?;
     let mut containers = load_containers(conn, ids).await?;
+    let mut accounts = load_accounts(conn, ids).await?;
     let now = time::OffsetDateTime::now_utc();
     let mut has: std::collections::HashSet<(Uuid, String)> = std::collections::HashSet::new();
     has.extend(sections);
@@ -569,6 +594,7 @@ pub async fn load_facts_bulk(
                     containers: has(id, "containers")
                         .then(|| containers.remove(&id))
                         .flatten(),
+                    accounts: has(id, "accounts").then(|| accounts.remove(&id)).flatten(),
                     group_id,
                     os_build: has(id, "basic").then(|| os_build.unwrap_or_default()),
                     os_ubr: os_ubr.and_then(|u| u32::try_from(u).ok()),

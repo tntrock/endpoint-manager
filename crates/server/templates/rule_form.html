@@ -3,6 +3,7 @@
 {% block content %}
 <div class="page-head"><div><div class="crumb"><a href="/compliance">合規</a> ／ <a href="/compliance/rules">規則</a> ／ {% if id.is_some() %}編輯{% else %}新增{% endif %}</div><h1>{% if id.is_some() %}編輯{% else %}新增{% endif %}規則：{{ kind_label }}{% call m::help_btn("rule-form", "建立規則") %}{% endcall %}</h1></div></div>
 {% if let Some(e) = error %}<div class="notice error">{{ e }}</div>{% endif %}
+<p class="muted">適用於：{{ platform }}。其他作業系統的裝置不檢查，也不算「未知」。</p>
 <form method="post" action="{% if let Some(i) = id %}/compliance/rules/{{ i }}{% else %}/compliance/rules{% endif %}">
   <input type="hidden" name="csrf" value="{{ nav.csrf }}">
   <input type="hidden" name="kind" value="{{ kind }}">
@@ -97,6 +98,14 @@
     <div class="row"><label class="field">例外映像（每行一個，可用 <code>*</code>）
        <textarea name="p_img_except" rows="4" cols="40" placeholder="*pause*">{{ p.img_except }}</textarea></label></div>
     <p class="muted">執行中的容器使用的映像沒有版本標籤、或標籤是 <code>latest</code>，而且沒有用 digest（<code>@sha256:…</code>）固定時算違規。LXC／Incus 系統容器不檢查。只套用到 Linux 裝置。</p>
+  {% else if kind == "unquoted_service_path" %}
+    <div class="row"><label class="field">例外服務名稱（每行一個，可用 <code>*</code>）
+       <textarea name="p_except_names" rows="4" cols="40" placeholder="VendorUpdater*">{{ p.except_names }}</textarea></label></div>
+    <p class="muted">服務的執行檔路徑沒有用引號包起來、路徑含有空白，而且不在 Windows 目錄底下時算違規。例如 <code>C:\Program Files\My App\svc.exe</code>：有權限在 <code>C:\</code> 建立 <code>Program.exe</code> 的人可以讓服務以 SYSTEM 身分執行它。修正方式是在服務設定的路徑前後加上引號。</p>
+  {% else if kind == "extra_root_account" %}
+    <div class="row"><label class="field">例外帳號（每行一個，可用 <code>*</code>）
+       <textarea name="p_except_names" rows="4" cols="40" placeholder="toor">{{ p.except_names }}</textarea></label></div>
+    <p class="muted">root 以外還有 UID 0 的帳號時算違規：UID 0 就是 root，可能是有人留下的後門帳號。某些設備廠商的維護帳號可以加入例外。</p>
   {% else if kind == "update_policy" %}
 
     <p class="muted">裝置的更新原則被改動（例如 GPO 覆蓋）或套用失敗時算違規；不受管的裝置算符合。</p>

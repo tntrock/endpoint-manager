@@ -14,7 +14,7 @@ use super::devices::{SelectOption, db_error};
 use super::{not_found, render};
 use crate::AppState;
 use crate::compliance::admin::{self, RuleInput};
-use crate::compliance::rules::{KINDS, Params, Rule, Severity, kind_label};
+use crate::compliance::rules::{KINDS, Params, Rule, Severity, kind_label, kind_platform};
 use crate::error::AppError;
 
 /// 表單原始欄位（include／exclude 可重複）。
@@ -78,6 +78,8 @@ pub struct ParamFields {
     pub pv_socket: bool,
     /// 容器權限、映像未固定版本：例外映像（每行一個）
     pub img_except: String,
+    /// 服務路徑沒加引號、多餘的 UID 0 帳號：例外名稱（每行一個）
+    pub except_names: String,
 }
 
 fn lines(v: &str) -> Vec<&str> {
@@ -146,6 +148,7 @@ pub fn parse_form(raw: &[u8]) -> RuleForm {
             "p_pv_host_network" => f.p.pv_host_network = v == "1",
             "p_pv_socket" => f.p.pv_socket = v == "1",
             "p_img_except" => f.p.img_except = v,
+            "p_except_names" => f.p.except_names = v,
             _ => {}
         }
     }
@@ -259,6 +262,8 @@ pub fn form_to_input(f: &RuleForm) -> Result<RuleInput, String> {
             "except_images": lines(&p.img_except),
         }),
         "unpinned_image" => json!({ "except_images": lines(&p.img_except) }),
+        "unquoted_service_path" => json!({ "except_services": lines(&p.except_names) }),
+        "extra_root_account" => json!({ "except_accounts": lines(&p.except_names) }),
         "local_admins" => {
             let allowed: Vec<&str> = p
                 .admins_allowed
@@ -334,6 +339,11 @@ pub fn params_to_form(kind: &str, v: &Value) -> ParamFields {
         pv_host_network: b("host_network"),
         pv_socket: b("runtime_socket"),
         img_except: joined(v, "except_images"),
+        except_names: if kind == "unquoted_service_path" {
+            joined(v, "except_services")
+        } else {
+            joined(v, "except_accounts")
+        },
         admins_allowed: v["allowed"]
             .as_array()
             .map(|a| {
@@ -486,7 +496,7 @@ pub struct RuleRow {
 struct RulesPage {
     nav: Nav,
     rows: Vec<RuleRow>,
-    kinds: Vec<(&'static str, &'static str)>,
+    kinds: Vec<(&'static str, &'static str, &'static str)>,
 }
 
 type RuleListRow = (i64, String, String, String, bool, i64, i64, i64);
@@ -586,7 +596,10 @@ pub async fn list(
     Ok(render(&RulesPage {
         nav: Nav::new(&s, "compliance"),
         rows,
-        kinds: KINDS.iter().map(|k| (*k, kind_label(k))).collect(),
+        kinds: KINDS
+            .iter()
+            .map(|k| (*k, kind_label(k), kind_platform(k).label()))
+            .collect(),
     }))
 }
 
@@ -598,6 +611,8 @@ struct RuleFormPage {
     id: Option<i64>,
     kind: String,
     kind_label: &'static str,
+    /// 適用的作業系統
+    platform: &'static str,
     name: String,
     description: String,
     enabled: bool,
@@ -657,6 +672,7 @@ pub async fn new_form(
         nav: Nav::new(&s, "compliance"),
         id: None,
         kind_label: kind_label(&q.kind),
+        platform: kind_platform(&q.kind).label(),
         kind: q.kind,
         name: String::new(),
         description: String::new(),
@@ -710,6 +726,7 @@ pub async fn edit_form(
         nav: Nav::new(&s, "compliance"),
         id: Some(id),
         kind_label: kind_label(&kind),
+        platform: kind_platform(&kind).label(),
         p: params_to_form(&kind, &params),
         kind,
         name,
@@ -792,6 +809,7 @@ async fn saved_or_form(
         nav: Nav::new(s, "compliance"),
         id,
         kind_label: kind_label(&f.kind),
+        platform: kind_platform(&f.kind).label(),
         severities: severities(&f.severity),
         include: group_checks(st, &f.include).await.map_err(db_error)?,
         exclude: group_checks(st, &f.exclude).await.map_err(db_error)?,
