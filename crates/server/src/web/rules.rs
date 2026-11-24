@@ -1177,7 +1177,8 @@ mod tests {
     /// 錯誤設定規則的表單：送出轉成參數，再從參數轉回表單（編輯頁）
     #[test]
     fn misconfig_forms_roundtrip() {
-        let cases: [(&str, Vec<(&str, &str)>, Value); 7] = [
+        type Case<'a> = (&'a str, Vec<(&'a str, &'a str)>, Value);
+        let cases: [Case; 7] = [
             (
                 "exposed_service",
                 vec![
