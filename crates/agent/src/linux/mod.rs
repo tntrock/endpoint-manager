@@ -10,6 +10,7 @@ pub mod network;
 pub mod oslog;
 pub mod packages;
 pub mod services;
+pub mod shares;
 pub mod system;
 pub mod vms;
 

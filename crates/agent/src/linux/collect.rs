@@ -45,6 +45,7 @@ impl Collector for LinuxCollector {
             Section::Containers => InventoryPayload::Containers(super::containers::collect()),
             Section::Network => InventoryPayload::Network(super::network::collect()?),
             Section::Vms => InventoryPayload::Vms(super::vms::collect()),
+            Section::Shares => InventoryPayload::Shares(super::shares::collect()),
             Section::Patches | Section::Security | Section::Registry => {
                 bail!("Linux 不收集這個區段")
             }

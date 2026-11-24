@@ -102,6 +102,14 @@
     <div class="row"><label class="field">例外服務名稱（每行一個，可用 <code>*</code>）
        <textarea name="p_except_names" rows="4" cols="40" placeholder="VendorUpdater*">{{ p.except_names }}</textarea></label></div>
     <p class="muted">服務的執行檔路徑沒有用引號包起來、路徑含有空白，而且不在 Windows 目錄底下時算違規。例如 <code>C:\Program Files\My App\svc.exe</code>：有權限在 <code>C:\</code> 建立 <code>Program.exe</code> 的人可以讓服務以 SYSTEM 身分執行它。修正方式是在服務設定的路徑前後加上引號。</p>
+  {% else if kind == "open_share" %}
+    <p class="checks"><label><input type="checkbox" name="p_sh_anonymous" value="1" {% if p.sh_anonymous %}checked{% endif %}> 匿名（不登入）</label>
+       <label><input type="checkbox" name="p_sh_all_users" value="1" {% if p.sh_all_users %}checked{% endif %}> 所有使用者（Everyone、Domain Users 等）</label>
+       <label><input type="checkbox" name="p_sh_read" value="1" {% if p.sh_read %}checked{% endif %}> 可讀取也算（不勾只算可寫入）</label>
+       <label><input type="checkbox" name="p_sh_nrs" value="1" {% if p.sh_nrs %}checked{% endif %}> NFS 的 no_root_squash 也算</label></p>
+    <div class="row"><label class="field">例外共用（名稱或路徑，每行一個，可用 <code>*</code>）
+       <textarea name="p_except_names" rows="4" cols="40" placeholder="SoftwareDist">{{ p.except_names }}</textarea></label></div>
+    <p class="muted">檢查 Windows 的 SMB 共用、Linux 的 Samba 與 NFS。Windows 以共用權限與資料夾權限較小的一邊判斷；Guest 帳號啟用時，給 Everyone 的權限也算匿名。NFS 的來源是 <code>*</code> 時算匿名。常見的正常情況：IT 的軟體散布共用（通常只能讀）、部門共用資料夾（所有人可寫入是刻意的），用例外排除。</p>
   {% else if kind == "extra_root_account" %}
     <div class="row"><label class="field">例外帳號（每行一個，可用 <code>*</code>）
        <textarea name="p_except_names" rows="4" cols="40" placeholder="toor">{{ p.except_names }}</textarea></label></div>

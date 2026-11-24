@@ -283,6 +283,20 @@ pub async fn load_payload(
                 }
             }
         }
+        Section::Shares => {
+            let data: serde_json::Value =
+                sqlx::query_scalar("SELECT data FROM device_shares WHERE device_id = $1")
+                    .bind(device_id)
+                    .fetch_one(&mut *conn)
+                    .await?;
+            match serde_json::from_value(data) {
+                Ok(v) => InventoryPayload::Shares(v),
+                Err(e) => {
+                    tracing::warn!(%device_id, error = %e, "共用區段 jsonb 無法解析，視為無資料");
+                    return Ok(None);
+                }
+            }
+        }
         Section::Vms => {
             let data: serde_json::Value =
                 sqlx::query_scalar("SELECT data FROM device_vms WHERE device_id = $1")
@@ -504,6 +518,16 @@ async fn write_payload(
             )
             .bind(device_id)
             .bind(json(c))
+            .execute(&mut *conn)
+            .await?;
+        }
+        InventoryPayload::Shares(v) => {
+            sqlx::query(
+                "INSERT INTO device_shares (device_id, data) VALUES ($1, $2::jsonb) \
+                 ON CONFLICT (device_id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()",
+            )
+            .bind(device_id)
+            .bind(json(v))
             .execute(&mut *conn)
             .await?;
         }

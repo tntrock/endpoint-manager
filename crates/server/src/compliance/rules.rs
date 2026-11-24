@@ -7,7 +7,7 @@ use super::matcher::Glob;
 
 pub const MAX_PATTERN_LEN: usize = 256;
 
-pub const KINDS: [&str; 21] = [
+pub const KINDS: [&str; 22] = [
     "forbidden_software",
     "required_software",
     "software_allowlist",
@@ -29,6 +29,7 @@ pub const KINDS: [&str; 21] = [
     "unpinned_image",
     "unquoted_service_path",
     "extra_root_account",
+    "open_share",
 ];
 
 /// 多重連線規則：回溯天數上限
@@ -61,6 +62,7 @@ pub fn kind_label(kind: &str) -> &'static str {
         "unpinned_image" => "映像未固定版本",
         "unquoted_service_path" => "服務路徑沒加引號",
         "extra_root_account" => "多餘的 UID 0 帳號",
+        "open_share" => "開放的共用",
         _ => "未知類型",
     }
 }
@@ -97,6 +99,7 @@ pub fn kind_platform(kind: &str) -> Platform {
         "forbidden_image" | "container_privilege" | "unpinned_image" | "extra_root_account" => {
             Platform::Linux
         }
+        "open_share" => Platform::Both,
         _ => Platform::Windows,
     }
 }
@@ -229,6 +232,22 @@ pub enum Params {
         /// 例外帳號（萬用字元）
         except_accounts: Vec<String>,
     },
+    OpenShare(OpenShareParams),
+}
+
+/// 開放的共用（錯誤設定規格 §4.2）
+#[derive(Debug, Clone, PartialEq)]
+pub struct OpenShareParams {
+    /// 匿名（不登入）
+    pub anonymous: bool,
+    /// 所有使用者
+    pub all_users: bool,
+    /// 只算可寫入（false：可讀取以上）
+    pub write_only: bool,
+    /// NFS 的 no_root_squash 也算
+    pub no_root_squash: bool,
+    /// 例外共用名稱或路徑（萬用字元）
+    pub except_shares: Vec<String>,
 }
 
 /// 多重連線規則的參數（網路規格 §5.3）
@@ -410,6 +429,13 @@ pub enum Check {
     ExtraRootAccount {
         except_accounts: Vec<Glob>,
     },
+    OpenShare {
+        anonymous: bool,
+        all_users: bool,
+        write_only: bool,
+        no_root_squash: bool,
+        except_shares: Vec<Glob>,
+    },
 }
 
 impl Check {
@@ -420,6 +446,7 @@ impl Check {
             | Check::ContainerPrivilege { .. }
             | Check::UnpinnedImage { .. }
             | Check::ExtraRootAccount { .. } => Platform::Linux,
+            Check::OpenShare { .. } => Platform::Both,
             _ => Platform::Windows,
         }
     }
@@ -469,6 +496,22 @@ struct RawUnquoted {
 struct RawExtraRoot {
     #[serde(default)]
     except_accounts: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawOpenShare {
+    #[serde(default)]
+    anonymous: bool,
+    #[serde(default)]
+    all_users: bool,
+    /// `write`（預設）或 `read`
+    #[serde(default)]
+    access: Option<String>,
+    #[serde(default)]
+    no_root_squash: bool,
+    #[serde(default)]
+    except_shares: Vec<String>,
 }
 
 /// 例外映像：去空白、去重；最多 MAX_EXCEPTIONS 個
@@ -918,6 +961,24 @@ impl Params {
                     except_accounts: exceptions("例外帳號", r.except_accounts)?,
                 })
             }
+            "open_share" => {
+                let r: RawOpenShare = from(v)?;
+                if !r.anonymous && !r.all_users && !r.no_root_squash {
+                    return Err("開放的共用規則至少要勾選一項".into());
+                }
+                let write_only = match r.access.as_deref().map(str::trim) {
+                    None | Some("") | Some("write") => true,
+                    Some("read") => false,
+                    Some(other) => return Err(format!("不認得的權限：{other}")),
+                };
+                Ok(Params::OpenShare(OpenShareParams {
+                    anonymous: r.anonymous,
+                    all_users: r.all_users,
+                    write_only,
+                    no_root_squash: r.no_root_squash,
+                    except_shares: exceptions("例外共用", r.except_shares)?,
+                }))
+            }
             _ => Err(format!("未知的規則類型：{kind}")),
         }
     }
@@ -956,6 +1017,7 @@ impl Params {
             Params::UnpinnedImage { .. } => "unpinned_image",
             Params::UnquotedServicePath { .. } => "unquoted_service_path",
             Params::ExtraRootAccount { .. } => "extra_root_account",
+            Params::OpenShare(_) => "open_share",
         }
     }
 
@@ -1145,6 +1207,24 @@ impl Params {
                     m.insert("except_accounts".into(), json!(except_accounts));
                 }
             }
+            Params::OpenShare(p) => {
+                for (k, on) in [
+                    ("anonymous", p.anonymous),
+                    ("all_users", p.all_users),
+                    ("no_root_squash", p.no_root_squash),
+                ] {
+                    if on {
+                        m.insert(k.into(), json!(true));
+                    }
+                }
+                m.insert(
+                    "access".into(),
+                    json!(if p.write_only { "write" } else { "read" }),
+                );
+                if !p.except_shares.is_empty() {
+                    m.insert("except_shares".into(), json!(p.except_shares));
+                }
+            }
         }
         Value::Object(m)
     }
@@ -1282,6 +1362,13 @@ impl Params {
             },
             Params::ExtraRootAccount { except_accounts } => Check::ExtraRootAccount {
                 except_accounts: except_accounts.iter().map(|i| Glob::new(i)).collect(),
+            },
+            Params::OpenShare(p) => Check::OpenShare {
+                anonymous: p.anonymous,
+                all_users: p.all_users,
+                write_only: p.write_only,
+                no_root_squash: p.no_root_squash,
+                except_shares: p.except_shares.iter().map(|i| Glob::new(i)).collect(),
             },
         }
     }
@@ -1578,6 +1665,34 @@ mod tests {
         for k in ["forbidden_image", "container_privilege", "unpinned_image"] {
             assert!(KINDS.contains(&k));
             assert_ne!(kind_label(k), "未知類型");
+        }
+    }
+
+    #[test]
+    fn open_share_params() {
+        let p = Params::parse(
+            "open_share",
+            &json!({"anonymous": true, "all_users": false, "except_shares": [" dist ", ""]}),
+        )
+        .unwrap();
+        assert_eq!(
+            p.to_json(),
+            json!({"anonymous": true, "access": "write", "except_shares": ["dist"]})
+        );
+        assert_eq!(Params::parse(p.kind(), &p.to_json()).unwrap(), p, "往返");
+        assert_eq!(p.compile().platform(), Platform::Both);
+        assert_eq!(kind_platform("open_share"), Platform::Both);
+        let p = Params::parse("open_share", &json!({"all_users": true, "access": "read"})).unwrap();
+        assert_eq!(p.to_json(), json!({"all_users": true, "access": "read"}));
+        let p = Params::parse("open_share", &json!({"no_root_squash": true})).unwrap();
+        assert_eq!(Params::parse(p.kind(), &p.to_json()).unwrap(), p);
+        for bad in [
+            json!({}),
+            json!({"anonymous": false}),
+            json!({"anonymous": true, "access": "full"}),
+            json!({"anonymous": true, "x": 1}),
+        ] {
+            assert!(Params::parse("open_share", &bad).is_err(), "{bad}");
         }
     }
 

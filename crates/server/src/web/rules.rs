@@ -78,8 +78,13 @@ pub struct ParamFields {
     pub pv_socket: bool,
     /// 容器權限、映像未固定版本：例外映像（每行一個）
     pub img_except: String,
-    /// 服務路徑沒加引號、多餘的 UID 0 帳號：例外名稱（每行一個）
+    /// 服務路徑沒加引號、多餘的 UID 0 帳號、開放的共用：例外名稱（每行一個）
     pub except_names: String,
+    /// 開放的共用：匿名、所有使用者、可讀取也算、no_root_squash
+    pub sh_anonymous: bool,
+    pub sh_all_users: bool,
+    pub sh_read: bool,
+    pub sh_nrs: bool,
 }
 
 fn lines(v: &str) -> Vec<&str> {
@@ -149,6 +154,10 @@ pub fn parse_form(raw: &[u8]) -> RuleForm {
             "p_pv_socket" => f.p.pv_socket = v == "1",
             "p_img_except" => f.p.img_except = v,
             "p_except_names" => f.p.except_names = v,
+            "p_sh_anonymous" => f.p.sh_anonymous = v == "1",
+            "p_sh_all_users" => f.p.sh_all_users = v == "1",
+            "p_sh_read" => f.p.sh_read = v == "1",
+            "p_sh_nrs" => f.p.sh_nrs = v == "1",
             _ => {}
         }
     }
@@ -264,6 +273,13 @@ pub fn form_to_input(f: &RuleForm) -> Result<RuleInput, String> {
         "unpinned_image" => json!({ "except_images": lines(&p.img_except) }),
         "unquoted_service_path" => json!({ "except_services": lines(&p.except_names) }),
         "extra_root_account" => json!({ "except_accounts": lines(&p.except_names) }),
+        "open_share" => json!({
+            "anonymous": p.sh_anonymous,
+            "all_users": p.sh_all_users,
+            "access": if p.sh_read { "read" } else { "write" },
+            "no_root_squash": p.sh_nrs,
+            "except_shares": lines(&p.except_names),
+        }),
         "local_admins" => {
             let allowed: Vec<&str> = p
                 .admins_allowed
@@ -339,11 +355,15 @@ pub fn params_to_form(kind: &str, v: &Value) -> ParamFields {
         pv_host_network: b("host_network"),
         pv_socket: b("runtime_socket"),
         img_except: joined(v, "except_images"),
-        except_names: if kind == "unquoted_service_path" {
-            joined(v, "except_services")
-        } else {
-            joined(v, "except_accounts")
+        except_names: match kind {
+            "unquoted_service_path" => joined(v, "except_services"),
+            "open_share" => joined(v, "except_shares"),
+            _ => joined(v, "except_accounts"),
         },
+        sh_anonymous: b("anonymous"),
+        sh_all_users: b("all_users"),
+        sh_read: v["access"].as_str() == Some("read"),
+        sh_nrs: b("no_root_squash"),
         admins_allowed: v["allowed"]
             .as_array()
             .map(|a| {

@@ -586,10 +586,16 @@ Windows 與 Linux 裝置在同一份清單：
 - **本機管理員**：Administrators 群組只允許清單內的成員（可用 `*` 萬用字元，也可比對 SID，例如 `*-500`）。
 - **服務路徑沒加引號**（Windows）：服務的執行檔路徑含有空白卻沒有加引號，例如 `C:\Program Files\My App\svc.exe`。有權限在上層資料夾建立檔案的人可以讓服務以 SYSTEM 身分執行自己的程式。Windows 目錄底下的服務不檢查；可設例外服務。
 - **多餘的 UID 0 帳號**（Linux）：root 以外還有 UID 0 的帳號，可能是後門帳號；可設例外帳號。
+- **開放的共用**（Windows、Linux）：匿名或所有使用者可以寫入（或勾選後連讀取也算）的共用資料夾，以及 NFS 的 `no_root_squash`；可設例外共用（名稱或路徑）。
+  - Windows：SMB 共用，以共用權限與資料夾 NTFS 權限較小的一邊判斷。「所有使用者」是 Everyone、Authenticated Users、Users、Domain Users；「匿名」是 Anonymous Logon，Guest 帳號啟用時 Everyone 與 Guests 也算。能改權限（WRITE_DAC）也算可寫入。
+  - Linux：Samba 讀 `testparm -s` 的實際設定（`guest ok` 算匿名，沒有 `valid users` 算所有使用者）；NFS 讀 `/etc/exports` 與 `/etc/exports.d/*.exports`（來源是 `*` 算匿名）。
+  - 管理用共用（`C$`、`ADMIN$`）、印表機共用、Samba 的 `[homes]` 不檢查。
+  - Agent 只上傳結論（匿名、所有使用者各能做什麼），不上傳 ACL 與檔案清單。共用清單顯示在裝置頁的「安全設定」分頁（Linux 在「帳號與權限」分頁）。
+  - 需要 Agent 0.15.0 以上，舊版 Agent 的結果為「未知」。
 
 每種規則有固定的適用平台（新增規則的選單與表單上會標示）。其他作業系統的裝置不檢查，也不算「未知」。
 
-「合規 → 範本」有 29 條內建範本，例如 SMBv1、NTLMv2、LSA 保護、UAC、WinRM 的 Basic 驗證、「一律以提高的權限安裝」、自動登入，每條都附文件出處。自動登入只檢查有沒有開，不讀取密碼。
+「合規 → 範本」有 31 條內建範本，例如 SMBv1、NTLMv2、LSA 保護、UAC、WinRM 的 Basic 驗證、「一律以提高的權限安裝」、自動登入，每條都附文件出處。自動登入只檢查有沒有開，不讀取密碼。
 
 登錄檔讀取的限制：
 

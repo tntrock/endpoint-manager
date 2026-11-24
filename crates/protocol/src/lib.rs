@@ -36,10 +36,11 @@ pub enum Section {
     Containers,
     Network,
     Vms,
+    Shares,
 }
 
 impl Section {
-    pub const ALL: [Section; 11] = [
+    pub const ALL: [Section; 12] = [
         Section::Basic,
         Section::Hardware,
         Section::Software,
@@ -51,10 +52,11 @@ impl Section {
         Section::Containers,
         Section::Network,
         Section::Vms,
+        Section::Shares,
     ];
 
     /// Windows Agent 回報的區段
-    pub const WINDOWS: [Section; 9] = [
+    pub const WINDOWS: [Section; 10] = [
         Section::Basic,
         Section::Hardware,
         Section::Software,
@@ -64,10 +66,11 @@ impl Section {
         Section::Registry,
         Section::Network,
         Section::Vms,
+        Section::Shares,
     ];
 
     /// Linux Agent 回報的區段
-    pub const LINUX: [Section; 8] = [
+    pub const LINUX: [Section; 9] = [
         Section::Basic,
         Section::Hardware,
         Section::Software,
@@ -76,6 +79,7 @@ impl Section {
         Section::Containers,
         Section::Network,
         Section::Vms,
+        Section::Shares,
     ];
 
     /// 第三期以前就有的區段：新版 Agent 在確認伺服器支援前只回報這些
@@ -101,6 +105,7 @@ impl Section {
             Section::Containers => "containers",
             Section::Network => "network",
             Section::Vms => "vms",
+            Section::Shares => "shares",
         }
     }
 
@@ -391,7 +396,10 @@ impl CheckinResponse {
 impl Section {
     /// 需要伺服器在 [`CheckinResponse::supported_sections`] 明確列出才回報的區段
     pub fn needs_announcement(self) -> bool {
-        matches!(self, Section::Containers | Section::Network | Section::Vms)
+        matches!(
+            self,
+            Section::Containers | Section::Network | Section::Vms | Section::Shares
+        )
     }
 }
 
@@ -670,6 +678,58 @@ pub struct AccountsInfo {
     pub sudoers_unparsed: Vec<String>,
 }
 
+/// 每台最多回報的共用數
+pub const MAX_SHARES: usize = 500;
+
+/// 不登入或所有使用者對共用能做什麼（錯誤設定規格 §4.1）
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum ShareAccess {
+    #[default]
+    None,
+    Read,
+    Write,
+}
+
+impl ShareAccess {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ShareAccess::None => "none",
+            ShareAccess::Read => "read",
+            ShareAccess::Write => "write",
+        }
+    }
+}
+
+/// 一個共用資料夾：只回報判斷結果，不上傳 ACL 與檔案清單
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct ShareItem {
+    /// `smb`（Windows）、`samba`、`nfs`
+    pub kind: String,
+    pub name: String,
+    pub path: String,
+    /// 不登入就能做什麼
+    pub anonymous: ShareAccess,
+    /// 網域或本機所有使用者能做什麼
+    pub all_users: ShareAccess,
+    /// NFS：遠端的 root 在這裡也是 root
+    #[serde(default)]
+    pub no_root_squash: bool,
+    /// NFS：允許的來源，例如 `*`、`10.0.0.0/8`
+    #[serde(default)]
+    pub clients: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct SharesInfo {
+    pub shares: Vec<ShareItem>,
+    /// 部分來源讀取失敗（例如 Samba 設定讀不到），其他來源照常回報
+    #[serde(default)]
+    pub errors: Vec<String>,
+}
+
 /// 每台最多回報的虛擬機數
 pub const MAX_VMS: usize = 500;
 
@@ -889,6 +949,7 @@ pub enum InventoryPayload {
     Containers(ContainersInfo),
     Network(NetworkInfo),
     Vms(VmsInfo),
+    Shares(SharesInfo),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -933,6 +994,7 @@ impl InventoryPayload {
             InventoryPayload::Containers(_) => Section::Containers,
             InventoryPayload::Network(_) => Section::Network,
             InventoryPayload::Vms(_) => Section::Vms,
+            InventoryPayload::Shares(_) => Section::Shares,
         }
     }
 
@@ -969,6 +1031,13 @@ impl InventoryPayload {
             InventoryPayload::Vms(v) => {
                 v.platforms.sort();
                 v.vms.sort();
+            }
+            InventoryPayload::Shares(s) => {
+                s.shares.sort();
+                s.errors.sort();
+                for x in &mut s.shares {
+                    x.clients.sort();
+                }
             }
             // DNS 的順序有意義（先問哪一台），不排序
             InventoryPayload::Network(n) => {
@@ -1023,6 +1092,14 @@ impl InventoryPayload {
                     return Err(ValidationError::TooManyItems { count: v.vms.len() });
                 }
                 v.platforms.len() + v.vms.len()
+            }
+            InventoryPayload::Shares(s) => {
+                if s.shares.len() > MAX_SHARES {
+                    return Err(ValidationError::TooManyItems {
+                        count: s.shares.len(),
+                    });
+                }
+                s.errors.len() + s.shares.iter().map(|x| 1 + x.clients.len()).sum::<usize>()
             }
             InventoryPayload::Network(n) => {
                 if n.interfaces.len() > MAX_INTERFACES {
@@ -1156,13 +1233,65 @@ mod tests {
         assert_eq!(Section::parse("accounts"), Some(Section::Accounts));
         assert!(!Section::WINDOWS.contains(&Section::Accounts));
         assert!(!Section::LINUX.contains(&Section::Registry));
-        assert_eq!(Section::ALL.len(), 11);
+        assert_eq!(Section::ALL.len(), 12);
+        assert!(
+            Section::WINDOWS.contains(&Section::Shares)
+                && Section::LINUX.contains(&Section::Shares)
+        );
+        assert!(Section::Shares.needs_announcement());
+        assert_eq!(Section::parse("shares"), Some(Section::Shares));
         assert!(Section::WINDOWS.contains(&Section::Vms) && Section::LINUX.contains(&Section::Vms));
         assert!(!Section::WINDOWS.contains(&Section::Containers));
         assert!(Section::WINDOWS.contains(&Section::Network));
         assert!(Section::LINUX.contains(&Section::Network));
         assert!(Section::Network.needs_announcement());
         assert_eq!(Section::parse("network"), Some(Section::Network));
+    }
+
+    #[test]
+    fn shares_hash_ignores_order_and_validates() {
+        let item = |n: &str, clients: Vec<&str>| ShareItem {
+            kind: "nfs".into(),
+            name: n.into(),
+            path: n.into(),
+            anonymous: ShareAccess::Read,
+            all_users: ShareAccess::Write,
+            no_root_squash: false,
+            clients: clients.into_iter().map(Into::into).collect(),
+        };
+        let a = InventoryPayload::Shares(SharesInfo {
+            shares: vec![item("/a", vec!["x", "y"]), item("/b", vec![])],
+            errors: vec!["e1".into(), "e2".into()],
+        });
+        let b = InventoryPayload::Shares(SharesInfo {
+            shares: vec![item("/b", vec![]), item("/a", vec!["y", "x"])],
+            errors: vec!["e2".into(), "e1".into()],
+        });
+        assert_eq!(a.canonical_hash(), b.canonical_hash());
+        assert_eq!(a.section(), Section::Shares);
+        assert_eq!(a.validate(), Ok(()));
+        let big = InventoryPayload::Shares(SharesInfo {
+            shares: (0..=MAX_SHARES)
+                .map(|i| item(&format!("/{i}"), vec![]))
+                .collect(),
+            errors: vec![],
+        });
+        assert!(matches!(
+            big.validate(),
+            Err(ValidationError::TooManyItems { .. })
+        ));
+        assert_eq!(ShareAccess::default(), ShareAccess::None);
+        assert!(ShareAccess::Write > ShareAccess::Read && ShareAccess::Read > ShareAccess::None);
+        assert_eq!(
+            [ShareAccess::None, ShareAccess::Read, ShareAccess::Write].map(ShareAccess::as_str),
+            ["none", "read", "write"]
+        );
+        let back: SharesInfo = serde_json::from_value(serde_json::json!({
+            "shares": [{"kind": "smb", "name": "s", "path": "p", "anonymous": "none",
+                        "all_users": "read"}]
+        }))
+        .unwrap();
+        assert!(back.errors.is_empty() && back.shares[0].clients.is_empty());
     }
 
     fn accounts(rev: bool) -> InventoryPayload {
