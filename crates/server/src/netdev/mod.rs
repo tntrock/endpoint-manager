@@ -2,6 +2,7 @@
 //! 規格：docs/superpowers/specs/2026-11-23-network-devices-design.md
 
 pub mod api;
+pub mod crosscheck;
 pub mod ingest;
 pub mod oui;
 pub mod view;

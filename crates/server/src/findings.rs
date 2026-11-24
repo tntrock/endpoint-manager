@@ -1,5 +1,5 @@
 //! 竄改偵測的「發現」（竄改偵測規格 §2）：事件序號缺口、日誌重建（§6），
-//! Agent 被停止、強制結束、停用與作業系統紀錄被清除（§4.4）。
+//! Agent 被停止、強制結束、停用與作業系統紀錄被清除（§4.4），網路端交叉比對（§5）。
 //!
 //! 各層偵測到的結果都存進 `device_findings`，後台用同一套方式顯示與確認。
 
@@ -68,6 +68,15 @@ pub fn hint(kind: &str) -> &'static str {
         AGENT_KILLED => "Agent 當機也會出現這項。斷電與重新開機不算",
         AGENT_DISABLED => "除非 IT 刻意設定，Agent 服務應該是自動啟動",
         LOG_CLEARED => "清除紀錄常被用來掩蓋其他操作。確認是誰、為什麼清除",
+        "silent_on_network" => {
+            "Agent 可能被停掉或移除了。電腦睡眠時有些網卡仍會送少量封包（例如 Windows 的新式待命），也會出現這項"
+        }
+        "ip_conflict" => {
+            "有人設定了相同的靜態 IP，或 Agent 回報的 IP 不實。路由器的 ARP 表還沒更新時也可能短暫出現"
+        }
+        "mac_duplicate" => {
+            "可能有其他設備複製了這台電腦的 MAC（例如想通過以 MAC 認證的網路）。筆電換位置時舊的埠只會短暫重疊"
+        }
         _ => "",
     }
 }
@@ -113,6 +122,31 @@ pub fn describe(kind: &str, detail: &Value) -> String {
             log_label(str_of(detail, "log")),
             by(detail)
         ),
+        "silent_on_network" => format!(
+            "Agent 沒有報到，但 {} 的 {} 一直看得到這台電腦（{}）",
+            str_of(detail, "net_device"),
+            str_of(detail, "port"),
+            str_of(detail, "mac")
+        ),
+        "ip_conflict" => format!(
+            "這台回報的 IP {}，在 {} 的 ARP 表對到別的 MAC {}",
+            str_of(detail, "ip"),
+            str_of(detail, "net_device"),
+            str_of(detail, "mac")
+        ),
+        "mac_duplicate" => {
+            let ports: Vec<&str> = detail
+                .get("ports")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            format!(
+                "MAC {} 同時出現在 {} 的 {}",
+                str_of(detail, "mac"),
+                str_of(detail, "net_device"),
+                ports.join("、")
+            )
+        }
         _ => String::new(),
     }
 }
@@ -559,6 +593,48 @@ pub async fn insert(
     .bind(detail)
     .fetch_one(conn)
     .await
+}
+
+/// 網路端交叉比對：這台網路設備上連續成立 `streak` 次以上的，開一筆持續中的發現
+/// （已經有持續中的就更新細節，開始時間不變）
+pub async fn insert_or_refresh_network(
+    conn: &mut PgConnection,
+    net_device_id: i64,
+    kind: &str,
+    severity: &str,
+    streak: i32,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO device_findings (device_id, kind, severity, source, started_at, detail) \
+         SELECT DISTINCT ON (s.device_id) s.device_id, s.kind, $3, 'network', s.first_at, s.detail \
+         FROM net_crosscheck_streaks s \
+         WHERE s.net_device_id = $1 AND s.kind = $2 AND s.streak >= $4 \
+         ORDER BY s.device_id, s.first_at \
+         ON CONFLICT (device_id, kind) WHERE ended_at IS NULL \
+         DO UPDATE SET detail = EXCLUDED.detail",
+    )
+    .bind(net_device_id)
+    .bind(kind)
+    .bind(severity)
+    .bind(streak)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+/// 網路端交叉比對：任何網路設備上都不再成立（最近 30 分鐘沒有連續紀錄）的持續中發現結束
+pub async fn close_network(conn: &mut PgConnection, kind: &str) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE device_findings f SET ended_at = now() \
+         WHERE f.kind = $1 AND f.ended_at IS NULL AND f.source = 'network' \
+           AND NOT EXISTS (SELECT 1 FROM net_crosscheck_streaks s \
+                           WHERE s.device_id = f.device_id AND s.kind = f.kind \
+                             AND s.last_at > now() - interval '30 minutes')",
+    )
+    .bind(kind)
+    .execute(conn)
+    .await?;
+    Ok(())
 }
 
 /// 確認一筆發現（看過、沒問題）：寫入稽核記錄。已確認過或不存在回 false
