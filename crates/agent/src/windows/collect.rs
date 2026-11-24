@@ -237,6 +237,9 @@ impl Collector for WindowsCollector {
         if section == Section::Exposure {
             return Ok(InventoryPayload::Exposure(super::exposure::collect()));
         }
+        if section == Section::Accounts {
+            return Ok(InventoryPayload::Accounts(super::accounts::collect()));
+        }
         let con = wmi()?;
         Ok(match section {
             Section::Basic => {

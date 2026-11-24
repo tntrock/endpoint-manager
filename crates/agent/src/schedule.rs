@@ -169,6 +169,7 @@ mod tests {
                 Section::Services,
                 Section::Security,
                 Section::Registry,
+                Section::Accounts,
                 Section::Network,
                 Section::Vms,
                 Section::Shares,

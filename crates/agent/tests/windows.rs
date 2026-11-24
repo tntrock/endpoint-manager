@@ -232,7 +232,11 @@ fn collector_reports_this_machine() {
                 );
             }
             InventoryPayload::Registry(_) => unreachable!("registry 不經 collect"),
-            InventoryPayload::Accounts(_) => unreachable!("Windows 不收集帳號"),
+            // 本機帳號：內建 Administrator（RID 500）一定在
+            InventoryPayload::Accounts(a) => {
+                assert!(a.flags && a.users.iter().any(|u| u.uid == 500), "{a:?}");
+                assert!(a.autologon_password.is_some(), "{a:?}");
+            }
             InventoryPayload::Containers(_) => unreachable!("Windows 不收集容器"),
             // CI 機器不一定有 Hyper-V；有的話只會是 Hyper-V
             InventoryPayload::Vms(v) => {

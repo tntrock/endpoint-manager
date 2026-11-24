@@ -245,10 +245,19 @@ pub fn items_of(p: &InventoryPayload) -> BTreeMap<String, String> {
                     .password_changed
                     .map(|d| d.to_string())
                     .unwrap_or_default();
-                pairs.push((
-                    format!("user|{}", u.name),
-                    format!("{}|{}|{}|{}", u.uid, u.shell, locked, changed),
-                ));
+                // 旗標只在成立時附加，舊資料的值不變；最後登入時間不記（每次登入都會變）
+                let mut value = format!("{}|{}|{}|{}", u.uid, u.shell, locked, changed);
+                for (on, label) in [
+                    (u.disabled, "disabled"),
+                    (u.password_never_expires, "never_expires"),
+                    (u.no_password == Some(true), "no_password"),
+                ] {
+                    if on {
+                        value.push('|');
+                        value.push_str(label);
+                    }
+                }
+                pairs.push((format!("user|{}", u.name), value));
             }
             // 系統帳號只記數量（不列出），數量變動也算一筆變更
             pairs.push(("count|system_users".into(), a.system_user_count.to_string()));
@@ -261,8 +270,15 @@ pub fn items_of(p: &InventoryPayload) -> BTreeMap<String, String> {
                         kind.as_str().unwrap_or(""),
                         p.source
                     ),
-                    String::new(),
+                    if p.nopasswd_all {
+                        "nopasswd_all".into()
+                    } else {
+                        String::new()
+                    },
                 ));
+            }
+            if let Some(on) = a.autologon_password {
+                pairs.push(("autologon_password".into(), on.to_string()));
             }
             for l in &a.sudoers_unparsed {
                 pairs.push((format!("unparsed|{l}"), String::new()));
@@ -465,19 +481,46 @@ mod tests {
                 shell: "/bin/bash".into(),
                 locked: Some(false),
                 password_changed: protocol::timefmt::ymd(2026, 1, 2),
+                ..Default::default()
             }],
             system_user_count: 30,
             privileged: vec![PrivilegeEntry {
                 principal: "admin".into(),
                 kind: PrincipalKind::Group,
                 source: "/etc/sudoers".into(),
+                ..Default::default()
             }],
             sudoers_unparsed: vec!["Defaults !x".into()],
+            ..Default::default()
         });
         let m = items_of(&p);
         assert_eq!(m["user|alice"], "1000|/bin/bash|false|2026-01-02");
         assert_eq!(m["priv|admin|group|/etc/sudoers"], "");
         assert_eq!(m["unparsed|Defaults !x"], "");
         assert_eq!(m["count|system_users"], "30");
+        // 旗標只在成立時附加；最後登入時間不算變更
+        let p = InventoryPayload::Accounts(AccountsInfo {
+            users: vec![LocalUser {
+                name: "Guest".into(),
+                uid: 501,
+                disabled: true,
+                password_never_expires: true,
+                no_password: Some(true),
+                last_logon: Some(time::OffsetDateTime::UNIX_EPOCH),
+                ..Default::default()
+            }],
+            privileged: vec![PrivilegeEntry {
+                principal: "ops".into(),
+                kind: PrincipalKind::Group,
+                source: "sudoers:x".into(),
+                nopasswd_all: true,
+            }],
+            autologon_password: Some(false),
+            ..Default::default()
+        });
+        let m = items_of(&p);
+        assert_eq!(m["user|Guest"], "501||||disabled|never_expires|no_password");
+        assert_eq!(m["priv|ops|group|sudoers:x"], "nopasswd_all");
+        assert_eq!(m["autologon_password"], "false");
     }
 }

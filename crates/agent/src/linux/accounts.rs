@@ -106,6 +106,7 @@ pub fn collect() -> AccountsInfo {
             principal,
             kind: PrincipalKind::User,
             source: "uid0".into(),
+            ..Default::default()
         })
         .collect();
     privileged.extend(
@@ -115,6 +116,7 @@ pub fn collect() -> AccountsInfo {
                 principal,
                 kind: PrincipalKind::User,
                 source,
+                ..Default::default()
             }),
     );
     let (files, mut sudoers_unparsed) = read_sudoers_tree(Path::new("/etc/sudoers"));
@@ -128,6 +130,8 @@ pub fn collect() -> AccountsInfo {
         system_user_count,
         privileged,
         sudoers_unparsed,
+        flags: true,
+        ..Default::default()
     }
 }
 

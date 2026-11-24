@@ -8,13 +8,15 @@ use serde_json::{Value, json};
 
 use super::matcher::{Glob, cmp_version};
 pub use super::rules::registry_key;
-use super::rules::{Check, RegOp, RuleSet, parse_number};
+use super::rules::{AccountChecks, Check, RegOp, RuleSet, parse_number};
 
 /// 支援 security／registry 區段的最低 Agent 版本：更舊的版本沒有這些資料時，未知原因寫「版本過舊」
 pub const CONFIG_AGENT_VERSION: &str = "0.3.0";
 
 /// 細節中最多列出的軟體數
 pub const MAX_LISTED: usize = 50;
+/// Windows 內建 Guest 帳號的 RID（可能被改名）
+const GUEST_RID: u32 = 501;
 
 /// 支援 network 區段與本機事件的最低 Agent 版本
 pub const NETWORK_AGENT_VERSION: &str = "0.12.0";
@@ -559,6 +561,74 @@ fn privilege_issues(
     v
 }
 
+/// 帳號設定（錯誤設定規格 §6.2）：只看適用這台作業系統的勾選項目
+fn account_flags(f: &DeviceFacts, c: &AccountChecks, except: &[Glob]) -> Option<(Status, Value)> {
+    let Some(a) = &f.accounts else {
+        return no_data();
+    };
+    if !a.flags {
+        return Some((Status::Unknown, json!({"reason": "agent_outdated"})));
+    }
+    let excepted = |n: &str| except.iter().any(|g| g.is_match(n));
+    // 停用或鎖定的帳號不能登入，不算
+    let usable = a
+        .users
+        .iter()
+        .filter(|u| !u.disabled && u.locked != Some(true));
+    let mut issues: Vec<String> = vec![];
+    if c.no_password {
+        for u in usable.clone() {
+            if u.no_password == Some(true) && !excepted(&u.name) {
+                issues.push(format!("{} 沒有密碼", u.name));
+            }
+        }
+    }
+    if f.linux {
+        if c.sudo_nopasswd {
+            for p in a.privileged.iter().filter(|p| p.nopasswd_all) {
+                let who = match p.kind {
+                    protocol::PrincipalKind::Group => format!("%{}", p.principal),
+                    protocol::PrincipalKind::User => p.principal.clone(),
+                };
+                if !excepted(&who) {
+                    issues.push(format!("{who} 可以免密碼 sudo 執行任何指令"));
+                }
+            }
+        }
+    } else {
+        if c.guest_disabled
+            && let Some(g) = a.users.iter().find(|u| u.uid == GUEST_RID && !u.disabled)
+        {
+            issues.push(format!("Guest 帳號（{}）已啟用", g.name));
+        }
+        if c.password_expires {
+            for u in usable {
+                if u.password_never_expires && !excepted(&u.name) {
+                    issues.push(format!("{} 密碼永不過期", u.name));
+                }
+            }
+        }
+        if c.no_autologon_password && a.autologon_password == Some(true) {
+            issues.push("自動登入存了密碼".into());
+        }
+    }
+    issues.dedup();
+    if issues.is_empty() {
+        // 有項目讀不到：不能說一定沒有
+        return (!a.errors.is_empty()).then(|| {
+            (
+                Status::Unknown,
+                json!({"reason": "account_error", "error": a.errors.join("；")}),
+            )
+        });
+    }
+    Some((
+        Status::Violating,
+        json!({"account_issues": issues.iter().take(MAX_LISTED).collect::<Vec<_>>(),
+               "total": issues.len()}),
+    ))
+}
+
 fn check_one(c: &Check, f: &DeviceFacts) -> Option<(Status, Value)> {
     match c {
         Check::UnquotedServicePath { except_services } => {
@@ -680,6 +750,10 @@ fn check_one(c: &Check, f: &DeviceFacts) -> Option<(Status, Value)> {
                 )
             })
         }
+        Check::AccountFlags {
+            checks,
+            except_accounts,
+        } => account_flags(f, checks, except_accounts),
         Check::OpenShare {
             anonymous,
             all_users,
@@ -1249,6 +1323,7 @@ pub fn summarize(d: &Value) -> String {
         Some("no_patch_date") => return "沒有可判讀的更新安裝日期".into(),
         Some("share_error") => return format!("無法讀取共用：{}", s("error")),
         Some("exposure_error") => return format!("無法讀取：{}", s("error")),
+        Some("account_error") => return format!("無法讀取帳號：{}", s("error")),
         Some("no_update_status") => {
             return "Agent 尚未回報更新狀態（需要 Agent 0.5.0 以上）".into();
         }
@@ -1362,6 +1437,9 @@ pub fn summarize(d: &Value) -> String {
     }
     if d.get("rdp_users").is_some() {
         return format!("不允許的遠端桌面使用者：{}", list("rdp_users"));
+    }
+    if d.get("account_issues").is_some() {
+        return format!("帳號設定：{}", list("account_issues"));
     }
     if let Some(items) = d["shares"].as_array() {
         let names: Vec<String> = items
@@ -2936,12 +3014,124 @@ mod tests {
         assert!(one(&lx, "open_share", p).is_none());
     }
 
+    fn user(name: &str, uid: u32) -> protocol::LocalUser {
+        protocol::LocalUser {
+            name: name.into(),
+            uid,
+            no_password: Some(false),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn account_flags_windows() {
+        let all = json!({"no_password": true, "guest_disabled": true, "password_expires": true,
+                         "sudo_nopasswd": true, "no_autologon_password": true,
+                         "except_accounts": ["svc_*"]});
+        let mut f = facts(vec![]);
+        assert_eq!(
+            one(&f, "account_flags", all.clone()).unwrap().0,
+            Status::Unknown
+        );
+        // 舊版 Agent：沒有旗標
+        f.accounts = Some(protocol::AccountsInfo::default());
+        assert_eq!(
+            summarize(&one(&f, "account_flags", all.clone()).unwrap().1),
+            "Agent 版本過舊，未回報這項資料"
+        );
+        let mut guest = user("Visitor", 501);
+        guest.no_password = Some(true);
+        let mut bob = user("bob", 1001);
+        bob.no_password = Some(true);
+        bob.password_never_expires = true;
+        let mut svc = user("svc_backup", 1002);
+        svc.password_never_expires = true;
+        let mut old = user("old", 1003);
+        old.disabled = true;
+        old.no_password = Some(true);
+        f.accounts = Some(protocol::AccountsInfo {
+            users: vec![user("Administrator", 500), guest, bob, svc, old],
+            privileged: vec![protocol::PrivilegeEntry {
+                principal: "x".into(),
+                nopasswd_all: true,
+                ..Default::default()
+            }],
+            flags: true,
+            autologon_password: Some(true),
+            ..Default::default()
+        });
+        let (st, d) = one(&f, "account_flags", all.clone()).unwrap();
+        assert_eq!(st, Status::Violating);
+        assert_eq!(
+            summarize(&d),
+            "帳號設定：Visitor 沒有密碼、bob 沒有密碼、Guest 帳號（Visitor）已啟用、bob 密碼永不過期、自動登入存了密碼"
+        );
+        // Guest 停用、沒存密碼；只勾 Linux 的項目：符合
+        let a = f.accounts.as_mut().unwrap();
+        a.users[1].disabled = true;
+        a.users[2].no_password = Some(false);
+        a.users[2].password_never_expires = false;
+        a.autologon_password = Some(false);
+        assert!(one(&f, "account_flags", all.clone()).is_none());
+        assert!(one(&f, "account_flags", json!({"sudo_nopasswd": true})).is_none());
+        // 讀取失敗：未知
+        f.accounts.as_mut().unwrap().errors = vec!["無法讀取本機帳號：x".into()];
+        let (st, d) = one(&f, "account_flags", all).unwrap();
+        assert_eq!(st, Status::Unknown);
+        assert_eq!(summarize(&d), "無法讀取帳號：無法讀取本機帳號：x");
+    }
+
+    #[test]
+    fn account_flags_linux() {
+        let mut f = linux(vec![]);
+        let mut alice = user("alice", 1000);
+        alice.no_password = Some(true);
+        let mut locked = user("bob", 1001);
+        locked.no_password = Some(true);
+        locked.locked = Some(true);
+        let sudo =
+            |p: &str, kind: protocol::PrincipalKind, nopasswd_all: bool| protocol::PrivilegeEntry {
+                principal: p.into(),
+                kind,
+                source: "sudoers:sudoers".into(),
+                nopasswd_all,
+            };
+        f.accounts = Some(protocol::AccountsInfo {
+            users: vec![user("root", 0), alice, locked, user("Visitor", 501)],
+            privileged: vec![
+                sudo("deploy", protocol::PrincipalKind::User, true),
+                sudo("ops", protocol::PrincipalKind::Group, true),
+                sudo("wheel", protocol::PrincipalKind::Group, false),
+            ],
+            flags: true,
+            autologon_password: Some(true),
+            ..Default::default()
+        });
+        let all = json!({"no_password": true, "guest_disabled": true, "password_expires": true,
+                         "sudo_nopasswd": true, "no_autologon_password": true});
+        let (st, d) = one(&f, "account_flags", all).unwrap();
+        assert_eq!(st, Status::Violating);
+        assert_eq!(
+            summarize(&d),
+            "帳號設定：alice 沒有密碼、deploy 可以免密碼 sudo 執行任何指令、%ops 可以免密碼 sudo 執行任何指令"
+        );
+        assert!(
+            one(
+                &f,
+                "account_flags",
+                json!({"sudo_nopasswd": true, "except_accounts": ["%ops", "dep*"]})
+            )
+            .is_none()
+        );
+    }
+
     #[test]
     fn extra_root_account_rule() {
         let entry = |p: &str, src: &str| protocol::PrivilegeEntry {
             principal: p.into(),
             kind: protocol::PrincipalKind::User,
             source: src.into(),
+            ..Default::default()
         };
         let mut f = linux(vec![]);
         assert_eq!(
@@ -2959,6 +3149,7 @@ mod tests {
                 entry("backdoor", "uid0"),
             ],
             sudoers_unparsed: vec![],
+            ..Default::default()
         });
         let (st, d) = one(&f, "extra_root_account", json!({})).unwrap();
         assert_eq!(st, Status::Violating);

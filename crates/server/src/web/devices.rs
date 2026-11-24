@@ -977,6 +977,8 @@ pub struct PrivilegeRow {
     pub source: String,
     /// 非 root 的 UID 0 帳號
     pub warn: bool,
+    /// 可以免密碼執行任何指令
+    pub nopasswd_all: bool,
 }
 
 pub struct UserRow {
@@ -985,6 +987,8 @@ pub struct UserRow {
     pub shell: String,
     pub locked: &'static str,
     pub password_changed: String,
+    /// 密碼欄位空白（沒鎖定時可以不用密碼登入）
+    pub no_password: bool,
 }
 
 #[derive(Template)]
@@ -1037,6 +1041,7 @@ async fn accounts_tab(st: &AppState, _s: &Session, id: Uuid) -> Result<Response,
         .into_iter()
         .map(|p| PrivilegeRow {
             warn: p.source == "uid0" && p.principal != "root",
+            nopasswd_all: p.nopasswd_all,
             kind: match p.kind {
                 protocol::PrincipalKind::User => "使用者",
                 protocol::PrincipalKind::Group => "群組",
@@ -1046,11 +1051,12 @@ async fn accounts_tab(st: &AppState, _s: &Session, id: Uuid) -> Result<Response,
         })
         .collect();
     // 警示的排最前面
-    privileged.sort_by_key(|p| !p.warn);
+    privileged.sort_by_key(|p| (!p.warn, !p.nopasswd_all));
     let users = a
         .users
         .into_iter()
         .map(|u| UserRow {
+            no_password: u.no_password == Some(true) && u.locked != Some(true),
             locked: match u.locked {
                 Some(true) => "已鎖定",
                 Some(false) => "否",

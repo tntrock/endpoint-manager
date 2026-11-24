@@ -338,5 +338,35 @@
     "kind": "ssh_config",
     "params": {"no_root_password": true, "no_empty_passwords": true},
     "source": "https://man.openbsd.org/sshd_config"
+  },
+  {
+    "key": "no_passwordless_accounts",
+    "category": "帳號與密碼",
+    "name": "沒有不用密碼的帳號",
+    "description": "啟用中的本機帳號都要有密碼：Windows 不能設「不需要密碼」，Linux 的密碼欄位不能空白。",
+    "severity": "high",
+    "kind": "account_flags",
+    "params": {"no_password": true},
+    "source": "https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/accounts-limit-local-account-use-of-blank-passwords-to-console-logon-only"
+  },
+  {
+    "key": "windows_guest_autologon",
+    "category": "帳號與密碼",
+    "name": "Windows：Guest 帳號停用、自動登入不存密碼",
+    "description": "內建 Guest 帳號（即使改名）必須停用；登錄檔 Winlogon 不能存自動登入的明文密碼（DefaultPassword）。只檢查 Windows 裝置。",
+    "severity": "high",
+    "kind": "account_flags",
+    "params": {"guest_disabled": true, "no_autologon_password": true},
+    "source": "https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/accounts-guest-account-status"
+  },
+  {
+    "key": "linux_no_sudo_nopasswd_all",
+    "category": "帳號與密碼",
+    "name": "Linux：sudo 不能免密碼執行任何指令",
+    "description": "sudoers 不能有 NOPASSWD: ALL 的規則；自動化帳號需要時用例外排除，或只允許特定指令。只檢查 Linux 裝置。",
+    "severity": "medium",
+    "kind": "account_flags",
+    "params": {"sudo_nopasswd": true},
+    "source": "https://www.sudo.ws/docs/man/sudoers.man/"
   }
 ]

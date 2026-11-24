@@ -111,6 +111,7 @@ fn accounts() -> AccountsInfo {
                 shell: "/bin/bash".into(),
                 locked: Some(false),
                 password_changed: protocol::timefmt::ymd(2026, 1, 2),
+                ..Default::default()
             },
             LocalUser {
                 name: "bob".into(),
@@ -118,6 +119,7 @@ fn accounts() -> AccountsInfo {
                 shell: "/bin/zsh".into(),
                 locked: None,
                 password_changed: None,
+                ..Default::default()
             },
         ],
         system_user_count: 27,
@@ -126,24 +128,29 @@ fn accounts() -> AccountsInfo {
                 principal: "root".into(),
                 kind: PrincipalKind::User,
                 source: "uid0".into(),
+                ..Default::default()
             },
             PrivilegeEntry {
                 principal: "toor".into(),
                 kind: PrincipalKind::User,
                 source: "uid0".into(),
+                ..Default::default()
             },
             PrivilegeEntry {
                 principal: "alice".into(),
                 kind: PrincipalKind::User,
                 source: "group:sudo".into(),
+                ..Default::default()
             },
             PrivilegeEntry {
                 principal: "admins".into(),
                 kind: PrincipalKind::Group,
                 source: "sudoers:/etc/sudoers.d/admins".into(),
+                ..Default::default()
             },
         ],
         sudoers_unparsed: vec!["Host_Alias SERVERS = db1, db2".into()],
+        ..Default::default()
     }
 }
 
