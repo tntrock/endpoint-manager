@@ -30,6 +30,7 @@ pub mod report;
 pub mod rules;
 pub mod scripts;
 pub mod settings;
+pub mod shares;
 pub mod signing;
 pub mod sites;
 pub mod software;

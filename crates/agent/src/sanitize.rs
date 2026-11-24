@@ -136,6 +136,18 @@ pub fn sanitize(p: &mut InventoryPayload) {
                 fix_opt(&mut x.os_hint);
             }
         }
+        InventoryPayload::Shares(s) => {
+            s.shares.truncate(protocol::MAX_SHARES);
+            s.errors.truncate(MAX_ITEMS);
+            s.errors.iter_mut().for_each(fix);
+            for x in &mut s.shares {
+                for f in [&mut x.kind, &mut x.name, &mut x.path] {
+                    fix(f);
+                }
+                x.clients.truncate(MAX_ITEMS);
+                x.clients.iter_mut().for_each(fix);
+            }
+        }
         InventoryPayload::Containers(c) => {
             c.containers.truncate(protocol::MAX_CONTAINERS);
             for r in &mut c.runtimes {

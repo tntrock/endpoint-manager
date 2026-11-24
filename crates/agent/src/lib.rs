@@ -20,6 +20,7 @@ pub mod regvalue;
 pub mod sanitize;
 pub mod schedule;
 pub mod serde_util;
+pub mod shares;
 pub mod software;
 pub mod state;
 pub mod updates;

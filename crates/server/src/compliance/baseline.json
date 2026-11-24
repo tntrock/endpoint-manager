@@ -288,5 +288,25 @@
     "kind": "extra_root_account",
     "params": {},
     "source": "https://man7.org/linux/man-pages/man5/passwd.5.html"
+  },
+  {
+    "key": "no_writable_open_shares",
+    "category": "網路與防火牆",
+    "name": "沒有匿名或所有使用者可寫入的共用",
+    "description": "Windows 的 SMB 共用、Linux 的 Samba 與 NFS，不能讓匿名或所有使用者寫入；NFS 也不能設 no_root_squash。部門共用資料夾這類刻意開放的共用請加入例外。",
+    "severity": "high",
+    "kind": "open_share",
+    "params": {"anonymous": true, "all_users": true, "access": "write", "no_root_squash": true},
+    "source": "https://learn.microsoft.com/windows-server/storage/file-server/file-server-smb-overview"
+  },
+  {
+    "key": "no_anonymous_readable_shares",
+    "category": "網路與防火牆",
+    "name": "沒有匿名可讀取的共用",
+    "description": "不登入就能讀取的共用（Guest 帳號啟用時給 Everyone 的共用、Samba 的 guest ok、NFS 對所有來源開放）。",
+    "severity": "medium",
+    "kind": "open_share",
+    "params": {"anonymous": true, "access": "read"},
+    "source": "https://learn.microsoft.com/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/network-access-restrict-anonymous-access-to-named-pipes-and-shares"
   }
 ]

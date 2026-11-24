@@ -37,6 +37,8 @@ fn interval(s: Section, iv: &CollectionIntervals) -> Duration {
         Section::Network => iv.services_secs,
         // 虛擬機跟容器一樣（容器規格 §5.5）
         Section::Vms => iv.services_secs,
+        // 共用跟安全設定一樣（錯誤設定規格 §4）
+        Section::Shares => iv.security_secs,
     };
     Duration::from_secs(secs.into())
 }
@@ -167,7 +169,8 @@ mod tests {
                 Section::Security,
                 Section::Registry,
                 Section::Network,
-                Section::Vms
+                Section::Vms,
+                Section::Shares
             ]
         );
         let much_later = t0 + Duration::from_secs(86_400);

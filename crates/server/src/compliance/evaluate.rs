@@ -76,6 +76,8 @@ pub struct DeviceFacts {
     pub containers: Option<protocol::ContainersInfo>,
     /// accounts 區段（Linux；None：從未上傳）
     pub accounts: Option<protocol::AccountsInfo>,
+    /// shares 區段（None：從未上傳）
+    pub shares: Option<protocol::SharesInfo>,
     /// 評估時的「現在」（病毒碼天數用）：由呼叫端提供，評估本身維持純函式
     pub now: time::OffsetDateTime,
     /// 管理網頁時區的今天：修補的安裝日期是裝置本地日期，「太久沒更新」用它計算天數
@@ -545,6 +547,67 @@ fn check_one(c: &Check, f: &DeviceFacts) -> Option<(Status, Value)> {
                            "total": bad.len()}),
                 )
             })
+        }
+        Check::OpenShare {
+            anonymous,
+            all_users,
+            write_only,
+            no_root_squash,
+            except_shares,
+        } => {
+            let Some(info) = &f.shares else {
+                return no_data();
+            };
+            let min = if *write_only {
+                protocol::ShareAccess::Write
+            } else {
+                protocol::ShareAccess::Read
+            };
+            let verb = |a: protocol::ShareAccess| {
+                if a == protocol::ShareAccess::Write {
+                    "可寫入"
+                } else {
+                    "可讀取"
+                }
+            };
+            let bad: Vec<Value> = info
+                .shares
+                .iter()
+                .filter(|s| {
+                    !except_shares
+                        .iter()
+                        .any(|g| g.is_match(&s.name) || g.is_match(&s.path))
+                })
+                .filter_map(|s| {
+                    let mut issues = vec![];
+                    // 匿名已經算了就不重複列「所有使用者」
+                    if *anonymous && s.anonymous >= min {
+                        issues.push(format!("匿名{}", verb(s.anonymous)));
+                    } else if *all_users && s.all_users >= min {
+                        issues.push(format!("所有使用者{}", verb(s.all_users)));
+                    }
+                    if *no_root_squash && s.no_root_squash {
+                        issues.push("no_root_squash".to_string());
+                    }
+                    (!issues.is_empty()).then(|| {
+                        json!({"name": s.name, "kind": s.kind, "path": s.path, "issues": issues})
+                    })
+                })
+                .collect();
+            if bad.is_empty() {
+                // 部分來源讀不到：不能說一定沒有
+                return (!info.errors.is_empty()).then(|| {
+                    (
+                        Status::Unknown,
+                        json!({"reason": "share_error", "error": info.errors.join("；")}),
+                    )
+                });
+            }
+            Some((
+                Status::Violating,
+                json!({"shares": bad.iter().take(MAX_LISTED).collect::<Vec<_>>(),
+                       "total": bad.len()}),
+            ))
         }
         Check::ExtraRootAccount { except_accounts } => {
             let Some(a) = &f.accounts else {
@@ -1069,6 +1132,7 @@ pub fn summarize(d: &Value) -> String {
         Some("not_installed") => return format!("服務 {} 未安裝", s("service")),
         Some("absent") => return format!("{} 未設定", s("registry")),
         Some("no_patch_date") => return "沒有可判讀的更新安裝日期".into(),
+        Some("share_error") => return format!("無法讀取共用：{}", s("error")),
         Some("no_update_status") => {
             return "Agent 尚未回報更新狀態（需要 Agent 0.5.0 以上）".into();
         }
@@ -1157,6 +1221,23 @@ pub fn summarize(d: &Value) -> String {
     }
     if d.get("accounts").is_some() {
         return format!("不允許的管理員：{}", list("accounts"));
+    }
+    if let Some(items) = d["shares"].as_array() {
+        let names: Vec<String> = items
+            .iter()
+            .map(|i| {
+                let issues: Vec<&str> = i["issues"]
+                    .as_array()
+                    .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
+                    .unwrap_or_default();
+                format!(
+                    "{}（{}）",
+                    i["name"].as_str().unwrap_or(""),
+                    issues.join("、")
+                )
+            })
+            .collect();
+        return format!("開放的共用：{}", names.join("、"));
     }
     if d.get("root_accounts").is_some() {
         return format!("root 以外的 UID 0 帳號：{}", list("root_accounts"));
@@ -1327,6 +1408,7 @@ mod tests {
             linux: false,
             containers: None,
             accounts: None,
+            shares: None,
             now: time::OffsetDateTime::now_utc(),
             today: time::OffsetDateTime::now_utc().date(),
         }
@@ -2453,6 +2535,79 @@ mod tests {
         // Linux 裝置不適用
         let lx = DeviceFacts { linux: true, ..f };
         assert!(one(&lx, "unquoted_service_path", json!({})).is_none());
+    }
+
+    #[test]
+    fn open_share_rule() {
+        use protocol::{ShareAccess, ShareItem, SharesInfo};
+        let share = |name: &str, anon: ShareAccess, users: ShareAccess| ShareItem {
+            kind: "smb".into(),
+            name: name.into(),
+            path: format!(r"D:\{name}"),
+            anonymous: anon,
+            all_users: users,
+            no_root_squash: false,
+            clients: vec![],
+        };
+        let mut f = facts(vec![]);
+        assert_eq!(
+            one(&f, "open_share", json!({"anonymous": true})).unwrap().0,
+            Status::Unknown,
+            "沒有共用資料"
+        );
+        let mut nfs = share("/srv/x", ShareAccess::Read, ShareAccess::Read);
+        nfs.kind = "nfs".into();
+        nfs.no_root_squash = true;
+        f.shares = Some(SharesInfo {
+            shares: vec![
+                share("public", ShareAccess::Write, ShareAccess::Write),
+                share("docs", ShareAccess::None, ShareAccess::Read),
+                share("team", ShareAccess::None, ShareAccess::Write),
+                share("dist", ShareAccess::Read, ShareAccess::Read),
+                nfs,
+            ],
+            errors: vec![],
+        });
+        let p = json!({"anonymous": true, "all_users": true});
+        let (st, d) = one(&f, "open_share", p.clone()).unwrap();
+        assert_eq!(st, Status::Violating);
+        assert_eq!(
+            summarize(&d),
+            "開放的共用：public（匿名可寫入）、team（所有使用者可寫入）"
+        );
+        let (_, d) = one(
+            &f,
+            "open_share",
+            json!({"anonymous": true, "access": "read", "no_root_squash": true,
+                   "except_shares": ["dist"]}),
+        )
+        .unwrap();
+        assert_eq!(
+            summarize(&d),
+            "開放的共用：public（匿名可寫入）、/srv/x（匿名可讀取、no_root_squash）"
+        );
+        // 例外可以比對路徑
+        let (_, d) = one(
+            &f,
+            "open_share",
+            json!({"anonymous": true, "all_users": true, "except_shares": [r"D:\p*"]}),
+        )
+        .unwrap();
+        assert_eq!(d["total"], 1);
+        // 沒有違規但部分來源讀不到：未知
+        f.shares = Some(SharesInfo {
+            shares: vec![],
+            errors: vec!["無法讀取 Samba 設定：x".into()],
+        });
+        let (st, d) = one(&f, "open_share", p.clone()).unwrap();
+        assert_eq!(st, Status::Unknown);
+        assert_eq!(d["reason"], "share_error");
+        assert_eq!(summarize(&d), "無法讀取共用：無法讀取 Samba 設定：x");
+        f.shares = Some(SharesInfo::default());
+        assert!(one(&f, "open_share", p.clone()).is_none());
+        // 兩邊都適用
+        let lx = DeviceFacts { linux: true, ..f };
+        assert!(one(&lx, "open_share", p).is_none());
     }
 
     #[test]

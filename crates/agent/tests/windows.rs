@@ -238,6 +238,10 @@ fn collector_reports_this_machine() {
             InventoryPayload::Vms(v) => {
                 assert!(v.platforms.iter().all(|p| p.kind == "hyperv"), "{v:?}")
             }
+            // CI 機器不一定有共用；有的話只會是 SMB
+            InventoryPayload::Shares(s) => {
+                assert!(s.shares.iter().all(|x| x.kind == "smb"), "{s:?}")
+            }
             InventoryPayload::Network(n) => {
                 // CI 機器一定有一張有位址的網卡
                 assert!(

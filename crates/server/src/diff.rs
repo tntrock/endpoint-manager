@@ -162,6 +162,25 @@ pub fn items_of(p: &InventoryPayload) -> BTreeMap<String, String> {
                 ));
             }
         }
+        InventoryPayload::Shares(s) => {
+            // 共用的新增、移除與權限改變
+            for x in &s.shares {
+                pairs.push((
+                    format!("{}|{}", x.kind, x.name),
+                    format!(
+                        "{}|anonymous={}|all_users={}{}",
+                        x.path,
+                        x.anonymous.as_str(),
+                        x.all_users.as_str(),
+                        if x.no_root_squash {
+                            "|no_root_squash"
+                        } else {
+                            ""
+                        }
+                    ),
+                ));
+            }
+        }
         InventoryPayload::Vms(v) => {
             // 只記虛擬機的新增、移除與改名；開關機不記
             for x in &v.vms {

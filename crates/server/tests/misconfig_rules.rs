@@ -1,4 +1,5 @@
-//! 錯誤設定偵測第一期：服務路徑沒加引號（Windows）、多餘的 UID 0 帳號（Linux）、規則的適用平台。
+//! 錯誤設定偵測：服務路徑沒加引號（Windows）、多餘的 UID 0 帳號（Linux）、規則的適用平台（第一期），
+//! 開放的共用（第二期）。
 mod common;
 
 use std::collections::BTreeMap;
@@ -9,7 +10,7 @@ use endpoint_server::compliance::rules::{Params, Rule, Severity};
 use endpoint_server::compliance::{preview, worker};
 use protocol::{
     AccountsInfo, CheckinRequest, InventoryPayload, InventoryUpload, OsFamily, PrincipalKind,
-    PrivilegeEntry, SCHEMA_VERSION, ServiceItem,
+    PrivilegeEntry, SCHEMA_VERSION, ServiceItem, ShareAccess, ShareItem, SharesInfo,
 };
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -234,4 +235,127 @@ async fn misconfig_rules_by_platform(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!((p.devices, p.violating), (1, 0));
+}
+
+fn share(kind: &str, name: &str, anon: ShareAccess, users: ShareAccess) -> ShareItem {
+    ShareItem {
+        kind: kind.into(),
+        name: name.into(),
+        path: format!("/srv/{name}"),
+        anonymous: anon,
+        all_users: users,
+        no_root_squash: false,
+        clients: vec![],
+    }
+}
+
+#[sqlx::test(migrations = false)]
+async fn open_shares(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(2).await;
+    let lin = s.enroll_ok(&tok, None, None).await;
+    let win = s.enroll_ok(&tok, None, None).await;
+    checkin_linux(&s, &lin).await;
+    let rule = admin::create_rule(
+        &s.pool,
+        &input(
+            "共用",
+            "open_share",
+            json!({"anonymous": true, "all_users": true, "no_root_squash": true,
+                   "except_shares": ["dept*"]}),
+        ),
+        "admin",
+    )
+    .await
+    .unwrap();
+    worker::recompute_all(&s.pool).await.unwrap();
+    // 兩邊都適用：還沒有資料時都是未知
+    for a in [&lin, &win] {
+        let r = results(&s, a).await;
+        assert_eq!((r.len(), r[0].1.as_str()), (1, "unknown"), "{r:?}");
+    }
+
+    put(
+        &s,
+        &win,
+        InventoryPayload::Shares(SharesInfo {
+            shares: vec![
+                share("smb", "public", ShareAccess::Read, ShareAccess::Write),
+                share("smb", "dept-sales", ShareAccess::None, ShareAccess::Write),
+                share("smb", "docs", ShareAccess::None, ShareAccess::Read),
+            ],
+            errors: vec![],
+        }),
+    )
+    .await;
+    let r = results(&s, &win).await;
+    assert_eq!((r[0].0, r[0].1.as_str()), (rule, "violating"));
+    assert_eq!(
+        r[0].2,
+        json!({"total": 1, "shares": [
+            {"name": "public", "kind": "smb", "path": "/srv/public", "issues": ["所有使用者可寫入"]}
+        ]}),
+        "匿名只能讀不算（只算可寫入）；部門共用在例外"
+    );
+
+    let mut nfs = share("nfs", "/export", ShareAccess::None, ShareAccess::Read);
+    nfs.no_root_squash = true;
+    nfs.clients = vec!["10.0.0.0/8".into()];
+    put(
+        &s,
+        &lin,
+        InventoryPayload::Shares(SharesInfo {
+            shares: vec![nfs],
+            errors: vec!["無法讀取 Samba 設定：x".into()],
+        }),
+    )
+    .await;
+    let r = results(&s, &lin).await;
+    assert_eq!(r[0].1, "violating");
+    assert_eq!(r[0].2["shares"][0]["issues"], json!(["no_root_squash"]));
+
+    // 裝置頁：Windows 在「安全」分頁、Linux 在「帳號與權限」分頁
+    let c = s.admin_client().await;
+    let (_, html) = s
+        .page(&c, &format!("/devices/{}/tab/security", win.device_id))
+        .await;
+    assert!(
+        html.contains("共用資料夾") && html.contains("id=\"shares\""),
+        "{html}"
+    );
+    assert!(
+        html.contains("<span class=\"tag bad\">開放</span> public"),
+        "{html}"
+    );
+    let (_, html) = s
+        .page(&c, &format!("/devices/{}/tab/accounts", lin.device_id))
+        .await;
+    assert!(html.contains("來源：10.0.0.0/8；no_root_squash"), "{html}");
+    assert!(html.contains("讀取失敗：無法讀取 Samba 設定：x"), "{html}");
+    let (_, html) = s
+        .page(&c, &format!("/devices/{}/tab/compliance", lin.device_id))
+        .await;
+    assert!(
+        html.contains("開放的共用：/export（no_root_squash）"),
+        "{html}"
+    );
+
+    // 規則表單
+    let (_, html) = s.page(&c, &format!("/compliance/rules/{rule}")).await;
+    assert!(html.contains("適用於：Windows、Linux"), "{html}");
+    assert!(html.contains("dept*"), "{html}");
+
+    // 修好之後恢復；只剩讀取失敗：未知
+    put(
+        &s,
+        &lin,
+        InventoryPayload::Shares(SharesInfo {
+            shares: vec![],
+            errors: vec!["無法讀取 Samba 設定：x".into()],
+        }),
+    )
+    .await;
+    assert_eq!(results(&s, &lin).await[0].1, "unknown");
+    put(&s, &win, InventoryPayload::Shares(SharesInfo::default())).await;
+    assert!(results(&s, &win).await.is_empty());
 }

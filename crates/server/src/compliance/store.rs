@@ -93,6 +93,22 @@ async fn load_accounts(
         .collect())
 }
 
+/// shares 區段（一次讀一批裝置）；jsonb 壞掉的當成沒有資料
+async fn load_shares(
+    conn: &mut PgConnection,
+    ids: &[Uuid],
+) -> Result<HashMap<Uuid, protocol::SharesInfo>, sqlx::Error> {
+    let rows: Vec<(Uuid, Value)> =
+        sqlx::query_as("SELECT device_id, data FROM device_shares WHERE device_id = ANY($1)")
+            .bind(ids)
+            .fetch_all(&mut *conn)
+            .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(id, v)| serde_json::from_value(v).ok().map(|a| (id, a)))
+        .collect())
+}
+
 /// security／registry／services 的事實（一次讀一批裝置）
 #[derive(Default)]
 struct ConfigFacts {
@@ -303,11 +319,17 @@ pub async fn load_facts(
     } else {
         None
     };
+    let shares = if has("shares") {
+        load_shares(conn, &[id]).await?.remove(&id)
+    } else {
+        None
+    };
     let now = time::OffsetDateTime::now_utc();
     Ok(Some(DeviceFacts {
         network,
         containers,
         accounts,
+        shares,
         linux,
         active,
         group_id,
@@ -580,6 +602,7 @@ pub async fn load_facts_bulk(
     let (mut periods, sites) = load_network(conn, ids).await?;
     let mut containers = load_containers(conn, ids).await?;
     let mut accounts = load_accounts(conn, ids).await?;
+    let mut shares = load_shares(conn, ids).await?;
     let now = time::OffsetDateTime::now_utc();
     let mut has: std::collections::HashSet<(Uuid, String)> = std::collections::HashSet::new();
     has.extend(sections);
@@ -595,6 +618,7 @@ pub async fn load_facts_bulk(
                         .then(|| containers.remove(&id))
                         .flatten(),
                     accounts: has(id, "accounts").then(|| accounts.remove(&id)).flatten(),
+                    shares: has(id, "shares").then(|| shares.remove(&id)).flatten(),
                     group_id,
                     os_build: has(id, "basic").then(|| os_build.unwrap_or_default()),
                     os_ubr: os_ubr.and_then(|u| u32::try_from(u).ok()),

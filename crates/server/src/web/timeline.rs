@@ -60,6 +60,7 @@ pub fn section_label(section: &str) -> &str {
         "containers" => "容器",
         "network" => "網路",
         "vms" => "虛擬機",
+        "shares" => "共用",
         other => other,
     }
 }

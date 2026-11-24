@@ -774,6 +774,7 @@ pub struct SecurityLine {
 struct SecurityTab {
     updated: Option<String>,
     lines: Vec<SecurityLine>,
+    shares: Option<super::shares::SharesCard>,
 }
 
 fn security_lines(st: &AppState, info: &protocol::SecurityInfo) -> Vec<SecurityLine> {
@@ -901,7 +902,12 @@ pub async fn security_tab(st: &AppState, s: &Session, id: Uuid) -> Result<Respon
             )
         }
     };
-    Ok(render(&SecurityTab { updated, lines }))
+    let shares = super::shares::load(st, id).await?;
+    Ok(render(&SecurityTab {
+        updated,
+        lines,
+        shares,
+    }))
 }
 
 /// `POST /compliance/violations/exempt`：對勾選的（裝置, 規則）建立或更新豁免（平台管理員）

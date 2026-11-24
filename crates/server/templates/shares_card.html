@@ -1,0 +1,11 @@
+{% if let Some(c) = shares %}
+<h2>共用資料夾</h2>
+{% for e in c.errors %}<p class="error">讀取失敗：{{ e }}</p>{% endfor %}
+{% if c.rows.is_empty() %}<p class="muted">沒有共用資料夾。</p>{% else %}
+<table id="shares">
+  <tr><th>名稱</th><th>類型</th><th>路徑</th><th>匿名</th><th>所有使用者</th><th>備註</th></tr>
+  {% for r in c.rows %}<tr><td>{% if r.warn %}<span class="tag bad">開放</span> {% endif %}{{ r.name }}</td><td>{{ r.kind }}</td><td>{{ r.path }}</td><td>{{ r.anonymous }}</td><td>{{ r.all_users }}</td><td>{{ r.note }}</td></tr>{% endfor %}
+</table>
+{% endif %}
+<p class="muted">「匿名」是不登入就能做什麼，「所有使用者」是任何登入的使用者（Everyone、Domain Users 等）能做什麼。Windows 取共用權限與資料夾權限較小的一邊。管理用共用（C$、ADMIN$）與印表機共用不列出。</p>
+{% endif %}
