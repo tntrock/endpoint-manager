@@ -7,7 +7,7 @@ use super::matcher::Glob;
 
 pub const MAX_PATTERN_LEN: usize = 256;
 
-pub const KINDS: [&str; 26] = [
+pub const KINDS: [&str; 27] = [
     "forbidden_software",
     "required_software",
     "software_allowlist",
@@ -34,6 +34,7 @@ pub const KINDS: [&str; 26] = [
     "firewall_allow_all",
     "ssh_config",
     "rdp_users",
+    "account_flags",
 ];
 
 /// 對外開放的服務：內建的服務與連接埠（錯誤設定規格 §5.2）
@@ -87,6 +88,7 @@ pub fn kind_label(kind: &str) -> &'static str {
         "firewall_allow_all" => "防火牆全開規則",
         "ssh_config" => "sshd 設定",
         "rdp_users" => "遠端桌面使用者",
+        "account_flags" => "帳號設定",
         _ => "未知類型",
     }
 }
@@ -123,7 +125,7 @@ pub fn kind_platform(kind: &str) -> Platform {
         "forbidden_image" | "container_privilege" | "unpinned_image" | "extra_root_account" => {
             Platform::Linux
         }
-        "open_share" | "exposed_service" => Platform::Both,
+        "open_share" | "exposed_service" | "account_flags" => Platform::Both,
         "ssh_config" => Platform::Linux,
         _ => Platform::Windows,
     }
@@ -276,6 +278,39 @@ pub enum Params {
     RdpUsers {
         allowed: Vec<String>,
     },
+    AccountFlags {
+        checks: AccountChecks,
+        /// 例外帳號（萬用字元；群組寫 `%群組`）
+        except_accounts: Vec<String>,
+    },
+}
+
+/// 帳號設定規則：勾選的項目（錯誤設定規格 §6.2）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct AccountChecks {
+    /// 不允許沒有密碼的帳號（Windows 不需要密碼、Linux 空密碼）
+    pub no_password: bool,
+    /// Guest 帳號必須停用（Windows）
+    pub guest_disabled: bool,
+    /// 不允許密碼永不過期（Windows）
+    pub password_expires: bool,
+    /// 不允許 sudo 免密碼執行任何指令（Linux）
+    pub sudo_nopasswd: bool,
+    /// 自動登入不能存密碼（Windows）
+    pub no_autologon_password: bool,
+}
+
+impl AccountChecks {
+    /// (參數名稱, 是否勾選)
+    pub fn fields(&self) -> [(&'static str, bool); 5] {
+        [
+            ("no_password", self.no_password),
+            ("guest_disabled", self.guest_disabled),
+            ("password_expires", self.password_expires),
+            ("sudo_nopasswd", self.sudo_nopasswd),
+            ("no_autologon_password", self.no_autologon_password),
+        ]
+    }
 }
 
 /// sshd 設定規則：勾選的項目（錯誤設定規格 §5.2）
@@ -505,6 +540,10 @@ pub enum Check {
     RdpUsers {
         allowed: Vec<Glob>,
     },
+    AccountFlags {
+        checks: AccountChecks,
+        except_accounts: Vec<Glob>,
+    },
 }
 
 impl Check {
@@ -515,7 +554,9 @@ impl Check {
             | Check::ContainerPrivilege { .. }
             | Check::UnpinnedImage { .. }
             | Check::ExtraRootAccount { .. } => Platform::Linux,
-            Check::OpenShare { .. } | Check::ExposedService { .. } => Platform::Both,
+            Check::OpenShare { .. } | Check::ExposedService { .. } | Check::AccountFlags { .. } => {
+                Platform::Both
+            }
             Check::SshConfig(_) => Platform::Linux,
             _ => Platform::Windows,
         }
@@ -599,6 +640,23 @@ struct RawSsh {
     no_password: bool,
     #[serde(default)]
     no_empty_passwords: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawAccountFlags {
+    #[serde(default)]
+    no_password: bool,
+    #[serde(default)]
+    guest_disabled: bool,
+    #[serde(default)]
+    password_expires: bool,
+    #[serde(default)]
+    sudo_nopasswd: bool,
+    #[serde(default)]
+    no_autologon_password: bool,
+    #[serde(default)]
+    except_accounts: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -1126,6 +1184,23 @@ impl Params {
                     no_empty_passwords: r.no_empty_passwords,
                 }))
             }
+            "account_flags" => {
+                let r: RawAccountFlags = from(v)?;
+                let checks = AccountChecks {
+                    no_password: r.no_password,
+                    guest_disabled: r.guest_disabled,
+                    password_expires: r.password_expires,
+                    sudo_nopasswd: r.sudo_nopasswd,
+                    no_autologon_password: r.no_autologon_password,
+                };
+                if !checks.fields().iter().any(|(_, on)| *on) {
+                    return Err("帳號設定規則至少要勾選一項".into());
+                }
+                Ok(Params::AccountFlags {
+                    checks,
+                    except_accounts: exceptions("例外帳號", r.except_accounts)?,
+                })
+            }
             "rdp_users" => {
                 let r: RawRdpUsers = from(v)?;
                 Ok(Params::RdpUsers {
@@ -1193,6 +1268,7 @@ impl Params {
             Params::FirewallAllowAll { .. } => "firewall_allow_all",
             Params::SshConfig(_) => "ssh_config",
             Params::RdpUsers { .. } => "rdp_users",
+            Params::AccountFlags { .. } => "account_flags",
         }
     }
 
@@ -1421,6 +1497,19 @@ impl Params {
             Params::RdpUsers { allowed } => {
                 m.insert("allowed".into(), json!(allowed));
             }
+            Params::AccountFlags {
+                checks,
+                except_accounts,
+            } => {
+                for (k, on) in checks.fields() {
+                    if on {
+                        m.insert(k.into(), json!(true));
+                    }
+                }
+                if !except_accounts.is_empty() {
+                    m.insert("except_accounts".into(), json!(except_accounts));
+                }
+            }
             Params::OpenShare(p) => {
                 for (k, on) in [
                     ("anonymous", p.anonymous),
@@ -1606,6 +1695,13 @@ impl Params {
             Params::SshConfig(p) => Check::SshConfig(*p),
             Params::RdpUsers { allowed } => Check::RdpUsers {
                 allowed: allowed.iter().map(|i| Glob::new(i)).collect(),
+            },
+            Params::AccountFlags {
+                checks,
+                except_accounts,
+            } => Check::AccountFlags {
+                checks: *checks,
+                except_accounts: except_accounts.iter().map(|i| Glob::new(i)).collect(),
             },
             Params::OpenShare(p) => Check::OpenShare {
                 anonymous: p.anonymous,
@@ -1992,6 +2088,23 @@ mod tests {
             Params::parse("rdp_users", &json!({})).unwrap().to_json(),
             json!({"allowed": []})
         );
+        let p = Params::parse(
+            "account_flags",
+            &json!({"no_password": true, "sudo_nopasswd": true, "except_accounts": [" %ops "]}),
+        )
+        .unwrap();
+        assert_eq!(
+            p.to_json(),
+            json!({"no_password": true, "sudo_nopasswd": true, "except_accounts": ["%ops"]})
+        );
+        assert_eq!(Params::parse(p.kind(), &p.to_json()).unwrap(), p);
+        assert_eq!(p.compile().platform(), Platform::Both);
+        assert!(
+            Params::parse("account_flags", &json!({"except_accounts": ["x"]}))
+                .unwrap_err()
+                .contains("至少")
+        );
+        assert_eq!(kind_platform("account_flags"), Platform::Both);
         assert_eq!(kind_platform("ssh_config"), Platform::Linux);
         assert_eq!(kind_platform("exposed_service"), Platform::Both);
         assert_eq!(kind_platform("rdp_users"), Platform::Windows);

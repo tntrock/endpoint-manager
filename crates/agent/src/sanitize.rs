@@ -120,6 +120,8 @@ pub fn sanitize(p: &mut InventoryPayload) {
                 fix(&mut p.source);
             }
             a.sudoers_unparsed.iter_mut().for_each(fix);
+            a.errors.truncate(10);
+            a.errors.iter_mut().for_each(fix);
         }
         InventoryPayload::Vms(v) => {
             v.vms.truncate(protocol::MAX_VMS);
@@ -379,6 +381,7 @@ mod tests {
                     shell: "/bin/sh".into(),
                     locked: None,
                     password_changed: None,
+                    ..Default::default()
                 })
                 .collect(),
             system_user_count: 0,
@@ -387,9 +390,11 @@ mod tests {
                     principal: format!("p{i}"),
                     kind: PrincipalKind::User,
                     source: "/etc/sudoers".into(),
+                    ..Default::default()
                 })
                 .collect(),
             sudoers_unparsed: (0..n).map(|i| format!("l{i}")).collect(),
+            ..Default::default()
         });
         sanitize(&mut p);
         let InventoryPayload::Accounts(a) = &p else {

@@ -58,7 +58,7 @@ impl Section {
     ];
 
     /// Windows Agent 回報的區段
-    pub const WINDOWS: [Section; 11] = [
+    pub const WINDOWS: [Section; 12] = [
         Section::Basic,
         Section::Hardware,
         Section::Software,
@@ -66,6 +66,7 @@ impl Section {
         Section::Services,
         Section::Security,
         Section::Registry,
+        Section::Accounts,
         Section::Network,
         Section::Vms,
         Section::Shares,
@@ -651,33 +652,56 @@ pub struct RegistryValue {
     pub data: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct LocalUser {
     pub name: String,
+    /// Linux 的 UID；Windows 是 RID（Administrator 500、Guest 501）
     pub uid: u32,
+    /// Linux 才有
     pub shell: String,
     /// None = 讀不到（沒有 shadow 權限）
     pub locked: Option<bool>,
     #[serde(with = "timefmt::date_option", default)]
     pub password_changed: Option<time::Date>,
+    /// Windows：帳號停用
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disabled: bool,
+    /// Windows：密碼永不過期
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub password_never_expires: bool,
+    /// 沒有密碼：Windows 是「不需要密碼」（`UF_PASSWD_NOTREQD`），Linux 是密碼欄位空白。
+    /// None = 讀不到（舊版 Agent、沒有 shadow 權限）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_password: Option<bool>,
+    /// Windows：最後登入時間（沒登入過是 None）
+    #[serde(
+        with = "timefmt::rfc3339_option",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub last_logon: Option<OffsetDateTime>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PrincipalKind {
+    #[default]
     User,
     Group,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct PrivilegeEntry {
     pub principal: String,
     pub kind: PrincipalKind,
     /// 來源檔，例如 /etc/sudoers.d/foo
     pub source: String,
+    /// sudo 規則可以免密碼執行任何指令（`NOPASSWD: ALL`）
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub nopasswd_all: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct AccountsInfo {
     pub users: Vec<LocalUser>,
     /// 不列出的系統帳號數量
@@ -685,6 +709,16 @@ pub struct AccountsInfo {
     pub privileged: Vec<PrivilegeEntry>,
     /// 解析不了的 sudoers 行
     pub sudoers_unparsed: Vec<String>,
+    /// 有回報帳號旗標（停用、沒有密碼、免密碼 sudo……，Agent 0.15.0 以上）；
+    /// 舊版 Agent 沒有，帳號設定規則是「未知」
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub flags: bool,
+    /// Windows：自動登入存了密碼（只回報有沒有，不讀內容）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autologon_password: Option<bool>,
+    /// 讀取失敗的項目（Windows）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub errors: Vec<String>,
 }
 
 /// 每台最多回報的監聽連接埠數
@@ -1161,7 +1195,7 @@ impl InventoryPayload {
                 v.len()
             }
             InventoryPayload::Accounts(a) => {
-                a.users.len() + a.privileged.len() + a.sudoers_unparsed.len()
+                a.users.len() + a.privileged.len() + a.sudoers_unparsed.len() + a.errors.len()
             }
             InventoryPayload::Containers(c) => {
                 if c.containers.len() > MAX_CONTAINERS {
@@ -1331,7 +1365,6 @@ mod tests {
     #[test]
     fn section_lists() {
         assert_eq!(Section::parse("accounts"), Some(Section::Accounts));
-        assert!(!Section::WINDOWS.contains(&Section::Accounts));
         assert!(!Section::LINUX.contains(&Section::Registry));
         assert_eq!(Section::ALL.len(), 13);
         assert!(
@@ -1460,6 +1493,7 @@ mod tests {
                 shell: "/bin/sh".into(),
                 locked: None,
                 password_changed: None,
+                ..Default::default()
             },
             LocalUser {
                 name: "b".into(),
@@ -1467,6 +1501,7 @@ mod tests {
                 shell: "/bin/sh".into(),
                 locked: Some(true),
                 password_changed: Some(time::macros::date!(2026 - 01 - 02)),
+                ..Default::default()
             },
         ];
         let mut privileged = vec![
@@ -1474,11 +1509,13 @@ mod tests {
                 principal: "a".into(),
                 kind: PrincipalKind::User,
                 source: "/etc/sudoers".into(),
+                ..Default::default()
             },
             PrivilegeEntry {
                 principal: "wheel".into(),
                 kind: PrincipalKind::Group,
                 source: "/etc/sudoers".into(),
+                ..Default::default()
             },
         ];
         let mut un = vec!["x".to_string(), "y".to_string()];
@@ -1492,6 +1529,7 @@ mod tests {
             system_user_count: 3,
             privileged,
             sudoers_unparsed: un,
+            ..Default::default()
         })
     }
 

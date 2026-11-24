@@ -121,6 +121,15 @@
        <label><input type="checkbox" name="p_ssh_pw" value="1" {% if p.ssh_pw %}checked{% endif %}> 不允許密碼登入（只用金鑰）</label>
        <label><input type="checkbox" name="p_ssh_empty" value="1" {% if p.ssh_empty %}checked{% endif %}> 不允許空密碼</label></p>
     <p class="muted">以 <code>sshd -T</code> 的實際設定判斷（含 Include 的設定檔）。沒有安裝 sshd 的裝置算符合。</p>
+  {% else if kind == "account_flags" %}
+    <p class="checks"><label><input type="checkbox" name="p_acc_no_password" value="1" {% if p.acc_no_password %}checked{% endif %}> 不允許沒有密碼的帳號（Windows 的「不需要密碼」、Linux 的空密碼）</label>
+       <label><input type="checkbox" name="p_acc_guest" value="1" {% if p.acc_guest %}checked{% endif %}> Guest 帳號必須停用（Windows）</label>
+       <label><input type="checkbox" name="p_acc_expires" value="1" {% if p.acc_expires %}checked{% endif %}> 不允許密碼永不過期（Windows）</label>
+       <label><input type="checkbox" name="p_acc_sudo" value="1" {% if p.acc_sudo %}checked{% endif %}> 不允許 sudo 免密碼執行任何指令（Linux 的 <code>NOPASSWD: ALL</code>）</label>
+       <label><input type="checkbox" name="p_acc_autologon" value="1" {% if p.acc_autologon %}checked{% endif %}> 自動登入不能存密碼（Windows）</label></p>
+    <div class="row"><label class="field">例外帳號（每行一個，可用 <code>*</code>；sudo 的群組寫 <code>%群組</code>）
+       <textarea name="p_except_names" rows="4" cols="40" placeholder="svc_backup">{{ p.except_names }}</textarea></label></div>
+    <p class="muted">每台只看適用它作業系統的項目。停用或鎖定的帳號不算。Windows 檢查本機帳號（不含網域帳號）；自動登入只檢查有沒有存密碼，不讀密碼內容。需要 Agent 0.15.0 以上，舊版 Agent 的結果為「未知」。</p>
   {% else if kind == "rdp_users" %}
     <div class="row"><label class="field">允許的 Remote Desktop Users 成員（每行一個）
        <textarea name="p_admins_allowed" rows="6" cols="60">{{ p.admins_allowed }}</textarea></label></div>

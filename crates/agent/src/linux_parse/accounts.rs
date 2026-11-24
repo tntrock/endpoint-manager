@@ -1,5 +1,5 @@
 //! passwd / shadow / group / sudoers 的解析。
-//! 安全：shadow 的密碼欄位只用來判斷是否鎖定，不會被存進任何結構、錯誤或訊息。
+//! 安全：shadow 的密碼欄位只用來判斷是否鎖定、是否空白，不會被存進任何結構、錯誤或訊息。
 
 use protocol::{LocalUser, PrincipalKind, PrivilegeEntry};
 use std::collections::HashMap;
@@ -24,8 +24,16 @@ pub fn uid_min(login_defs: &str) -> u32 {
         .unwrap_or(1000)
 }
 
-/// 只保留 (是否鎖定, 最後變更日)，密碼欄位在這裡就丟掉。
-fn parse_shadow(shadow: &str) -> HashMap<&str, (bool, Option<Date>)> {
+/// 一個帳號在 shadow 裡的狀態（密碼欄位本身不保留）
+struct ShadowEntry {
+    locked: bool,
+    /// 密碼欄位空白：不用密碼就能登入
+    empty: bool,
+    changed: Option<Date>,
+}
+
+/// 只保留是否鎖定、是否空白與最後變更日，密碼欄位在這裡就丟掉。
+fn parse_shadow(shadow: &str) -> HashMap<&str, ShadowEntry> {
     shadow
         .lines()
         .filter_map(|l| {
@@ -39,7 +47,14 @@ fn parse_shadow(shadow: &str) -> HashMap<&str, (bool, Option<Date>)> {
                 .filter(|&n| n != 0)
                 .and_then(|n| i32::try_from(n.checked_add(UNIX_EPOCH_JULIAN_DAY)?).ok())
                 .and_then(|j| Date::from_julian_day(j).ok());
-            Some((name, (locked, changed)))
+            Some((
+                name,
+                ShadowEntry {
+                    locked,
+                    empty: pw.is_empty(),
+                    changed,
+                },
+            ))
         })
         .collect()
 }
@@ -70,8 +85,10 @@ pub fn users(passwd: &str, shadow: Option<&str>, uid_min: u32) -> (Vec<LocalUser
             name: f[0].to_string(),
             uid,
             shell: shell.to_string(),
-            locked: entry.map(|e| e.0),
-            password_changed: entry.and_then(|e| e.1),
+            locked: entry.map(|e| e.locked),
+            password_changed: entry.and_then(|e| e.changed),
+            no_password: entry.map(|e| e.empty),
+            ..Default::default()
         });
     }
     (out, system)
@@ -182,6 +199,43 @@ fn is_special(name: &str) -> bool {
             .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
 }
 
+/// 使用者規格的右半邊（`=` 之後）是否可以免密碼執行任何指令：
+/// 標籤 `NOPASSWD:` 一直有效到 `PASSWD:` 為止，指令是 `ALL` 就算。
+fn nopasswd_all(rhs: &str) -> bool {
+    // 去掉 `(root, bob)` 這類執行身分（裡面也有逗號）
+    let mut plain = String::new();
+    let mut depth = 0u32;
+    for c in rhs.chars() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => plain.push(c),
+            _ => {}
+        }
+    }
+    let mut nopasswd = false;
+    for item in plain.split(',') {
+        let mut cmd = item.trim();
+        // 指令前面的標籤：全大寫加冒號
+        while let Some((tag, rest)) = cmd.split_once(':') {
+            let tag = tag.trim();
+            if tag.is_empty() || !tag.chars().all(|c| c.is_ascii_uppercase() || c == '_') {
+                break;
+            }
+            match tag {
+                "NOPASSWD" => nopasswd = true,
+                "PASSWD" => nopasswd = false,
+                _ => {}
+            }
+            cmd = rest.trim();
+        }
+        if nopasswd && cmd == "ALL" {
+            return true;
+        }
+    }
+    false
+}
+
 /// 只處理已讀入的檔案內容（include 由呼叫端展開）。回 (有效項目, 解析不了的原文行)。
 pub fn sudoers(files: &[SudoersFile]) -> (Vec<PrivilegeEntry>, Vec<String>) {
     let mut entries = Vec::new();
@@ -218,6 +272,7 @@ pub fn sudoers(files: &[SudoersFile]) -> (Vec<PrivilegeEntry>, Vec<String>) {
                 unparsed.push(line.to_string());
                 continue;
             }
+            let nopasswd = line.split_once('=').is_some_and(|(_, r)| nopasswd_all(r));
             for n in names {
                 let (principal, kind) = match n.strip_prefix('%') {
                     Some(g) => (g, PrincipalKind::Group),
@@ -227,6 +282,7 @@ pub fn sudoers(files: &[SudoersFile]) -> (Vec<PrivilegeEntry>, Vec<String>) {
                     principal: principal.to_string(),
                     kind,
                     source: format!("sudoers:{}", f.name),
+                    nopasswd_all: nopasswd,
                 });
             }
         }
@@ -281,6 +337,51 @@ bob:!$6$x:0:0:99999:7:::\n";
             u.iter()
                 .all(|x| x.locked.is_none() && x.password_changed.is_none())
         );
+    }
+
+    #[test]
+    fn empty_password_is_flagged() {
+        let shadow = "root:*:19000::::::\nalice::19500::::::\nbob:!:0::::::\n";
+        let (u, _) = users(PASSWD, Some(shadow), 1000);
+        let got: Vec<_> = u
+            .iter()
+            .map(|x| (x.name.as_str(), x.no_password, x.locked))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("root", Some(false), Some(true)),
+                ("alice", Some(true), Some(false)),
+                ("bob", Some(false), Some(true)),
+            ]
+        );
+        let (u, _) = users(PASSWD, None, 1000);
+        assert!(u.iter().all(|x| x.no_password.is_none()));
+    }
+
+    #[test]
+    fn nopasswd_all_detection() {
+        for (rhs, want) in [
+            ("(ALL) NOPASSWD: ALL", true),
+            ("(ALL:ALL) NOPASSWD:ALL", true),
+            ("(root, bob) NOPASSWD: /bin/ls, ALL", true),
+            ("(ALL) NOPASSWD: SETENV: ALL", true),
+            ("(ALL) ALL", false),
+            ("(ALL) NOPASSWD: /usr/bin/apt", false),
+            ("(ALL) NOPASSWD: /bin/ls, PASSWD: ALL", false),
+            ("NOPASSWD: ALL", true),
+            ("(ALL) NOPASSWD: ALL_TOOLS", false),
+        ] {
+            assert_eq!(nopasswd_all(rhs), want, "{rhs}");
+        }
+        let (p, _) = sudoers(&file(
+            "alice ALL=(ALL) NOPASSWD: ALL\n%ops ALL=(ALL) ALL\n%wheel ALL=(ALL) NOPASSWD:ALL\n",
+        ));
+        let got: Vec<_> = p
+            .iter()
+            .map(|e| (e.principal.as_str(), e.nopasswd_all))
+            .collect();
+        assert_eq!(got, [("alice", true), ("ops", false), ("wheel", true)]);
     }
 
     #[test]

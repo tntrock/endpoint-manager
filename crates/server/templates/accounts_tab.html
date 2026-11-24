@@ -3,14 +3,14 @@
 {% if privileged.is_empty() %}<p class="muted">沒有 root 以外的管理權限。</p>{% else %}
 <table>
   <tr><th>主體</th><th>類型</th><th>來源</th></tr>
-  {% for p in privileged %}<tr><td>{% if p.warn %}<span class="tag bad">UID 0</span> {% endif %}{{ p.principal }}</td><td>{{ p.kind }}</td><td>{{ p.source }}</td></tr>{% endfor %}
+  {% for p in privileged %}<tr><td>{% if p.warn %}<span class="tag bad">UID 0</span> {% endif %}{% if p.nopasswd_all %}<span class="tag warn">免密碼 ALL</span> {% endif %}{{ p.principal }}</td><td>{{ p.kind }}</td><td>{{ p.source }}</td></tr>{% endfor %}
 </table>
 {% endif %}
 <h2>可登入的帳號</h2>
 {% if users.is_empty() %}<p class="muted">沒有可登入的帳號。</p>{% else %}
 <table>
   <tr><th>名稱</th><th class="num">UID</th><th>Shell</th><th>鎖定</th><th>密碼最後修改</th></tr>
-  {% for u in users %}<tr><td>{{ u.name }}</td><td class="num">{{ u.uid }}</td><td>{{ u.shell }}</td><td>{{ u.locked }}</td><td>{{ u.password_changed }}</td></tr>{% endfor %}
+  {% for u in users %}<tr><td>{% if u.no_password %}<span class="tag bad">空密碼</span> {% endif %}{{ u.name }}</td><td class="num">{{ u.uid }}</td><td>{{ u.shell }}</td><td>{{ u.locked }}</td><td>{{ u.password_changed }}</td></tr>{% endfor %}
 </table>
 {% endif %}
 {% if !unparsed.is_empty() %}

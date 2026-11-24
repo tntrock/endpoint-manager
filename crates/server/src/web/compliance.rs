@@ -776,6 +776,7 @@ struct SecurityTab {
     lines: Vec<SecurityLine>,
     shares: Option<super::shares::SharesCard>,
     exposure: Option<super::exposure::ExposureCard>,
+    local_users: Option<super::local_users::LocalUsersCard>,
 }
 
 fn security_lines(st: &AppState, info: &protocol::SecurityInfo) -> Vec<SecurityLine> {
@@ -905,11 +906,13 @@ pub async fn security_tab(st: &AppState, s: &Session, id: Uuid) -> Result<Respon
     };
     let shares = super::shares::load(st, id).await?;
     let exposure = super::exposure::load(st, id).await?;
+    let local_users = super::local_users::load(st, id).await?;
     Ok(render(&SecurityTab {
         updated,
         lines,
         shares,
         exposure,
+        local_users,
     }))
 }
 

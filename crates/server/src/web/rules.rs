@@ -94,6 +94,12 @@ pub struct ParamFields {
     pub ssh_root: bool,
     pub ssh_pw: bool,
     pub ssh_empty: bool,
+    /// 帳號設定
+    pub acc_no_password: bool,
+    pub acc_guest: bool,
+    pub acc_expires: bool,
+    pub acc_sudo: bool,
+    pub acc_autologon: bool,
 }
 
 impl ParamFields {
@@ -181,6 +187,11 @@ pub fn parse_form(raw: &[u8]) -> RuleForm {
             "p_ssh_root" => f.p.ssh_root = v == "1",
             "p_ssh_pw" => f.p.ssh_pw = v == "1",
             "p_ssh_empty" => f.p.ssh_empty = v == "1",
+            "p_acc_no_password" => f.p.acc_no_password = v == "1",
+            "p_acc_guest" => f.p.acc_guest = v == "1",
+            "p_acc_expires" => f.p.acc_expires = v == "1",
+            "p_acc_sudo" => f.p.acc_sudo = v == "1",
+            "p_acc_autologon" => f.p.acc_autologon = v == "1",
             _ => {}
         }
     }
@@ -319,6 +330,14 @@ pub fn form_to_input(f: &RuleForm) -> Result<RuleInput, String> {
             "no_empty_passwords": p.ssh_empty,
         }),
         "rdp_users" => json!({ "allowed": lines(&p.admins_allowed) }),
+        "account_flags" => json!({
+            "no_password": p.acc_no_password,
+            "guest_disabled": p.acc_guest,
+            "password_expires": p.acc_expires,
+            "sudo_nopasswd": p.acc_sudo,
+            "no_autologon_password": p.acc_autologon,
+            "except_accounts": lines(&p.except_names),
+        }),
         "open_share" => json!({
             "anonymous": p.sh_anonymous,
             "all_users": p.sh_all_users,
@@ -434,6 +453,11 @@ pub fn params_to_form(kind: &str, v: &Value) -> ParamFields {
         ssh_root: b("no_root_login"),
         ssh_pw: b("no_password"),
         ssh_empty: b("no_empty_passwords"),
+        acc_no_password: b("no_password") && kind == "account_flags",
+        acc_guest: b("guest_disabled"),
+        acc_expires: b("password_expires"),
+        acc_sudo: b("sudo_nopasswd"),
+        acc_autologon: b("no_autologon_password"),
         admins_allowed: v["allowed"]
             .as_array()
             .map(|a| {
@@ -1178,7 +1202,7 @@ mod tests {
     #[test]
     fn misconfig_forms_roundtrip() {
         type Case<'a> = (&'a str, Vec<(&'a str, &'a str)>, Value);
-        let cases: [Case; 7] = [
+        let cases: [Case; 8] = [
             (
                 "exposed_service",
                 vec![
@@ -1233,6 +1257,20 @@ mod tests {
                 "extra_root_account",
                 vec![("p_except_names", "toor")],
                 json!({"except_accounts": ["toor"]}),
+            ),
+            (
+                "account_flags",
+                vec![
+                    ("p_acc_no_password", "1"),
+                    ("p_acc_guest", "1"),
+                    ("p_acc_expires", "1"),
+                    ("p_acc_sudo", "1"),
+                    ("p_acc_autologon", "1"),
+                    ("p_except_names", "svc_*\n%ops"),
+                ],
+                json!({"no_password": true, "guest_disabled": true, "password_expires": true,
+                       "sudo_nopasswd": true, "no_autologon_password": true,
+                       "except_accounts": ["svc_*", "%ops"]}),
             ),
         ];
         for (kind, pairs, want) in cases {

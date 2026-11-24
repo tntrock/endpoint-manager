@@ -1,5 +1,5 @@
 //! 錯誤設定偵測：服務路徑沒加引號（Windows）、多餘的 UID 0 帳號（Linux）、規則的適用平台（第一期），
-//! 開放的共用（第二期），對外開放的服務與遠端登入（第三期）。
+//! 開放的共用（第二期），對外開放的服務與遠端登入（第三期），帳號設定（第四期）。
 mod common;
 
 use std::collections::BTreeMap;
@@ -10,8 +10,8 @@ use endpoint_server::compliance::rules::{Params, Rule, Severity};
 use endpoint_server::compliance::{preview, worker};
 use protocol::{
     AccountInfo, AccountsInfo, CheckinRequest, ExposureInfo, InventoryPayload, InventoryUpload,
-    ListenItem, OsFamily, PrincipalKind, PrivilegeEntry, RdpInfo, SCHEMA_VERSION, ServiceItem,
-    ShareAccess, ShareItem, SharesInfo, SshdInfo,
+    ListenItem, LocalUser, OsFamily, PrincipalKind, PrivilegeEntry, RdpInfo, SCHEMA_VERSION,
+    ServiceItem, ShareAccess, ShareItem, SharesInfo, SshdInfo,
 };
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -97,6 +97,7 @@ fn root(name: &str, source: &str) -> PrivilegeEntry {
         principal: name.into(),
         kind: PrincipalKind::User,
         source: source.into(),
+        ..Default::default()
     }
 }
 
@@ -172,6 +173,7 @@ async fn misconfig_rules_by_platform(pool: PgPool) {
                 root("alice", "/etc/sudoers"),
             ],
             sudoers_unparsed: vec![],
+            ..Default::default()
         }),
     )
     .await;
@@ -548,4 +550,140 @@ async fn exposure_rules_and_pages(pool: PgPool) {
     assert!(html.contains("value=\"telnet\" >"), "{html}");
     let (_, html) = s.page(&c, &format!("/compliance/rules/{ssh}")).await;
     assert!(html.contains("適用於：Linux"), "{html}");
+}
+
+fn local(name: &str, uid: u32) -> LocalUser {
+    LocalUser {
+        name: name.into(),
+        uid,
+        no_password: Some(false),
+        ..Default::default()
+    }
+}
+
+#[sqlx::test(migrations = false)]
+async fn account_flags_rule(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_token(2).await;
+    let lin = s.enroll_ok(&tok, None, None).await;
+    let win = s.enroll_ok(&tok, None, None).await;
+    checkin_linux(&s, &lin).await;
+    let rule = admin::create_rule(
+        &s.pool,
+        &input(
+            "帳號",
+            "account_flags",
+            json!({"no_password": true, "guest_disabled": true, "sudo_nopasswd": true,
+                   "no_autologon_password": true, "except_accounts": ["%ops"]}),
+        ),
+        "admin",
+    )
+    .await
+    .unwrap();
+    worker::recompute_all(&s.pool).await.unwrap();
+    for a in [&lin, &win] {
+        let r = results(&s, a).await;
+        assert_eq!((r.len(), r[0].1.as_str()), (1, "unknown"), "{r:?}");
+    }
+
+    let mut guest = local("Guest", 501);
+    guest.no_password = Some(true);
+    put(
+        &s,
+        &win,
+        InventoryPayload::Accounts(AccountsInfo {
+            users: vec![local("Administrator", 500), guest],
+            flags: true,
+            autologon_password: Some(true),
+            ..Default::default()
+        }),
+    )
+    .await;
+    let r = results(&s, &win).await;
+    assert_eq!((r[0].0, r[0].1.as_str()), (rule, "violating"));
+    assert_eq!(
+        r[0].2,
+        json!({"total": 3, "account_issues": [
+            "Guest 沒有密碼", "Guest 帳號（Guest）已啟用", "自動登入存了密碼"
+        ]})
+    );
+
+    let mut alice = local("alice", 1000);
+    alice.no_password = Some(true);
+    let sudo = |p: &str, kind: PrincipalKind| PrivilegeEntry {
+        principal: p.into(),
+        kind,
+        source: "sudoers:sudoers".into(),
+        nopasswd_all: true,
+    };
+    put(
+        &s,
+        &lin,
+        InventoryPayload::Accounts(AccountsInfo {
+            users: vec![local("root", 0), alice],
+            privileged: vec![
+                sudo("deploy", PrincipalKind::User),
+                sudo("ops", PrincipalKind::Group),
+            ],
+            flags: true,
+            ..Default::default()
+        }),
+    )
+    .await;
+    let r = results(&s, &lin).await;
+    assert_eq!(
+        r[0].2["account_issues"],
+        json!(["alice 沒有密碼", "deploy 可以免密碼 sudo 執行任何指令"])
+    );
+
+    // 裝置頁：Windows 在「安全設定」分頁，Linux 在「帳號與權限」分頁標示
+    let c = s.admin_client().await;
+    let (_, html) = s
+        .page(&c, &format!("/devices/{}/tab/security", win.device_id))
+        .await;
+    assert!(
+        html.contains("本機帳號") && html.contains("id=\"local-users\""),
+        "{html}"
+    );
+    assert!(
+        html.contains("<span class=\"tag bad\">存了密碼</span>"),
+        "{html}"
+    );
+    assert!(
+        html.contains("<span class=\"tag bad\">不需要密碼</span>"),
+        "{html}"
+    );
+    let (_, html) = s
+        .page(&c, &format!("/devices/{}/tab/accounts", lin.device_id))
+        .await;
+    assert!(
+        html.contains("<span class=\"tag bad\">空密碼</span> alice"),
+        "{html}"
+    );
+    assert!(html.contains("免密碼 ALL"), "{html}");
+    let (_, html) = s
+        .page(&c, &format!("/devices/{}/tab/compliance", win.device_id))
+        .await;
+    assert!(html.contains("帳號設定：Guest 沒有密碼"), "{html}");
+
+    // 規則表單
+    let (_, html) = s.page(&c, &format!("/compliance/rules/{rule}")).await;
+    assert!(html.contains("適用於：Windows、Linux"), "{html}");
+    assert!(html.contains("%ops"), "{html}");
+
+    // 舊版 Agent（沒有旗標）：未知
+    put(
+        &s,
+        &win,
+        InventoryPayload::Accounts(AccountsInfo {
+            users: vec![local("Administrator", 500)],
+            ..Default::default()
+        }),
+    )
+    .await;
+    assert_eq!(results(&s, &win).await[0].1, "unknown");
+    let (_, html) = s
+        .page(&c, &format!("/devices/{}/tab/security", win.device_id))
+        .await;
+    assert!(html.contains("Agent 版本太舊"), "{html}");
 }

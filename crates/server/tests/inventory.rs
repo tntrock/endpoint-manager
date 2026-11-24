@@ -424,6 +424,7 @@ fn accts(locked: Option<bool>) -> InventoryPayload {
                 shell: "/bin/bash".into(),
                 locked,
                 password_changed: protocol::timefmt::ymd(2026, 1, 2),
+                ..Default::default()
             },
             LocalUser {
                 name: "bob".into(),
@@ -431,6 +432,7 @@ fn accts(locked: Option<bool>) -> InventoryPayload {
                 shell: "/bin/sh".into(),
                 locked: None,
                 password_changed: None,
+                ..Default::default()
             },
         ],
         system_user_count: 30,
@@ -438,8 +440,10 @@ fn accts(locked: Option<bool>) -> InventoryPayload {
             principal: "admin".into(),
             kind: PrincipalKind::Group,
             source: "/etc/sudoers".into(),
+            ..Default::default()
         }],
         sudoers_unparsed: vec!["Defaults !weird".into()],
+        ..Default::default()
     })
 }
 

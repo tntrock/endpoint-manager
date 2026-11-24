@@ -1,0 +1,12 @@
+{% if let Some(c) = local_users %}
+<h2>本機帳號</h2>
+{% for e in c.errors %}<p class="error">讀取失敗：{{ e }}</p>{% endfor %}
+{% if c.rows.is_empty() %}<p class="muted">沒有本機帳號資料。</p>{% else %}
+<table id="local-users">
+  <tr><th>名稱</th><th>狀態</th><th>密碼</th><th>最後登入</th></tr>
+  {% for r in c.rows %}<tr><td>{{ r.name }}{% if r.guest %} <span class="muted">（Guest）</span>{% endif %}</td><td>{% if r.disabled %}<span class="muted">停用</span>{% else if r.guest %}<span class="tag bad">啟用</span>{% else %}啟用{% endif %}</td><td>{% if r.no_password && !r.disabled %}<span class="tag bad">不需要密碼</span> {% else if r.no_password %}不需要密碼 {% endif %}{% if r.never_expires %}永不過期{% endif %}</td><td>{{ r.last_logon }}</td></tr>{% endfor %}
+</table>
+{% endif %}
+{% if let Some(on) = c.autologon_password %}<p>自動登入：{% if on %}<span class="tag bad">存了密碼</span>（登錄檔 Winlogon 的 <code>DefaultPassword</code>）{% else %}沒有存密碼{% endif %}</p>{% endif %}
+{% if !c.flags %}<p class="muted">Agent 版本太舊（需要 0.15.0 以上），沒有回報帳號狀態。</p>{% endif %}
+{% endif %}

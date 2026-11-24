@@ -19,6 +19,7 @@ pub mod exposure;
 pub mod groups;
 pub mod images;
 pub mod integrity;
+pub mod local_users;
 pub mod login;
 pub mod mfa;
 pub mod netdevices;

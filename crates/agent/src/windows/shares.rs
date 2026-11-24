@@ -23,12 +23,12 @@ use crate::shares::judge_smb;
 /// 內建 Guest 帳號的 RID
 const GUEST_RID: u32 = 501;
 
-fn wide(s: &str) -> Vec<u16> {
+pub(super) fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
 
 /// NUL 結尾的寬字串
-unsafe fn from_wide(p: *const u16) -> String {
+pub(super) unsafe fn from_wide(p: *const u16) -> String {
     if p.is_null() {
         return String::new();
     }
