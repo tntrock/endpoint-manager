@@ -1174,6 +1174,98 @@ mod tests {
         assert_eq!(i.params, json!({"except_images": []}));
     }
 
+    /// 錯誤設定規則的表單：送出轉成參數，再從參數轉回表單（編輯頁）
+    #[test]
+    fn misconfig_forms_roundtrip() {
+        let cases: [(&str, Vec<(&str, &str)>, Value); 7] = [
+            (
+                "exposed_service",
+                vec![
+                    ("p_ex_service", "mysql"),
+                    ("p_ex_service", "vnc"),
+                    ("p_ex_ports", "8080\n 9000 \n"),
+                    ("p_ex_any", "1"),
+                    ("p_except_names", "mysqld"),
+                ],
+                json!({"services": ["mysql", "vnc"], "ports": [8080, 9000],
+                       "any_interface_only": true, "except_processes": ["mysqld"]}),
+            ),
+            (
+                "firewall_allow_all",
+                vec![("p_except_names", "Lab*")],
+                json!({"except_rules": ["Lab*"]}),
+            ),
+            (
+                "ssh_config",
+                vec![
+                    ("p_ssh_root_pw", "1"),
+                    ("p_ssh_root", "1"),
+                    ("p_ssh_pw", "1"),
+                    ("p_ssh_empty", "1"),
+                ],
+                json!({"no_root_password": true, "no_root_login": true,
+                       "no_password": true, "no_empty_passwords": true}),
+            ),
+            (
+                "rdp_users",
+                vec![("p_admins_allowed", "*-544\nCORP\\helpdesk")],
+                json!({"allowed": ["*-544", "CORP\\helpdesk"]}),
+            ),
+            (
+                "open_share",
+                vec![
+                    ("p_sh_anonymous", "1"),
+                    ("p_sh_all_users", "1"),
+                    ("p_sh_read", "1"),
+                    ("p_sh_nrs", "1"),
+                    ("p_except_names", "dist"),
+                ],
+                json!({"anonymous": true, "all_users": true, "access": "read",
+                       "no_root_squash": true, "except_shares": ["dist"]}),
+            ),
+            (
+                "unquoted_service_path",
+                vec![("p_except_names", "Legacy*")],
+                json!({"except_services": ["Legacy*"]}),
+            ),
+            (
+                "extra_root_account",
+                vec![("p_except_names", "toor")],
+                json!({"except_accounts": ["toor"]}),
+            ),
+        ];
+        for (kind, pairs, want) in cases {
+            let i = form_to_input(&form(kind, &pairs)).unwrap();
+            assert_eq!(i.params, want, "{kind}");
+            // 參數正規化後轉回表單，再送出一次結果相同
+            let normalized = Params::parse(kind, &i.params).unwrap().to_json();
+            let back = params_to_form(kind, &normalized);
+            let again = form_to_input(&RuleForm {
+                kind: kind.into(),
+                p: back,
+                ..form(kind, &[])
+            })
+            .unwrap();
+            assert_eq!(
+                Params::parse(kind, &again.params).unwrap().to_json(),
+                normalized,
+                "{kind}"
+            );
+        }
+        let p = params_to_form("exposed_service", &json!({"services": ["redis"]}));
+        assert!(p.has_service("redis") && !p.has_service("mysql"));
+        assert!(
+            form_to_input(&form("exposed_service", &[("p_ex_ports", "http")]))
+                .unwrap_err()
+                .contains("http")
+        );
+        assert_eq!(presets().len(), 9);
+        assert_eq!(
+            presets()[2],
+            ("vnc", "VNC", "5900、5901、5902、5903".to_string())
+        );
+    }
+
     /// 表單送出的原始欄位（核取方塊、多行）能正確解析
     #[test]
     fn config_form_fields_parse() {
