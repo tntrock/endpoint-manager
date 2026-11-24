@@ -129,6 +129,9 @@ async fn write_rows(pool: &PgPool, rows: &[(Uuid, HotFields)]) -> Result<(), sql
     .bind(&all_ips)
     .execute(pool)
     .await?;
+    // 報到了：「Agent 沒報到但在網路上」結束
+    let mut conn = pool.acquire().await?;
+    crate::netdev::crosscheck::checked_in(&mut conn, &ids).await?;
     Ok(())
 }
 

@@ -79,6 +79,7 @@ pub async fn store(pool: &PgPool, d: &NetData) -> Result<(), sqlx::Error> {
             .await?;
             store_fdb(&mut tx, d.device_id, &d.fdb).await?;
             store_arp(&mut tx, d.device_id, &d.arp).await?;
+            super::crosscheck::run(&mut tx, d.device_id).await?;
         }
     }
     tx.commit().await?;
