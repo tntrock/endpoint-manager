@@ -330,6 +330,20 @@ mod tests {
         )
     }
 
+    fn stopped(e: Option<OsEvent>) -> OsServiceStopped {
+        let Some(OsEvent::ServiceStopped(s)) = e else {
+            unreachable!()
+        };
+        s
+    }
+
+    fn cleared_of(e: Option<OsEvent>) -> OsLogCleared {
+        let Some(OsEvent::LogCleared(c)) = e else {
+            unreachable!()
+        };
+        c
+    }
+
     const SVC: &str = "EndpointManagerAgent";
     const DISPLAY: &str = "Endpoint Manager Agent";
 
@@ -356,15 +370,11 @@ mod tests {
             );
             classify(&parse_event_xml(&xml).unwrap(), SVC, DISPLAY)
         };
-        match stop("EndpointManagerAgent", "1") {
-            Some(OsEvent::ServiceStopped(s)) => {
-                assert!(!s.killed);
-                assert_eq!(s.event_id, Some(7036));
-                assert_eq!(s.source, "eventlog");
-                assert_eq!(s.user.as_deref(), Some("S-1-5-21-1-2-3-1001"));
-            }
-            other => panic!("{other:?}"),
-        }
+        let s = stopped(stop("EndpointManagerAgent", "1"));
+        assert!(!s.killed);
+        assert_eq!(s.event_id, Some(7036));
+        assert_eq!(s.source, "eventlog");
+        assert_eq!(s.user.as_deref(), Some("S-1-5-21-1-2-3-1001"));
         // 進入執行中、別的服務、沒有 Binary 都不算
         assert_eq!(stop("EndpointManagerAgent", "4"), None);
         assert_eq!(stop("BITS", "1"), None);
@@ -378,10 +388,7 @@ mod tests {
     #[test]
     fn unexpected_termination_is_killed() {
         let xml = scm(7034, &[("param1", DISPLAY), ("param2", "1")], None);
-        match classify(&parse_event_xml(&xml).unwrap(), SVC, DISPLAY) {
-            Some(OsEvent::ServiceStopped(s)) => assert!(s.killed),
-            other => panic!("{other:?}"),
-        }
+        assert!(stopped(classify(&parse_event_xml(&xml).unwrap(), SVC, DISPLAY)).killed);
         let xml = scm(7034, &[("param1", "Other")], Some("endpointmanageragent/0"));
         assert!(classify(&parse_event_xml(&xml).unwrap(), SVC, DISPLAY).is_some());
         let xml = scm(7034, &[("param1", "Other")], None);
@@ -399,13 +406,9 @@ mod tests {
             ],
             Some(SVC),
         );
-        match classify(&parse_event_xml(&xml).unwrap(), SVC, DISPLAY) {
-            Some(OsEvent::ServiceStopped(s)) => {
-                assert!(s.killed);
-                assert_eq!(s.event_id, Some(7031));
-            }
-            other => panic!("{other:?}"),
-        }
+        let s = stopped(classify(&parse_event_xml(&xml).unwrap(), SVC, DISPLAY));
+        assert!(s.killed);
+        assert_eq!(s.event_id, Some(7031));
         // 別的提供者用同樣的 ID 不算
         let xml = scm(7031, &[("param1", DISPLAY)], Some(SVC)).replace(SCM, "VfpExt");
         assert_eq!(
@@ -458,43 +461,53 @@ mod tests {
         );
         let ev = parse_event_xml(&xml).unwrap();
         assert_eq!(ev.user_sid, None);
-        match classify(&ev, SVC, DISPLAY) {
-            Some(OsEvent::LogCleared(c)) => {
-                assert_eq!(c.log, "Security");
-                assert_eq!(c.event_id, 1102);
-                assert_eq!(c.user.as_deref(), Some("CORP\\wang&co"));
-                assert_eq!(c.at, datetime!(2026-11-24 05:00:00.5 UTC));
-            }
-            other => panic!("{other:?}"),
-        }
+        let c = cleared_of(classify(&ev, SVC, DISPLAY));
+        assert_eq!(c.log, "Security");
+        assert_eq!(c.event_id, 1102);
+        assert_eq!(c.user.as_deref(), Some("CORP\\wang&co"));
+        assert_eq!(c.at, datetime!(2026-11-24 05:00:00.5 UTC));
         let xml = cleared(
             104,
             "System",
             "<LogFileCleared><SubjectUserName>admin</SubjectUserName><SubjectDomainName></SubjectDomainName>\
              <Channel>Application</Channel><BackupPath></BackupPath></LogFileCleared>",
         );
-        match classify(&parse_event_xml(&xml).unwrap(), SVC, DISPLAY) {
-            Some(OsEvent::LogCleared(c)) => {
-                assert_eq!(c.log, "Application");
-                assert_eq!(c.user.as_deref(), Some("admin"));
-            }
-            other => panic!("{other:?}"),
-        }
+        let c = cleared_of(classify(&parse_event_xml(&xml).unwrap(), SVC, DISPLAY));
+        assert_eq!(c.log, "Application");
+        assert_eq!(c.user.as_deref(), Some("admin"));
         // 沒有 UserData：用事件所在的紀錄，沒有使用者
         let xml = cleared(104, "System", "");
-        match classify(&parse_event_xml(&xml).unwrap(), SVC, DISPLAY) {
-            Some(OsEvent::LogCleared(c)) => {
-                assert_eq!(c.log, "System");
-                assert_eq!(c.user, None);
-            }
-            other => panic!("{other:?}"),
-        }
+        let c = cleared_of(classify(&parse_event_xml(&xml).unwrap(), SVC, DISPLAY));
+        assert_eq!(c.log, "System");
+        assert_eq!(c.user, None);
         // 別的來源的 104 不算
         let xml = cleared(104, "System", "").replace(EVENTLOG, "Other");
         assert_eq!(
             classify(&parse_event_xml(&xml).unwrap(), SVC, DISPLAY),
             None
         );
+    }
+
+    #[test]
+    fn xml_helpers_edge_cases() {
+        assert_eq!(tag_text("<Ab>x</Ab><A>y</A>", "A"), Some("y"));
+        assert_eq!(tag_text("<A />", "A"), Some(""));
+        assert_eq!(tag_text("<A>open", "A"), None);
+        assert_eq!(tag_text("<B>x</B>", "A"), None);
+        assert_eq!(attr("<Ax b='1'/><A b=\"2\"/>", "A", "b"), Some("2"));
+        assert_eq!(attr("<A c='1'/>", "A", "b"), None);
+        assert_eq!(attr("<B b='1'/>", "A", "b"), None);
+        assert_eq!(data("<Data Name=\"p\">v</Data>", "p"), Some("v"));
+        assert_eq!(data("<Data Name='q'>v</Data>", "p"), None);
+        assert_eq!(binary_text("<Binary>ABC</Binary>"), None);
+        assert_eq!(binary_text("<Binary>ZZZZ</Binary>"), None);
+        assert_eq!(
+            binary_text("<Binary>41004200</Binary>").as_deref(),
+            Some("AB")
+        );
+        // 沒有帳號
+        assert_eq!(subject("<SubjectUserName> </SubjectUserName>"), None);
+        assert_eq!(subject(""), None);
     }
 
     #[test]

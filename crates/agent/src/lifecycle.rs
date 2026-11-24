@@ -337,6 +337,17 @@ mod tests {
         assert!(s.clean);
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn alive_marker_is_refreshed_until_shutdown() {
+        let d = tempfile::tempdir().unwrap();
+        let (stop, shutdown) = watch::channel(false);
+        let task = tokio::spawn(keep_alive(d.path().to_path_buf(), shutdown));
+        tokio::time::sleep(ALIVE_EVERY + Duration::from_secs(1)).await;
+        assert!(read_time(&d.path().join(ALIVE_FILE)).is_some());
+        stop.send(true).unwrap();
+        task.await.unwrap();
+    }
+
     #[test]
     fn start_type_changes_are_recorded() {
         let (d, j) = setup();
