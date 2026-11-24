@@ -169,7 +169,8 @@ mod tests {
                 Section::Security,
                 Section::Registry,
                 Section::Network,
-                Section::Vms
+                Section::Vms,
+                Section::Shares
             ]
         );
         let much_later = t0 + Duration::from_secs(86_400);
