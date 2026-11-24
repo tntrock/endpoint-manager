@@ -7,7 +7,7 @@
 [![Release](https://img.shields.io/github/v/release/tntrock/endpoint-manager)](https://github.com/tntrock/endpoint-manager/releases/latest)
 [![License: GPL-3.0](https://img.shields.io/github/license/tntrock/endpoint-manager)](LICENSE)
 
-企業端點管理工具（Windows 與 Linux）：資產盤點、合規檢查、軟體派送、Windows Update 控制、遠端指令，並可在分點放快取主機節省 WAN 頻寬。派送與 Windows Update 只適用 Windows；合規規則在 Linux 上只有容器規則。
+企業端點管理工具（Windows 與 Linux）：資產盤點、合規檢查、軟體派送、Windows Update 控制、遠端指令，並可在分點放快取主機節省 WAN 頻寬。派送與 Windows Update 只適用 Windows；合規規則在 Linux 上只有容器規則與少數帳號規則。
 
 授權：GPL-3.0-only
 
@@ -284,7 +284,7 @@ Linux 電腦與 Windows 的差異：
 
 - 盤點：基本資訊、硬體、軟體（dpkg／rpm）、服務（systemd）、帳號與權限（可登入的帳號、誰有 root 權限，包括 sudoers 與非 root 的 UID 0）。不回報任何密碼雜湊。
 - 遠端指令：重新收集、重新開機、關機、sh 腳本。PowerShell 腳本只派給 Windows，sh 腳本只派給 Linux；對群組下指令時會略過作業系統不符的電腦。
-- 不參與軟體派送與 Windows Update 原則，也不會被算進這些頁面的統計。合規只套用容器規則（見「容器合規規則」），其他合規規則不檢查 Linux。
+- 不參與軟體派送與 Windows Update 原則，也不會被算進這些頁面的統計。合規只套用標示適用 Linux 的規則：容器規則（見「容器合規規則」）與「多餘的 UID 0 帳號」，其他合規規則不檢查 Linux。
 
 #### 容器、WSL 與虛擬機
 
@@ -584,8 +584,12 @@ Windows 與 Linux 裝置在同一份清單：
 - **Defender**：即時保護、防竄改、病毒碼幾天內更新。
 - **密碼原則**：本機帳號的最短長度、最長使用天數、鎖定門檻。
 - **本機管理員**：Administrators 群組只允許清單內的成員（可用 `*` 萬用字元，也可比對 SID，例如 `*-500`）。
+- **服務路徑沒加引號**（Windows）：服務的執行檔路徑含有空白卻沒有加引號，例如 `C:\Program Files\My App\svc.exe`。有權限在上層資料夾建立檔案的人可以讓服務以 SYSTEM 身分執行自己的程式。Windows 目錄底下的服務不檢查；可設例外服務。
+- **多餘的 UID 0 帳號**（Linux）：root 以外還有 UID 0 的帳號，可能是後門帳號；可設例外帳號。
 
-「合規 → 範本」有 22 條內建範本，例如 SMBv1、NTLMv2、LSA 保護、UAC，每條都附 Microsoft 文件出處。
+每種規則有固定的適用平台（新增規則的選單與表單上會標示）。其他作業系統的裝置不檢查，也不算「未知」。
+
+「合規 → 範本」有 29 條內建範本，例如 SMBv1、NTLMv2、LSA 保護、UAC、WinRM 的 Basic 驗證、「一律以提高的權限安裝」、自動登入，每條都附文件出處。自動登入只檢查有沒有開，不讀取密碼。
 
 登錄檔讀取的限制：
 

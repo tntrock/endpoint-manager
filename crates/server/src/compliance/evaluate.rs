@@ -74,6 +74,8 @@ pub struct DeviceFacts {
     pub network: Option<NetFacts>,
     /// containers 區段（None：從未上傳，容器規則不適用）
     pub containers: Option<protocol::ContainersInfo>,
+    /// accounts 區段（Linux；None：從未上傳）
+    pub accounts: Option<protocol::AccountsInfo>,
     /// 評估時的「現在」（病毒碼天數用）：由呼叫端提供，評估本身維持純函式
     pub now: time::OffsetDateTime,
     /// 管理網頁時區的今天：修補的安裝日期是裝置本地日期，「太久沒更新」用它計算天數
@@ -95,6 +97,29 @@ pub struct ServiceFact {
     pub name: String,
     pub start_mode: String,
     pub state: String,
+    pub binary_path: Option<String>,
+}
+
+/// 服務路徑沒加引號、執行檔路徑含空白、又不在 Windows 目錄底下：可被拿來提權
+pub fn unquoted_path(path: &str) -> bool {
+    let p = path.trim();
+    if p.starts_with('"') {
+        return false;
+    }
+    let lower = p.to_ascii_lowercase();
+    let Some(end) = lower.find(".exe") else {
+        return false;
+    };
+    let exe = &lower[..end + 4];
+    exe.contains(' ')
+        && ![
+            "c:\\windows\\",
+            "%systemroot%\\",
+            "%windir%\\",
+            "\\systemroot\\",
+        ]
+        .iter()
+        .any(|d| exe.starts_with(d))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -501,6 +526,47 @@ fn privilege_issues(
 
 fn check_one(c: &Check, f: &DeviceFacts) -> Option<(Status, Value)> {
     match c {
+        Check::UnquotedServicePath { except_services } => {
+            let Some(services) = &f.services else {
+                return no_data();
+            };
+            let bad: Vec<Value> = services
+                .iter()
+                .filter(|s| !except_services.iter().any(|g| g.is_match(&s.name)))
+                .filter_map(|s| {
+                    let p = s.binary_path.as_deref()?;
+                    unquoted_path(p).then(|| json!({"service": s.name, "path": p}))
+                })
+                .collect();
+            (!bad.is_empty()).then(|| {
+                (
+                    Status::Violating,
+                    json!({"unquoted": bad.iter().take(MAX_LISTED).collect::<Vec<_>>(),
+                           "total": bad.len()}),
+                )
+            })
+        }
+        Check::ExtraRootAccount { except_accounts } => {
+            let Some(a) = &f.accounts else {
+                return no_data();
+            };
+            let mut bad: Vec<&str> = a
+                .privileged
+                .iter()
+                .filter(|p| p.source == "uid0" && p.principal != "root")
+                .map(|p| p.principal.as_str())
+                .filter(|n| !except_accounts.iter().any(|g| g.is_match(n)))
+                .collect();
+            bad.sort_unstable();
+            bad.dedup();
+            (!bad.is_empty()).then(|| {
+                (
+                    Status::Violating,
+                    json!({"root_accounts": bad.iter().take(MAX_LISTED).collect::<Vec<_>>(),
+                           "total": bad.len()}),
+                )
+            })
+        }
         Check::ForbiddenImage {
             image,
             running_only,
@@ -1092,6 +1158,22 @@ pub fn summarize(d: &Value) -> String {
     if d.get("accounts").is_some() {
         return format!("不允許的管理員：{}", list("accounts"));
     }
+    if d.get("root_accounts").is_some() {
+        return format!("root 以外的 UID 0 帳號：{}", list("root_accounts"));
+    }
+    if let Some(items) = d["unquoted"].as_array() {
+        let names: Vec<String> = items
+            .iter()
+            .map(|i| {
+                format!(
+                    "{}（{}）",
+                    i["service"].as_str().unwrap_or(""),
+                    i["path"].as_str().unwrap_or("")
+                )
+            })
+            .collect();
+        return format!("服務路徑沒加引號：{}", names.join("、"));
+    }
     if d.get("service").is_some() {
         return format!("服務 {}：{}／{}", s("service"), s("start_mode"), s("state"));
     }
@@ -1162,7 +1244,11 @@ pub fn evaluate(facts: &DeviceFacts, rules: &RuleSet) -> Vec<Outcome> {
         .iter()
         .filter(|r| r.applies_to(facts.group_id))
         // 參數壞掉的規則不知道類型，跟舊版一樣只對 Windows 顯示
-        .filter(|r| r.check.as_ref().is_ok_and(Check::linux_only) == facts.linux)
+        .filter(|r| {
+            r.check
+                .as_ref()
+                .map_or(!facts.linux, |c| c.platform().covers(facts.linux))
+        })
         .filter_map(|r| {
             let (status, detail) = match &r.check {
                 Ok(c) => check_one(c, facts)?,
@@ -1240,6 +1326,7 @@ mod tests {
             network: None,
             linux: false,
             containers: None,
+            accounts: None,
             now: time::OffsetDateTime::now_utc(),
             today: time::OffsetDateTime::now_utc().date(),
         }
@@ -1318,11 +1405,15 @@ mod tests {
                     name: "RemoteRegistry".into(),
                     start_mode: "Manual".into(),
                     state: "Stopped".into(),
+                    binary_path: Some(r"C:\Windows\system32\svchost.exe -k localService".into()),
                 },
                 ServiceFact {
                     name: "WinDefend".into(),
                     start_mode: "Auto".into(),
                     state: "Running".into(),
+                    binary_path: Some(
+                        r#""C:\ProgramData\Microsoft\Windows Defender\MsMpEng.exe""#.into(),
+                    ),
                 },
             ]),
             ..facts(vec![])
@@ -2296,6 +2387,111 @@ mod tests {
         assert!(runtime_socket("/run/k3s/containerd/containerd.sock"));
         assert!(!runtime_socket("/var/run/docker.sock.d/x"));
         assert!(!runtime_socket("/srv/data"));
+    }
+
+    #[test]
+    fn unquoted_paths() {
+        for p in [
+            r"C:\Program Files\My App\svc.exe",
+            r"C:\Tools\my app.exe -run",
+            r"D:\Vendor Soft\bin\agent.EXE /service",
+        ] {
+            assert!(unquoted_path(p), "{p}");
+        }
+        for p in [
+            r#""C:\Program Files\My App\svc.exe""#,
+            r"C:\Program\svc.exe -arg with spaces",
+            r"C:\Windows\System32\svchost.exe -k netsvcs",
+            r"%SystemRoot%\Program Files\x y.exe",
+            r"\SystemRoot\System32\drivers\a b.sys",
+            r"C:\no exe here\driver.sys",
+            "",
+        ] {
+            assert!(!unquoted_path(p), "{p}");
+        }
+    }
+
+    #[test]
+    fn unquoted_service_rule() {
+        let mut f = cfg_facts();
+        assert!(one(&f, "unquoted_service_path", json!({})).is_none());
+        f.services.as_mut().unwrap().push(ServiceFact {
+            name: "VendorSvc".into(),
+            start_mode: "Auto".into(),
+            state: "Running".into(),
+            binary_path: Some(r"C:\Program Files\Vendor App\svc.exe".into()),
+        });
+        f.services.as_mut().unwrap().push(ServiceFact {
+            name: "NoPath".into(),
+            start_mode: "Auto".into(),
+            state: "Running".into(),
+            binary_path: None,
+        });
+        let (st, d) = one(&f, "unquoted_service_path", json!({})).unwrap();
+        assert_eq!(st, Status::Violating);
+        assert_eq!(d["total"], 1);
+        assert_eq!(
+            summarize(&d),
+            r"服務路徑沒加引號：VendorSvc（C:\Program Files\Vendor App\svc.exe）"
+        );
+        assert!(
+            one(
+                &f,
+                "unquoted_service_path",
+                json!({"except_services": ["vendor*"]})
+            )
+            .is_none()
+        );
+        let none = DeviceFacts {
+            services: None,
+            ..f.clone()
+        };
+        assert_eq!(
+            one(&none, "unquoted_service_path", json!({})).unwrap().0,
+            Status::Unknown
+        );
+        // Linux 裝置不適用
+        let lx = DeviceFacts { linux: true, ..f };
+        assert!(one(&lx, "unquoted_service_path", json!({})).is_none());
+    }
+
+    #[test]
+    fn extra_root_account_rule() {
+        let entry = |p: &str, src: &str| protocol::PrivilegeEntry {
+            principal: p.into(),
+            kind: protocol::PrincipalKind::User,
+            source: src.into(),
+        };
+        let mut f = linux(vec![]);
+        assert_eq!(
+            one(&f, "extra_root_account", json!({})).unwrap().0,
+            Status::Unknown,
+            "沒有帳號資料"
+        );
+        f.accounts = Some(protocol::AccountsInfo {
+            users: vec![],
+            system_user_count: 0,
+            privileged: vec![
+                entry("root", "uid0"),
+                entry("admin", "/etc/sudoers"),
+                entry("toor", "uid0"),
+                entry("backdoor", "uid0"),
+            ],
+            sudoers_unparsed: vec![],
+        });
+        let (st, d) = one(&f, "extra_root_account", json!({})).unwrap();
+        assert_eq!(st, Status::Violating);
+        assert_eq!(summarize(&d), "root 以外的 UID 0 帳號：backdoor、toor");
+        let (_, d) = one(
+            &f,
+            "extra_root_account",
+            json!({"except_accounts": ["toor"]}),
+        )
+        .unwrap();
+        assert_eq!(d["root_accounts"], json!(["backdoor"]));
+        assert!(one(&f, "extra_root_account", json!({"except_accounts": ["*"]})).is_none());
+        // Windows 裝置不適用
+        assert!(one(&facts(vec![]), "extra_root_account", json!({})).is_none());
     }
 
     #[test]
