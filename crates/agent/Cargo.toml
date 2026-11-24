@@ -89,6 +89,7 @@ post_install_script = """
 systemctl daemon-reload || true
 systemctl enable endpoint-agent || true
 if [ "$1" -ge 2 ]; then
+    [ -d /var/lib/endpoint-manager ] && echo upgrade > /var/lib/endpoint-manager/planned_stop || true
     systemctl try-restart endpoint-agent || true
 fi
 """

@@ -38,17 +38,54 @@ struct Tab {
     device: Uuid,
     rows: Vec<Row>,
     truncated: bool,
+    lifecycle: Vec<LifeRow>,
     can_ack: bool,
     csrf: String,
     error: Option<String>,
 }
 
-/// 這台有沒有任何發現（才顯示「完整性」分頁）
+/// 這台有沒有任何發現或 Agent 啟動、停止紀錄（才顯示「完整性」分頁）
 pub async fn has_findings(st: &AppState, id: Uuid) -> Result<bool, sqlx::Error> {
-    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM device_findings WHERE device_id = $1)")
-        .bind(id)
-        .fetch_one(&st.pool)
-        .await
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM device_findings WHERE device_id = $1) \
+             OR EXISTS (SELECT 1 FROM device_events WHERE device_id = $1 AND kind = ANY($2))",
+    )
+    .bind(id)
+    .bind(findings::LIFECYCLE_KINDS.as_slice())
+    .fetch_one(&st.pool)
+    .await
+}
+
+/// 「Agent 啟動與停止」最多列幾筆
+const LIFECYCLE_LIMIT: i64 = 50;
+
+pub struct LifeRow {
+    pub at: String,
+    pub text: String,
+    /// 值得注意（被停止、沒有正常結束……）
+    pub notable: bool,
+}
+
+async fn lifecycle_rows(st: &AppState, id: Uuid) -> Result<Vec<LifeRow>, sqlx::Error> {
+    let db: Vec<(OffsetDateTime, String, serde_json::Value)> = sqlx::query_as(
+        "SELECT at, kind, data FROM device_events WHERE device_id = $1 AND kind = ANY($2) \
+         ORDER BY at DESC, seq DESC LIMIT $3",
+    )
+    .bind(id)
+    .bind(findings::LIFECYCLE_KINDS.as_slice())
+    .bind(LIFECYCLE_LIMIT)
+    .fetch_all(&st.pool)
+    .await?;
+    Ok(db
+        .into_iter()
+        .filter_map(|(at, kind, data)| {
+            Some(LifeRow {
+                at: fmt_time(st, Some(at)),
+                text: findings::lifecycle_text(&kind, &data)?,
+                notable: findings::lifecycle_notable(&kind, &data),
+            })
+        })
+        .collect())
 }
 
 fn severity(s: &str) -> &'static str {
@@ -134,6 +171,7 @@ async fn render_tab(
         device: id,
         rows,
         truncated,
+        lifecycle: lifecycle_rows(st, id).await?,
         can_ack: can_ack(s, group),
         csrf: s.csrf.clone(),
         error,

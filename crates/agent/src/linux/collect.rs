@@ -24,6 +24,10 @@ impl Collector for LinuxCollector {
         Some(OsFamily::Linux)
     }
 
+    fn service_start_type(&self) -> Option<&'static str> {
+        super::oslog::start_type()
+    }
+
     /// 「不支援」的說明以 Err 回傳：Agent 把它放進 section_errors、不上傳該區段，後台當說明顯示。
     fn collect(&self, section: Section) -> anyhow::Result<InventoryPayload> {
         Ok(match section {

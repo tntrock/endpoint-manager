@@ -20,3 +20,14 @@
 {% if truncated %}<p class="muted">只列出最近 200 筆。</p>{% endif %}
 {% endif %}
 <p class="muted">「確認」表示看過、沒有問題，會寫入稽核記錄；確認後不再列在「需要處理」，這裡仍然看得到。發現保存 365 天。</p>
+{% if !lifecycle.is_empty() %}
+<h2>Agent 啟動與停止</h2>
+<table id="lifecycle">
+  <tr><th>時間</th><th>紀錄</th></tr>
+  {% for l in lifecycle %}<tr>
+    <td class="nw"><span class="num">{{ l.at }}</span></td>
+    <td>{% if l.notable %}<b>{{ l.text }}</b>{% else %}{{ l.text }}{% endif %}</td>
+  </tr>{% endfor %}
+</table>
+<p class="muted">只列出最近 50 筆。包含 Agent 自己的紀錄與作業系統紀錄（Windows 事件記錄、Linux journald）。</p>
+{% endif %}

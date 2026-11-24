@@ -233,6 +233,16 @@ pub async fn events(
     .await?;
     full(net.len(), net.last().map(|r| r.0));
     out.extend(net.into_iter().filter_map(|(at, kind, data)| {
+        // Agent 的啟動與停止：只放值得注意的
+        if crate::findings::lifecycle_notable(&kind, &data) {
+            return Some(Event {
+                at,
+                kind: "info",
+                title: crate::findings::lifecycle_text(&kind, &data)?,
+                detail: String::new(),
+                tab: Some("integrity"),
+            });
+        }
         let (kind, title, detail) = net_event(&kind, &data)?;
         Some(Event {
             at,

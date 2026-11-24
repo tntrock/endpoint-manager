@@ -7,6 +7,7 @@ pub mod containers;
 pub mod exec;
 pub mod install;
 pub mod network;
+pub mod oslog;
 pub mod packages;
 pub mod services;
 pub mod system;
@@ -58,7 +59,18 @@ pub async fn run(dir: &Path, shutdown: watch::Receiver<bool>) -> anyhow::Result<
         agent.push_target(),
         shutdown.clone(),
     ));
+    if let Some(info) = crate::lifecycle::begin(dir, &agent, shutdown.clone()).await {
+        let journal = agent.journal();
+        // 上次不是正常結束：讀 journald 裡 systemd 對 Agent 服務的紀錄
+        if !info.clean
+            && let Some(since) = info.last_alive
+        {
+            tokio::task::spawn_blocking(move || oslog::record_since(&journal, since));
+        }
+    }
+    let (journal, target, stopped) = (agent.journal(), agent.push_target(), shutdown.clone());
     run_agent(agent, shutdown, rx).await;
+    crate::lifecycle::end(dir, &journal, &target, *stopped.borrow()).await;
     Ok(())
 }
 
@@ -80,6 +92,9 @@ pub fn run_foreground() -> anyhow::Result<()> {
             tokio::select! {
                 _ = term.recv() => {}
                 _ = tokio::signal::ctrl_c() => {}
+            }
+            if let Ok(true) = tokio::task::spawn_blocking(oslog::system_stopping).await {
+                crate::lifecycle::set_stop_reason(protocol::stop_reason::SHUTDOWN);
             }
             let _ = tx.send(true);
         });

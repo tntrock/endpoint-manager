@@ -285,6 +285,25 @@ impl<C: Collector> Agent<C> {
         }
     }
 
+    /// 每次報到檢查 Agent 服務的啟動類型，改變時記事件（竄改偵測規格 §4.1）
+    async fn check_start_type(&mut self) {
+        let t = match self
+            .blocking("start_type", |c| Ok(c.service_start_type()))
+            .await
+        {
+            Ok(Some(t)) => t,
+            _ => return,
+        };
+        if let Err(e) = crate::lifecycle::check_start_type(
+            &self.dir,
+            &self.journal,
+            t,
+            time::OffsetDateTime::now_utc(),
+        ) {
+            tracing::warn!(error = %e, "cannot record service start type");
+        }
+    }
+
     async fn enroll(&mut self) -> anyhow::Result<()> {
         let token = self
             .config
@@ -386,6 +405,7 @@ impl<C: Collector> Agent<C> {
         }
 
         self.collect_due().await;
+        self.check_start_type().await;
         let hb = match self.blocking("heartbeat", |c| c.heartbeat()).await {
             Ok(hb) => {
                 self.heartbeat_error = None;

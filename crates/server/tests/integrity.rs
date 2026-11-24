@@ -1,4 +1,5 @@
-//! 竄改偵測第一期：事件立即上傳、序號缺口、日誌重建、發現的顯示與確認
+//! 竄改偵測：事件立即上傳、序號缺口、日誌重建（第一期），Agent 啟動與停止、
+//! 作業系統紀錄（第二期），發現的顯示與確認
 
 mod common;
 
@@ -308,4 +309,166 @@ async fn rebuilt_journals_reenrollment_and_limits(pool: PgPool) {
         .await
         .unwrap();
     assert!(r.status() == 401 || r.status() == 403, "{}", r.status());
+}
+
+fn ts(t: OffsetDateTime) -> String {
+    protocol::timefmt::format_rfc3339(t).unwrap()
+}
+
+#[sqlx::test(migrations = false)]
+async fn agent_lifecycle_events_become_findings(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_group_token("研發部", 2).await;
+    let a = s.enroll_ok(&tok, None, None).await;
+    let c = s.admin_client().await;
+    let j = Uuid::new_v4();
+    let now = OffsetDateTime::now_utc();
+    let hours = |h: i64| now - time::Duration::hours(h);
+    let mins = |m: i64| now - time::Duration::minutes(m);
+
+    // 第一次啟動、關機、重開機後啟動（沒有正常結束但開機時間比較晚）：都不算
+    let normal = vec![
+        ev(
+            1,
+            AgentEvent::AGENT_STARTED,
+            json!({"version": "0.14.0", "clean": true}),
+        ),
+        ev(2, AgentEvent::AGENT_STOPPING, json!({"reason": "shutdown"})),
+        ev(
+            3,
+            AgentEvent::AGENT_STARTED,
+            json!({"version": "0.14.0", "clean": false,
+            "last_alive": ts(hours(3)), "boot_time": ts(hours(2))}),
+        ),
+        ev(4, AgentEvent::AGENT_STOPPING, json!({"reason": "upgrade"})),
+        ev(
+            5,
+            AgentEvent::AGENT_SERVICE_CONFIG,
+            json!({"from": null, "to": "auto"}),
+        ),
+    ];
+    assert_eq!(push(&s, &a, j, normal).await, 200);
+    assert!(findings(&s, &a).await.is_empty());
+    let (_, html) = s.page(&c, &format!("/devices/{}", a.device_id)).await;
+    assert!(
+        html.contains("/tab/integrity\""),
+        "有啟動與停止紀錄就顯示分頁"
+    );
+    let (_, tl) = s
+        .page(&c, &format!("/devices/{}/tab/timeline", a.device_id))
+        .await;
+    assert!(!tl.contains("Agent 停止"), "正常的停止不放時間軸：{tl}");
+
+    // 有人停止服務；被強制結束（標記與作業系統紀錄只記一筆）；停用；清除紀錄；改回自動
+    let bad = vec![
+        ev(
+            6,
+            AgentEvent::AGENT_STOPPING,
+            json!({"reason": "service_stop"}),
+        ),
+        ev(
+            7,
+            AgentEvent::AGENT_STARTED,
+            json!({"version": "0.14.0", "clean": false,
+            "last_alive": ts(mins(10)), "boot_time": ts(hours(24))}),
+        ),
+        ev(
+            8,
+            AgentEvent::OS_SERVICE_STOPPED,
+            json!({"at": ts(mins(9)), "source": "eventlog",
+            "event_id": 7031, "killed": true}),
+        ),
+        ev(
+            9,
+            AgentEvent::AGENT_SERVICE_CONFIG,
+            json!({"from": "auto", "to": "disabled"}),
+        ),
+        ev(
+            10,
+            AgentEvent::OS_LOG_CLEARED,
+            json!({"at": ts(mins(5)), "log": "Security",
+            "event_id": 1102, "user": "CORP\\wang"}),
+        ),
+        ev(
+            11,
+            AgentEvent::AGENT_SERVICE_CONFIG,
+            json!({"from": "disabled", "to": "auto"}),
+        ),
+        // 一般的停止紀錄（沒有被強制結束）不算
+        ev(
+            12,
+            AgentEvent::OS_SERVICE_STOPPED,
+            json!({"at": ts(mins(4)), "source": "eventlog",
+            "event_id": 7036, "killed": false}),
+        ),
+    ];
+    assert_eq!(push(&s, &a, j, bad).await, 200);
+    let kinds: Vec<String> = findings(&s, &a).await.into_iter().map(|f| f.0).collect();
+    assert_eq!(
+        kinds,
+        [
+            "agent_stopped",
+            "agent_killed",
+            "agent_disabled",
+            "log_cleared"
+        ]
+    );
+    let sev: Vec<String> =
+        sqlx::query_scalar("SELECT severity FROM device_findings WHERE device_id = $1 ORDER BY id")
+            .bind(a.device_id)
+            .fetch_all(&s.pool)
+            .await
+            .unwrap();
+    assert_eq!(sev, ["medium", "high", "high", "high"]);
+    // 強制結束從最後活著的時間算起
+    let killed_at: OffsetDateTime = sqlx::query_scalar(
+        "SELECT started_at FROM device_findings WHERE device_id = $1 AND kind = 'agent_killed'",
+    )
+    .bind(a.device_id)
+    .fetch_one(&s.pool)
+    .await
+    .unwrap();
+    assert!((killed_at - mins(10)).abs() < time::Duration::SECOND);
+
+    // 很久以前另一次意外終止（Linux journald）：另記一筆
+    let old = vec![ev(
+        13,
+        AgentEvent::OS_SERVICE_STOPPED,
+        json!({"at": ts(hours(5)),
+        "source": "journald", "killed": true,
+        "message": "endpoint-agent.service: Main process exited, code=killed, status=9/KILL"}),
+    )];
+    assert_eq!(push(&s, &a, j, old).await, 200);
+    assert_eq!(findings(&s, &a).await.len(), 5);
+
+    let (_, tab) = s
+        .page(&c, &format!("/devices/{}/tab/integrity", a.device_id))
+        .await;
+    for want in [
+        "Agent 服務被停止",
+        "有人停止了 Agent 服務",
+        "Agent 被強制結束",
+        "作業系統紀錄 7031：Agent 服務意外終止",
+        "上次沒有正常結束，期間也沒有重新開機",
+        "systemd 紀錄：endpoint-agent.service: Main process exited",
+        "啟動類型改成「停用」（原本「自動」）",
+        "安全性紀錄被清除（使用者 CORP\\wang）",
+        "Agent 啟動與停止",
+        "Agent 停止：關機或重新開機",
+        "Agent 停止：安裝程式（升級、修復或移除）",
+        "Agent 啟動（版本 0.14.0），上次沒有正常結束",
+        "Agent 服務啟動類型：停用 → 自動",
+        "作業系統紀錄 7036：Agent 服務停止",
+    ] {
+        assert!(tab.contains(want), "缺「{want}」：{tab}");
+    }
+    let (_, tl) = s
+        .page(&c, &format!("/devices/{}/tab/timeline", a.device_id))
+        .await;
+    assert!(tl.contains("Agent 停止：有人停止服務"), "{tl}");
+    assert!(tl.contains("安全性紀錄被清除"), "{tl}");
+    assert!(!tl.contains("Agent 停止：關機"), "{tl}");
+    // 高嚴重度：總覽列為高
+    let (_, home) = s.page(&c, "/").await;
+    assert!(home.contains("完整性警示"), "{home}");
 }

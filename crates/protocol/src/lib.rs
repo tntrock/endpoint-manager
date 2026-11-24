@@ -205,6 +205,102 @@ impl AgentEvent {
     pub const NET_CHANGED: &'static str = "net.changed";
     /// 本機日誌超過上限刪掉了最舊的事件（data 是 `{"count": n}`）
     pub const JOURNAL_DROPPED: &'static str = "journal.dropped";
+    /// Agent 啟動（data 是 [`AgentStarted`]，竄改偵測規格 §4.1）
+    pub const AGENT_STARTED: &'static str = "agent.started";
+    /// Agent 收到停止要求（data 是 [`AgentStopping`]）
+    pub const AGENT_STOPPING: &'static str = "agent.stopping";
+    /// Agent 服務的啟動類型改變（data 是 [`ServiceConfigChange`]）
+    pub const AGENT_SERVICE_CONFIG: &'static str = "agent.service_config";
+    /// 作業系統紀錄到 Agent 服務停止（data 是 [`OsServiceStopped`]）
+    pub const OS_SERVICE_STOPPED: &'static str = "os.service_stopped";
+    /// 作業系統的稽核或系統紀錄被清除（data 是 [`OsLogCleared`]）
+    pub const OS_LOG_CLEARED: &'static str = "os.log_cleared";
+}
+
+/// `agent.started` 的資料
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentStarted {
+    pub version: String,
+    /// 上一次是否正常結束（第一次啟動也算正常）
+    pub clean: bool,
+    /// 上一次最後活著的時間（第一次啟動沒有）
+    #[serde(default, with = "timefmt::rfc3339_option")]
+    pub last_alive: Option<OffsetDateTime>,
+    /// 這次開機的時間：晚於 `last_alive` 表示中間重開機或斷電
+    #[serde(default, with = "timefmt::rfc3339_option")]
+    pub boot_time: Option<OffsetDateTime>,
+}
+
+/// 停止原因
+pub mod stop_reason {
+    /// 有人停止服務
+    pub const SERVICE_STOP: &str = "service_stop";
+    /// 關機或重新開機
+    pub const SHUTDOWN: &str = "shutdown";
+    /// 安裝程式（升級、修復、移除）
+    pub const UPGRADE: &str = "upgrade";
+    /// 重新設定（Linux `configure`）
+    pub const RECONFIGURE: &str = "reconfigure";
+    /// 伺服器拒絕憑證，Agent 自己停止
+    pub const CERTIFICATE: &str = "certificate";
+}
+
+/// `agent.stopping` 的資料
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentStopping {
+    /// [`stop_reason`] 的其中一個
+    pub reason: String,
+}
+
+/// 服務啟動類型
+pub mod start_type {
+    pub const AUTO: &str = "auto";
+    pub const MANUAL: &str = "manual";
+    pub const DISABLED: &str = "disabled";
+}
+
+/// `agent.service_config` 的資料
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ServiceConfigChange {
+    /// 第一次檢查時沒有
+    #[serde(default)]
+    pub from: Option<String>,
+    pub to: String,
+}
+
+/// `os.service_stopped` 的資料
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OsServiceStopped {
+    /// 紀錄的時間
+    #[serde(with = "timefmt::rfc3339")]
+    pub at: OffsetDateTime,
+    /// `eventlog`（Windows）或 `journald`（Linux）
+    pub source: String,
+    /// Windows 事件 ID（7031、7034、7036）
+    #[serde(default)]
+    pub event_id: Option<u32>,
+    /// 被強制結束或意外終止
+    pub killed: bool,
+    /// 紀錄裡的使用者（記得到時）
+    #[serde(default)]
+    pub user: Option<String>,
+    /// 原始訊息（journald）
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+/// `os.log_cleared` 的資料
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OsLogCleared {
+    #[serde(with = "timefmt::rfc3339")]
+    pub at: OffsetDateTime,
+    /// 被清除的紀錄（`Security`、`System`……）
+    pub log: String,
+    /// 1102 或 104
+    pub event_id: u32,
+    /// 清除者帳號（`網域\帳號`）
+    #[serde(default)]
+    pub user: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

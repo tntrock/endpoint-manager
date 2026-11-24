@@ -181,6 +181,8 @@ struct Fake {
     hang_patches_ms: Arc<std::sync::atomic::AtomicU64>,
     /// patches 的 InstalledOn
     installed_on: Arc<Mutex<Option<String>>>,
+    /// Agent 服務的啟動類型
+    start_type: Arc<Mutex<Option<&'static str>>>,
 }
 
 fn app(name: &str) -> SoftwareItem {
@@ -201,6 +203,7 @@ impl Fake {
             hang: None,
             hang_patches_ms: Default::default(),
             installed_on: Default::default(),
+            start_type: Default::default(),
         }
     }
 }
@@ -224,6 +227,10 @@ impl Collector for Fake {
             logged_on_user: Some("CORP\\bob".into()),
             ip_addresses: vec!["10.1.1.1".into()],
         })
+    }
+
+    fn service_start_type(&self) -> Option<&'static str> {
+        *self.start_type.lock().unwrap()
     }
 
     fn collect_registry(
@@ -695,6 +702,64 @@ async fn journal_events_upload_after_server_confirms(pool: PgPool) {
         stored(e.pool.clone()).await,
         protocol::MAX_EVENTS_PER_CHECKIN as i64 + 5
     );
+}
+
+/// Agent 的啟動、停止與服務啟動類型送到伺服器，被停止與停用判定成發現
+#[sqlx::test(migrations = false)]
+async fn lifecycle_events_reach_server_and_become_findings(pool: PgPool) {
+    use endpoint_agent::lifecycle;
+    let e = env(pool, 1).await;
+    let fake = Fake::new();
+    let start_type = fake.start_type.clone();
+    *start_type.lock().unwrap() = Some("auto");
+    let mut a = Agent::new(e.dir.path(), fake).unwrap();
+    let (stop, shutdown) = tokio::sync::watch::channel(false);
+    let info = lifecycle::begin(e.dir.path(), &a, shutdown.clone())
+        .await
+        .unwrap();
+    assert!(info.clean, "第一次啟動");
+    assert!(info.boot_time.is_some());
+    // 第一次報到後伺服器才宣告接受事件；第二次報到送出
+    next(a.run_cycle().await);
+    *start_type.lock().unwrap() = Some("disabled");
+    next(a.run_cycle().await);
+    let kinds = |pool: PgPool| async move {
+        sqlx::query_scalar::<_, String>("SELECT kind FROM device_events ORDER BY seq")
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+    };
+    assert_eq!(
+        kinds(e.pool.clone()).await,
+        ["agent.started", "agent.service_config"]
+    );
+    // 停止：記 agent.stopping 並立即送出，寫入正常結束標記
+    let (journal, target) = (a.journal(), a.push_target());
+    lifecycle::end(e.dir.path(), &journal, &target, true).await;
+    assert!(journal.lock().unwrap().is_empty(), "停止前已送出");
+    assert_eq!(
+        kinds(e.pool.clone()).await,
+        ["agent.started", "agent.service_config", "agent.stopping"]
+    );
+    let found: Vec<String> = sqlx::query_scalar("SELECT kind FROM device_findings ORDER BY id")
+        .fetch_all(&e.pool)
+        .await
+        .unwrap();
+    assert_eq!(found, ["agent_disabled", "agent_stopped"]);
+    stop.send(true).unwrap();
+    drop(a);
+
+    // 下次啟動：上次正常結束
+    let a = Agent::new(e.dir.path(), Fake::new()).unwrap();
+    let (_stop, shutdown) = tokio::sync::watch::channel(false);
+    let info = lifecycle::begin(e.dir.path(), &a, shutdown).await.unwrap();
+    assert!(info.clean);
+    assert!(info.last_alive.is_some());
+    // 自己停止（憑證被拒）：送不出去就留在日誌
+    let (journal, target) = (a.journal(), a.push_target());
+    lifecycle::end(e.dir.path(), &journal, &target, false).await;
+    let pending = journal.lock().unwrap().pending(10);
+    assert_eq!(pending.last().unwrap().data["reason"], "certificate");
 }
 
 /// 報到宣告支援後，新事件不等報到、約 1 秒內就送到伺服器；送到後本機刪除
