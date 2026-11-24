@@ -23,7 +23,7 @@ pub struct Schedule {
 fn interval(s: Section, iv: &CollectionIntervals) -> Duration {
     let secs = match s {
         Section::Basic => 0,
-        Section::Hardware => iv.hardware_secs,
+        Section::Hardware | Section::Permissions => iv.hardware_secs,
         Section::Software => iv.software_secs,
         Section::Patches => iv.patches_secs,
         Section::Services => iv.services_secs,

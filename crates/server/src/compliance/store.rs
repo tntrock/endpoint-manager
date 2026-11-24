@@ -109,6 +109,22 @@ async fn load_exposure(
         .collect())
 }
 
+/// permissions 區段（一次讀一批裝置）；jsonb 壞掉的當成沒有資料
+async fn load_permissions(
+    conn: &mut PgConnection,
+    ids: &[Uuid],
+) -> Result<HashMap<Uuid, protocol::PermissionsInfo>, sqlx::Error> {
+    let rows: Vec<(Uuid, Value)> =
+        sqlx::query_as("SELECT device_id, data FROM device_permissions WHERE device_id = ANY($1)")
+            .bind(ids)
+            .fetch_all(&mut *conn)
+            .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(id, v)| serde_json::from_value(v).ok().map(|a| (id, a)))
+        .collect())
+}
+
 /// shares 區段（一次讀一批裝置）；jsonb 壞掉的當成沒有資料
 async fn load_shares(
     conn: &mut PgConnection,
@@ -345,6 +361,11 @@ pub async fn load_facts(
     } else {
         None
     };
+    let permissions = if has("permissions") {
+        load_permissions(conn, &[id]).await?.remove(&id)
+    } else {
+        None
+    };
     let now = time::OffsetDateTime::now_utc();
     Ok(Some(DeviceFacts {
         network,
@@ -352,6 +373,7 @@ pub async fn load_facts(
         accounts,
         shares,
         exposure,
+        permissions,
         linux,
         active,
         group_id,
@@ -626,6 +648,7 @@ pub async fn load_facts_bulk(
     let mut accounts = load_accounts(conn, ids).await?;
     let mut shares = load_shares(conn, ids).await?;
     let mut exposure = load_exposure(conn, ids).await?;
+    let mut permissions = load_permissions(conn, ids).await?;
     let now = time::OffsetDateTime::now_utc();
     let mut has: std::collections::HashSet<(Uuid, String)> = std::collections::HashSet::new();
     has.extend(sections);
@@ -643,6 +666,9 @@ pub async fn load_facts_bulk(
                     accounts: has(id, "accounts").then(|| accounts.remove(&id)).flatten(),
                     shares: has(id, "shares").then(|| shares.remove(&id)).flatten(),
                     exposure: has(id, "exposure").then(|| exposure.remove(&id)).flatten(),
+                    permissions: has(id, "permissions")
+                        .then(|| permissions.remove(&id))
+                        .flatten(),
                     group_id,
                     os_build: has(id, "basic").then(|| os_build.unwrap_or_default()),
                     os_ubr: os_ubr.and_then(|u| u32::try_from(u).ok()),

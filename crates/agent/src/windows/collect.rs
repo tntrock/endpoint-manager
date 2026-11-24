@@ -237,6 +237,9 @@ impl Collector for WindowsCollector {
         if section == Section::Exposure {
             return Ok(InventoryPayload::Exposure(super::exposure::collect()));
         }
+        if section == Section::Permissions {
+            return Ok(InventoryPayload::Permissions(super::permissions::collect()));
+        }
         if section == Section::Accounts {
             return Ok(InventoryPayload::Accounts(super::accounts::collect()));
         }
@@ -304,6 +307,7 @@ impl Collector for WindowsCollector {
             | Section::Vms
             | Section::Shares
             | Section::Exposure
+            | Section::Permissions
             | Section::Registry
             | Section::Accounts
             | Section::Containers => {

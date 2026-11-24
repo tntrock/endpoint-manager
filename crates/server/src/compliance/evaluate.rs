@@ -82,6 +82,8 @@ pub struct DeviceFacts {
     pub shares: Option<protocol::SharesInfo>,
     /// exposure 區段（None：從未上傳）
     pub exposure: Option<protocol::ExposureInfo>,
+    /// permissions 區段（None：從未上傳）
+    pub permissions: Option<protocol::PermissionsInfo>,
     /// 評估時的「現在」（病毒碼天數用）：由呼叫端提供，評估本身維持純函式
     pub now: time::OffsetDateTime,
     /// 管理網頁時區的今天：修補的安裝日期是裝置本地日期，「太久沒更新」用它計算天數
@@ -561,6 +563,35 @@ fn privilege_issues(
     v
 }
 
+/// 權限過寬項目種類的顯示名稱
+pub fn permission_label(kind: &str) -> &'static str {
+    match kind {
+        "service_binary" => "服務執行檔可改寫",
+        "service_dir" => "服務資料夾可新增檔案",
+        "task_binary" => "SYSTEM 排程工作的程式可改寫",
+        "etc_writable" => "所有人可寫入",
+        "shadow_readable" => "所有人可讀取",
+        "suid" => "不屬於任何套件的 SUID 程式",
+        _ => "權限過寬",
+    }
+}
+
+/// 權限過寬的一筆：`種類 路徑（名稱；給了誰）`
+pub fn permission_text(kind: &str, path: &str, name: Option<&str>, granted_to: &[&str]) -> String {
+    let mut extra: Vec<String> = vec![];
+    if let Some(n) = name {
+        extra.push(n.to_string());
+    }
+    if !granted_to.is_empty() && !matches!(kind, "etc_writable" | "shadow_readable") {
+        extra.push(granted_to.join("、"));
+    }
+    if extra.is_empty() {
+        format!("{} {path}", permission_label(kind))
+    } else {
+        format!("{} {path}（{}）", permission_label(kind), extra.join("；"))
+    }
+}
+
 /// 帳號設定（錯誤設定規格 §6.2）：只看適用這台作業系統的勾選項目
 fn account_flags(f: &DeviceFacts, c: &AccountChecks, except: &[Glob]) -> Option<(Status, Value)> {
     let Some(a) = &f.accounts else {
@@ -754,6 +785,38 @@ fn check_one(c: &Check, f: &DeviceFacts) -> Option<(Status, Value)> {
             checks,
             except_accounts,
         } => account_flags(f, checks, except_accounts),
+        Check::WeakPermissions { except_paths } => {
+            let Some(info) = &f.permissions else {
+                return no_data();
+            };
+            let bad: Vec<Value> = info
+                .items
+                .iter()
+                .filter(|x| {
+                    !except_paths.iter().any(|g| {
+                        g.is_match(&x.path) || x.name.as_deref().is_some_and(|n| g.is_match(n))
+                    })
+                })
+                .map(|x| {
+                    json!({"kind": x.kind, "path": x.path, "name": x.name,
+                           "granted_to": x.granted_to})
+                })
+                .collect();
+            if bad.is_empty() {
+                // 部分項目讀不到：不能說一定沒有
+                return (!info.errors.is_empty()).then(|| {
+                    (
+                        Status::Unknown,
+                        json!({"reason": "permission_error", "error": info.errors.join("；")}),
+                    )
+                });
+            }
+            Some((
+                Status::Violating,
+                json!({"permissions": bad.iter().take(MAX_LISTED).collect::<Vec<_>>(),
+                       "total": bad.len()}),
+            ))
+        }
         Check::OpenShare {
             anonymous,
             all_users,
@@ -1324,6 +1387,7 @@ pub fn summarize(d: &Value) -> String {
         Some("share_error") => return format!("無法讀取共用：{}", s("error")),
         Some("exposure_error") => return format!("無法讀取：{}", s("error")),
         Some("account_error") => return format!("無法讀取帳號：{}", s("error")),
+        Some("permission_error") => return format!("無法讀取權限：{}", s("error")),
         Some("no_update_status") => {
             return "Agent 尚未回報更新狀態（需要 Agent 0.5.0 以上）".into();
         }
@@ -1437,6 +1501,24 @@ pub fn summarize(d: &Value) -> String {
     }
     if d.get("rdp_users").is_some() {
         return format!("不允許的遠端桌面使用者：{}", list("rdp_users"));
+    }
+    if let Some(items) = d["permissions"].as_array() {
+        let names: Vec<String> = items
+            .iter()
+            .map(|i| {
+                let who: Vec<&str> = i["granted_to"]
+                    .as_array()
+                    .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
+                    .unwrap_or_default();
+                permission_text(
+                    i["kind"].as_str().unwrap_or(""),
+                    i["path"].as_str().unwrap_or(""),
+                    i["name"].as_str(),
+                    &who,
+                )
+            })
+            .collect();
+        return format!("權限過寬：{}", names.join("、"));
     }
     if d.get("account_issues").is_some() {
         return format!("帳號設定：{}", list("account_issues"));
@@ -1629,6 +1711,7 @@ mod tests {
             accounts: None,
             shares: None,
             exposure: None,
+            permissions: None,
             now: time::OffsetDateTime::now_utc(),
             today: time::OffsetDateTime::now_utc().date(),
         }
@@ -3021,6 +3104,73 @@ mod tests {
             no_password: Some(false),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn weak_permissions_rule() {
+        let item =
+            |kind: &str, path: &str, name: Option<&str>, who: &[&str]| protocol::PermissionItem {
+                kind: kind.into(),
+                path: path.into(),
+                name: name.map(Into::into),
+                granted_to: who.iter().map(|w| w.to_string()).collect(),
+            };
+        let mut f = facts(vec![]);
+        assert_eq!(
+            one(&f, "weak_permissions", json!({})).unwrap().0,
+            Status::Unknown
+        );
+        f.permissions = Some(protocol::PermissionsInfo {
+            items: vec![
+                item(
+                    "service_binary",
+                    r"C:\Vendor\svc.exe",
+                    Some("VendorSvc"),
+                    &["Users"],
+                ),
+                item(
+                    "task_binary",
+                    r"C:\Tools\t.exe",
+                    Some(r"\Upd"),
+                    &["Everyone", "Users"],
+                ),
+                item("etc_writable", "/etc/cron.d/job", None, &["所有人"]),
+                item("suid", "/usr/local/bin/x", None, &["SUID"]),
+            ],
+            ..Default::default()
+        });
+        let (st, d) = one(&f, "weak_permissions", json!({})).unwrap();
+        assert_eq!(st, Status::Violating);
+        assert_eq!(d["total"], 4);
+        assert_eq!(
+            summarize(&d),
+            r"權限過寬：服務執行檔可改寫 C:\Vendor\svc.exe（VendorSvc；Users）、SYSTEM 排程工作的程式可改寫 C:\Tools\t.exe（\Upd；Everyone、Users）、所有人可寫入 /etc/cron.d/job、不屬於任何套件的 SUID 程式 /usr/local/bin/x（SUID）"
+        );
+        // 例外：路徑或名稱
+        assert!(
+            one(
+                &f,
+                "weak_permissions",
+                json!({"except_paths": [r"c:\vendor\*", r"\Upd", "/etc/*", "/usr/local/*"]}),
+            )
+            .is_none()
+        );
+        // 沒有項目但讀取失敗：未知；完全沒有：符合
+        f.permissions = Some(protocol::PermissionsInfo {
+            errors: vec!["無法讀取排程工作：x".into()],
+            ..Default::default()
+        });
+        let (st, d) = one(&f, "weak_permissions", json!({})).unwrap();
+        assert_eq!(st, Status::Unknown);
+        assert_eq!(summarize(&d), "無法讀取權限：無法讀取排程工作：x");
+        f.permissions = Some(protocol::PermissionsInfo::default());
+        assert!(one(&f, "weak_permissions", json!({})).is_none());
+        assert_eq!(permission_label("x"), "權限過寬");
+        assert_eq!(
+            permission_text("shadow_readable", "/etc/shadow", None, &["所有人"]),
+            "所有人可讀取 /etc/shadow"
+        );
+        assert_eq!(permission_label("service_dir"), "服務資料夾可新增檔案");
     }
 
     #[test]

@@ -32,7 +32,7 @@ pub struct WinEvent {
     xml: String,
 }
 
-fn unescape(s: &str) -> String {
+pub(crate) fn unescape(s: &str) -> String {
     s.replace("&lt;", "<")
         .replace("&gt;", ">")
         .replace("&quot;", "\"")

@@ -38,10 +38,11 @@ pub enum Section {
     Vms,
     Shares,
     Exposure,
+    Permissions,
 }
 
 impl Section {
-    pub const ALL: [Section; 13] = [
+    pub const ALL: [Section; 14] = [
         Section::Basic,
         Section::Hardware,
         Section::Software,
@@ -55,10 +56,11 @@ impl Section {
         Section::Vms,
         Section::Shares,
         Section::Exposure,
+        Section::Permissions,
     ];
 
     /// Windows Agent 回報的區段
-    pub const WINDOWS: [Section; 12] = [
+    pub const WINDOWS: [Section; 13] = [
         Section::Basic,
         Section::Hardware,
         Section::Software,
@@ -71,10 +73,11 @@ impl Section {
         Section::Vms,
         Section::Shares,
         Section::Exposure,
+        Section::Permissions,
     ];
 
     /// Linux Agent 回報的區段
-    pub const LINUX: [Section; 10] = [
+    pub const LINUX: [Section; 11] = [
         Section::Basic,
         Section::Hardware,
         Section::Software,
@@ -85,6 +88,7 @@ impl Section {
         Section::Vms,
         Section::Shares,
         Section::Exposure,
+        Section::Permissions,
     ];
 
     /// 第三期以前就有的區段：新版 Agent 在確認伺服器支援前只回報這些
@@ -112,6 +116,7 @@ impl Section {
             Section::Vms => "vms",
             Section::Shares => "shares",
             Section::Exposure => "exposure",
+            Section::Permissions => "permissions",
         }
     }
 
@@ -409,6 +414,7 @@ impl Section {
                 | Section::Vms
                 | Section::Shares
                 | Section::Exposure
+                | Section::Permissions
         )
     }
 }
@@ -785,6 +791,36 @@ pub struct ExposureInfo {
     pub errors: Vec<String>,
 }
 
+/// 每台最多回報的權限過寬項目
+pub const MAX_PERMISSIONS: usize = 200;
+
+/// 一般使用者可以改寫的系統檔案（錯誤設定規格 §6.1）
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct PermissionItem {
+    /// `service_binary`、`service_dir`、`task_binary`（Windows），
+    /// `etc_writable`、`shadow_readable`、`suid`（Linux）
+    pub kind: String,
+    pub path: String,
+    /// 服務或排程工作的名稱
+    #[serde(default)]
+    pub name: Option<String>,
+    /// 給了誰：Windows 是群組名稱，Linux 是「所有人」、`SUID`、`SGID`
+    #[serde(default)]
+    pub granted_to: Vec<String>,
+}
+
+/// 權限過寬（錯誤設定規格 §6.1）
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct PermissionsInfo {
+    pub items: Vec<PermissionItem>,
+    /// 超過 [`MAX_PERMISSIONS`] 被截斷
+    #[serde(default)]
+    pub truncated: bool,
+    /// 部分項目讀取失敗，其他照常回報
+    #[serde(default)]
+    pub errors: Vec<String>,
+}
+
 /// 每台最多回報的共用數
 pub const MAX_SHARES: usize = 500;
 
@@ -1058,6 +1094,7 @@ pub enum InventoryPayload {
     Vms(VmsInfo),
     Shares(SharesInfo),
     Exposure(ExposureInfo),
+    Permissions(PermissionsInfo),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1104,6 +1141,7 @@ impl InventoryPayload {
             InventoryPayload::Vms(_) => Section::Vms,
             InventoryPayload::Shares(_) => Section::Shares,
             InventoryPayload::Exposure(_) => Section::Exposure,
+            InventoryPayload::Permissions(_) => Section::Permissions,
         }
     }
 
@@ -1146,6 +1184,13 @@ impl InventoryPayload {
                 s.errors.sort();
                 for x in &mut s.shares {
                     x.clients.sort();
+                }
+            }
+            InventoryPayload::Permissions(p) => {
+                p.items.sort();
+                p.errors.sort();
+                for x in &mut p.items {
+                    x.granted_to.sort();
                 }
             }
             InventoryPayload::Exposure(e) => {
@@ -1214,6 +1259,18 @@ impl InventoryPayload {
                     return Err(ValidationError::TooManyItems { count: v.vms.len() });
                 }
                 v.platforms.len() + v.vms.len()
+            }
+            InventoryPayload::Permissions(p) => {
+                if p.items.len() > MAX_PERMISSIONS {
+                    return Err(ValidationError::TooManyItems {
+                        count: p.items.len(),
+                    });
+                }
+                p.items
+                    .iter()
+                    .map(|x| 1 + x.granted_to.len())
+                    .sum::<usize>()
+                    + p.errors.len()
             }
             InventoryPayload::Exposure(e) => {
                 if e.listening.len() > MAX_LISTENING {
@@ -1366,7 +1423,13 @@ mod tests {
     fn section_lists() {
         assert_eq!(Section::parse("accounts"), Some(Section::Accounts));
         assert!(!Section::LINUX.contains(&Section::Registry));
-        assert_eq!(Section::ALL.len(), 13);
+        assert_eq!(Section::ALL.len(), 14);
+        assert!(
+            Section::WINDOWS.contains(&Section::Permissions)
+                && Section::LINUX.contains(&Section::Permissions)
+        );
+        assert!(Section::Permissions.needs_announcement());
+        assert_eq!(Section::parse("permissions"), Some(Section::Permissions));
         assert!(
             Section::WINDOWS.contains(&Section::Exposure)
                 && Section::LINUX.contains(&Section::Exposure)
@@ -1483,6 +1546,43 @@ mod tests {
         let back: ExposureInfo =
             serde_json::from_value(serde_json::json!({"listening": []})).unwrap();
         assert_eq!(back, ExposureInfo::default());
+    }
+
+    #[test]
+    fn permissions_payload() {
+        let item = |path: &str, who: Vec<&str>| PermissionItem {
+            kind: "service_binary".into(),
+            path: path.into(),
+            name: Some("svc".into()),
+            granted_to: who.into_iter().map(Into::into).collect(),
+        };
+        let a = InventoryPayload::Permissions(PermissionsInfo {
+            items: vec![
+                item("C:/a.exe", vec!["Users", "Everyone"]),
+                item("C:/b.exe", vec![]),
+            ],
+            ..Default::default()
+        });
+        let b = InventoryPayload::Permissions(PermissionsInfo {
+            items: vec![
+                item("C:/b.exe", vec![]),
+                item("C:/a.exe", vec!["Everyone", "Users"]),
+            ],
+            ..Default::default()
+        });
+        assert_eq!(a.canonical_hash(), b.canonical_hash());
+        assert_eq!(a.section(), Section::Permissions);
+        assert_eq!(a.validate(), Ok(()));
+        let big = InventoryPayload::Permissions(PermissionsInfo {
+            items: (0..=MAX_PERMISSIONS)
+                .map(|i| item(&i.to_string(), vec![]))
+                .collect(),
+            ..Default::default()
+        });
+        assert!(matches!(
+            big.validate(),
+            Err(ValidationError::TooManyItems { .. })
+        ));
     }
 
     fn accounts(rev: bool) -> InventoryPayload {

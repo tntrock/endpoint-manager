@@ -81,6 +81,7 @@ pub fn affects_compliance(section: Section) -> bool {
             | Section::Accounts
             | Section::Shares
             | Section::Exposure
+            | Section::Permissions
     )
 }
 

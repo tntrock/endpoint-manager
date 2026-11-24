@@ -246,6 +246,15 @@ fn collector_reports_this_machine() {
             InventoryPayload::Shares(s) => {
                 assert!(s.shares.iter().all(|x| x.kind == "smb"), "{s:?}")
             }
+            // 項目都要有路徑與給了誰
+            InventoryPayload::Permissions(p) => {
+                assert!(
+                    p.items
+                        .iter()
+                        .all(|x| x.kind.starts_with("service") || x.kind == "task_binary"),
+                    "{p:?}"
+                )
+            }
             InventoryPayload::Exposure(e) => {
                 assert!(e.firewall_allow_all.is_some() && e.rdp.is_some(), "{e:?}");
                 assert!(e.sshd.is_none());

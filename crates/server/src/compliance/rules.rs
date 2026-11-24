@@ -7,7 +7,7 @@ use super::matcher::Glob;
 
 pub const MAX_PATTERN_LEN: usize = 256;
 
-pub const KINDS: [&str; 27] = [
+pub const KINDS: [&str; 28] = [
     "forbidden_software",
     "required_software",
     "software_allowlist",
@@ -35,6 +35,7 @@ pub const KINDS: [&str; 27] = [
     "ssh_config",
     "rdp_users",
     "account_flags",
+    "weak_permissions",
 ];
 
 /// 對外開放的服務：內建的服務與連接埠（錯誤設定規格 §5.2）
@@ -89,6 +90,7 @@ pub fn kind_label(kind: &str) -> &'static str {
         "ssh_config" => "sshd 設定",
         "rdp_users" => "遠端桌面使用者",
         "account_flags" => "帳號設定",
+        "weak_permissions" => "權限過寬",
         _ => "未知類型",
     }
 }
@@ -125,7 +127,7 @@ pub fn kind_platform(kind: &str) -> Platform {
         "forbidden_image" | "container_privilege" | "unpinned_image" | "extra_root_account" => {
             Platform::Linux
         }
-        "open_share" | "exposed_service" | "account_flags" => Platform::Both,
+        "open_share" | "exposed_service" | "account_flags" | "weak_permissions" => Platform::Both,
         "ssh_config" => Platform::Linux,
         _ => Platform::Windows,
     }
@@ -282,6 +284,10 @@ pub enum Params {
         checks: AccountChecks,
         /// 例外帳號（萬用字元；群組寫 `%群組`）
         except_accounts: Vec<String>,
+    },
+    WeakPermissions {
+        /// 例外路徑或名稱（萬用字元）
+        except_paths: Vec<String>,
     },
 }
 
@@ -544,6 +550,9 @@ pub enum Check {
         checks: AccountChecks,
         except_accounts: Vec<Glob>,
     },
+    WeakPermissions {
+        except_paths: Vec<Glob>,
+    },
 }
 
 impl Check {
@@ -554,9 +563,10 @@ impl Check {
             | Check::ContainerPrivilege { .. }
             | Check::UnpinnedImage { .. }
             | Check::ExtraRootAccount { .. } => Platform::Linux,
-            Check::OpenShare { .. } | Check::ExposedService { .. } | Check::AccountFlags { .. } => {
-                Platform::Both
-            }
+            Check::OpenShare { .. }
+            | Check::ExposedService { .. }
+            | Check::AccountFlags { .. }
+            | Check::WeakPermissions { .. } => Platform::Both,
             Check::SshConfig(_) => Platform::Linux,
             _ => Platform::Windows,
         }
@@ -640,6 +650,13 @@ struct RawSsh {
     no_password: bool,
     #[serde(default)]
     no_empty_passwords: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawWeakPermissions {
+    #[serde(default)]
+    except_paths: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -1184,6 +1201,12 @@ impl Params {
                     no_empty_passwords: r.no_empty_passwords,
                 }))
             }
+            "weak_permissions" => {
+                let r: RawWeakPermissions = from(v)?;
+                Ok(Params::WeakPermissions {
+                    except_paths: exceptions("例外路徑", r.except_paths)?,
+                })
+            }
             "account_flags" => {
                 let r: RawAccountFlags = from(v)?;
                 let checks = AccountChecks {
@@ -1269,6 +1292,7 @@ impl Params {
             Params::SshConfig(_) => "ssh_config",
             Params::RdpUsers { .. } => "rdp_users",
             Params::AccountFlags { .. } => "account_flags",
+            Params::WeakPermissions { .. } => "weak_permissions",
         }
     }
 
@@ -1510,6 +1534,11 @@ impl Params {
                     m.insert("except_accounts".into(), json!(except_accounts));
                 }
             }
+            Params::WeakPermissions { except_paths } => {
+                if !except_paths.is_empty() {
+                    m.insert("except_paths".into(), json!(except_paths));
+                }
+            }
             Params::OpenShare(p) => {
                 for (k, on) in [
                     ("anonymous", p.anonymous),
@@ -1702,6 +1731,9 @@ impl Params {
             } => Check::AccountFlags {
                 checks: *checks,
                 except_accounts: except_accounts.iter().map(|i| Glob::new(i)).collect(),
+            },
+            Params::WeakPermissions { except_paths } => Check::WeakPermissions {
+                except_paths: except_paths.iter().map(|i| Glob::new(i)).collect(),
             },
             Params::OpenShare(p) => Check::OpenShare {
                 anonymous: p.anonymous,
@@ -2105,6 +2137,24 @@ mod tests {
                 .contains("至少")
         );
         assert_eq!(kind_platform("account_flags"), Platform::Both);
+        let p = Params::parse(
+            "weak_permissions",
+            &json!({"except_paths": [r" C:\Vendor\* ", "/usr/local/bin/x"]}),
+        )
+        .unwrap();
+        assert_eq!(
+            p.to_json(),
+            json!({"except_paths": [r"C:\Vendor\*", "/usr/local/bin/x"]})
+        );
+        assert_eq!(Params::parse(p.kind(), &p.to_json()).unwrap(), p);
+        assert_eq!(p.compile().platform(), Platform::Both);
+        assert_eq!(
+            Params::parse("weak_permissions", &json!({}))
+                .unwrap()
+                .to_json(),
+            json!({})
+        );
+        assert_eq!(kind_platform("weak_permissions"), Platform::Both);
         assert_eq!(kind_platform("ssh_config"), Platform::Linux);
         assert_eq!(kind_platform("exposed_service"), Platform::Both);
         assert_eq!(kind_platform("rdp_users"), Platform::Windows);

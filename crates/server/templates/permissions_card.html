@@ -1,0 +1,12 @@
+{% if let Some(c) = permissions %}
+<h2>權限過寬</h2>
+{% for e in c.errors %}<p class="error">讀取失敗：{{ e }}</p>{% endfor %}
+{% if c.rows.is_empty() %}<p class="muted">沒有一般使用者可以改寫的系統檔案。</p>{% else %}
+<table id="permissions">
+  <tr><th>問題</th><th>路徑</th><th>服務／排程工作</th><th>給了誰</th></tr>
+  {% for r in c.rows %}<tr><td><span class="tag bad">{{ r.label }}</span></td><td>{{ r.path }}</td><td>{{ r.name }}</td><td>{{ r.granted_to }}</td></tr>{% endfor %}
+</table>
+{% if c.truncated %}<p class="muted">只列出前 200 筆。</p>{% endif %}
+{% endif %}
+<p class="muted">每天檢查一次。Windows 檢查服務的執行檔與資料夾、以 SYSTEM 執行的排程工作；Linux 檢查 <code>/etc</code>、<code>/etc/shadow</code> 與系統執行檔目錄裡的 SUID 程式。</p>
+{% endif %}

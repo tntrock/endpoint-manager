@@ -17,6 +17,7 @@ pub mod linux_parse;
 pub mod netwatch;
 pub mod network;
 pub mod oslog;
+pub mod permissions;
 pub mod regvalue;
 pub mod sanitize;
 pub mod schedule;

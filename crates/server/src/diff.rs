@@ -193,6 +193,12 @@ pub fn items_of(p: &InventoryPayload) -> BTreeMap<String, String> {
                 }
             }
         }
+        InventoryPayload::Permissions(p) => {
+            // 權限過寬的項目出現、消失，給了誰改變
+            for x in &p.items {
+                pairs.push((format!("{}|{}", x.kind, x.path), x.granted_to.join(",")));
+            }
+        }
         InventoryPayload::Shares(s) => {
             // 共用的新增、移除與權限改變
             for x in &s.shares {

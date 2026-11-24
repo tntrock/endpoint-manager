@@ -127,7 +127,7 @@ pub fn dacl(sddl: &str) -> Option<Vec<Ace>> {
     Some(out)
 }
 
-fn expand(mask: u32) -> u32 {
+pub(crate) fn expand(mask: u32) -> u32 {
     let mut m = mask & !(GENERIC_ALL | GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE);
     if mask & GENERIC_ALL != 0 {
         m |= FILE_ALL;
