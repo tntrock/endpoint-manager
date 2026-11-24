@@ -136,6 +136,31 @@ pub fn sanitize(p: &mut InventoryPayload) {
                 fix_opt(&mut x.os_hint);
             }
         }
+        InventoryPayload::Exposure(e) => {
+            e.listening.truncate(protocol::MAX_LISTENING);
+            for l in &mut e.listening {
+                fix(&mut l.proto);
+                fix(&mut l.addr);
+                fix_opt(&mut l.process);
+            }
+            e.errors.truncate(MAX_ITEMS);
+            e.errors.iter_mut().for_each(fix);
+            if let Some(f) = &mut e.firewall_allow_all {
+                f.truncate(MAX_ITEMS);
+                f.iter_mut().for_each(fix);
+            }
+            if let Some(s) = &mut e.sshd {
+                fix(&mut s.permit_root_login);
+                s.ports.truncate(MAX_ITEMS);
+            }
+            if let Some(r) = &mut e.rdp {
+                r.users.truncate(MAX_ITEMS);
+                for u in &mut r.users {
+                    fix(&mut u.name);
+                    fix(&mut u.sid);
+                }
+            }
+        }
         InventoryPayload::Shares(s) => {
             s.shares.truncate(protocol::MAX_SHARES);
             s.errors.truncate(MAX_ITEMS);

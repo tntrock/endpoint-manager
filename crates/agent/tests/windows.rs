@@ -242,6 +242,10 @@ fn collector_reports_this_machine() {
             InventoryPayload::Shares(s) => {
                 assert!(s.shares.iter().all(|x| x.kind == "smb"), "{s:?}")
             }
+            InventoryPayload::Exposure(e) => {
+                assert!(e.firewall_allow_all.is_some() && e.rdp.is_some(), "{e:?}");
+                assert!(e.sshd.is_none());
+            }
             InventoryPayload::Network(n) => {
                 // CI 機器一定有一張有位址的網卡
                 assert!(

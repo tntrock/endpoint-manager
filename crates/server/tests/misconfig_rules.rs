@@ -1,5 +1,5 @@
 //! 錯誤設定偵測：服務路徑沒加引號（Windows）、多餘的 UID 0 帳號（Linux）、規則的適用平台（第一期），
-//! 開放的共用（第二期）。
+//! 開放的共用（第二期），對外開放的服務與遠端登入（第三期）。
 mod common;
 
 use std::collections::BTreeMap;
@@ -9,8 +9,9 @@ use endpoint_server::compliance::admin::{self, RuleInput};
 use endpoint_server::compliance::rules::{Params, Rule, Severity};
 use endpoint_server::compliance::{preview, worker};
 use protocol::{
-    AccountsInfo, CheckinRequest, InventoryPayload, InventoryUpload, OsFamily, PrincipalKind,
-    PrivilegeEntry, SCHEMA_VERSION, ServiceItem, ShareAccess, ShareItem, SharesInfo,
+    AccountInfo, AccountsInfo, CheckinRequest, ExposureInfo, InventoryPayload, InventoryUpload,
+    ListenItem, OsFamily, PrincipalKind, PrivilegeEntry, RdpInfo, SCHEMA_VERSION, ServiceItem,
+    ShareAccess, ShareItem, SharesInfo, SshdInfo,
 };
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -358,4 +359,193 @@ async fn open_shares(pool: PgPool) {
     assert_eq!(results(&s, &lin).await[0].1, "unknown");
     put(&s, &win, InventoryPayload::Shares(SharesInfo::default())).await;
     assert!(results(&s, &win).await.is_empty());
+}
+
+fn listen(port: u16, addr: &str, process: &str) -> ListenItem {
+    ListenItem {
+        proto: "tcp".into(),
+        addr: addr.into(),
+        port,
+        process: Some(process.into()),
+    }
+}
+
+#[sqlx::test(migrations = false)]
+async fn exposure_rules_and_pages(pool: PgPool) {
+    let s = TestServer::start(pool).await;
+    let tok = s.create_group_token("研發部", 2).await;
+    let lin = s.enroll_ok(&tok, None, None).await;
+    let win = s.enroll_ok(&tok, None, None).await;
+    checkin_linux(&s, &lin).await;
+    let svc = admin::create_rule(
+        &s.pool,
+        &input(
+            "服務",
+            "exposed_service",
+            json!({"services": ["mysql", "redis"]}),
+        ),
+        "admin",
+    )
+    .await
+    .unwrap();
+    let fw = admin::create_rule(
+        &s.pool,
+        &input("防火牆", "firewall_allow_all", json!({})),
+        "admin",
+    )
+    .await
+    .unwrap();
+    let ssh = admin::create_rule(
+        &s.pool,
+        &input(
+            "ssh",
+            "ssh_config",
+            json!({"no_empty_passwords": true, "no_root_password": true}),
+        ),
+        "admin",
+    )
+    .await
+    .unwrap();
+    let rdp = admin::create_rule(
+        &s.pool,
+        &input("rdp", "rdp_users", json!({"allowed": [r"CORP\helpdesk"]})),
+        "admin",
+    )
+    .await
+    .unwrap();
+    worker::recompute_all(&s.pool).await.unwrap();
+    // 適用平台：Linux 兩條、Windows 三條，還沒有資料都是未知
+    let ids = |r: Vec<(i64, String, Value)>| r.into_iter().map(|x| x.0).collect::<Vec<_>>();
+    assert_eq!(ids(results(&s, &lin).await), [svc, ssh]);
+    assert_eq!(ids(results(&s, &win).await), [svc, fw, rdp]);
+
+    put(
+        &s,
+        &win,
+        InventoryPayload::Exposure(ExposureInfo {
+            listening: vec![
+                listen(3389, "0.0.0.0", "svchost.exe"),
+                listen(3306, "0.0.0.0", "mysqld.exe"),
+            ],
+            firewall_allow_all: Some(vec!["Open everything".into()]),
+            rdp: Some(RdpInfo {
+                enabled: true,
+                users: vec![
+                    AccountInfo {
+                        name: r"CORP\helpdesk".into(),
+                        sid: "S-1-5-21-9-1105".into(),
+                    },
+                    AccountInfo {
+                        name: r"CORP\bob".into(),
+                        sid: "S-1-5-21-9-1200".into(),
+                    },
+                ],
+            }),
+            ..Default::default()
+        }),
+    )
+    .await;
+    let w = results(&s, &win).await;
+    assert!(w.iter().all(|x| x.1 == "violating"), "{w:?}");
+    assert_eq!(w[0].2["services"][0]["port"], 3306);
+    assert_eq!(w[1].2["firewall_rules"], json!(["Open everything"]));
+    assert_eq!(w[2].2["rdp_users"], json!([r"CORP\bob"]));
+
+    put(
+        &s,
+        &lin,
+        InventoryPayload::Exposure(ExposureInfo {
+            listening: vec![
+                listen(22, "0.0.0.0", "sshd"),
+                listen(6379, "0.0.0.0", "redis-server"),
+            ],
+            sshd: Some(SshdInfo {
+                permit_root_login: "prohibit-password".into(),
+                password_authentication: true,
+                permit_empty_passwords: true,
+                ports: vec![22],
+            }),
+            ..Default::default()
+        }),
+    )
+    .await;
+    let l = results(&s, &lin).await;
+    assert_eq!(l.len(), 2, "{l:?}");
+    assert_eq!(l[0].2["services"][0]["service"], "Redis");
+    assert_eq!(l[1].2["ssh"], json!(["允許空密碼"]));
+
+    // 裝置頁卡片
+    let c = s.admin_client().await;
+    let (_, html) = s
+        .page(&c, &format!("/devices/{}/tab/security", win.device_id))
+        .await;
+    assert!(html.contains("id=\"listening\""), "{html}");
+    assert!(
+        html.contains("<span class=\"tag bad\">MySQL</span> mysqld.exe"),
+        "{html}"
+    );
+    assert!(
+        html.contains("防火牆全開規則：<span class=\"tag bad\">Open everything</span>"),
+        "{html}"
+    );
+    assert!(
+        html.contains(r"遠端桌面：開啟，Remote Desktop Users：CORP\helpdesk、CORP\bob"),
+        "{html}"
+    );
+    let (_, html) = s
+        .page(&c, &format!("/devices/{}/tab/accounts", lin.device_id))
+        .await;
+    assert!(
+        html.contains("PermitRootLogin <code>prohibit-password</code>"),
+        "{html}"
+    );
+
+    // 對外服務頁：依連接埠彙整，可以篩選
+    let (st, html) = s.page(&c, "/exposure").await;
+    assert_eq!(st, 200);
+    for p in ["3389", "3306", "6379", "22"] {
+        assert!(html.contains(&format!("port={p}&")), "{p}：{html}");
+    }
+    let (_, html) = s.page(&c, "/exposure?risky=true").await;
+    assert!(
+        html.contains("port=3306&") && !html.contains("port=22&"),
+        "{html}"
+    );
+    let (_, html) = s.page(&c, "/exposure?q=redis").await;
+    assert!(
+        html.contains("port=6379&") && !html.contains("port=3306&"),
+        "{html}"
+    );
+    let (_, html) = s.page(&c, "/exposure?q=22").await;
+    assert!(
+        html.contains("port=22&") && !html.contains("port=6379&"),
+        "{html}"
+    );
+    let (st, html) = s
+        .page(
+            &c,
+            "/exposure/port?proto=tcp&port=6379&process=redis-server",
+        )
+        .await;
+    assert_eq!(st, 200);
+    assert!(html.contains(&lin.device_id.to_string()), "{html}");
+    assert!(html.contains("Redis"), "{html}");
+    // 範圍外的群組看不到
+    let other = s
+        .login_as(
+            "other",
+            endpoint_server::web::auth::Role::Viewer,
+            &["別的部門"],
+        )
+        .await;
+    let (_, html) = s.page(&other, "/exposure").await;
+    assert!(!html.contains("port=6379&"), "{html}");
+
+    // 規則表單
+    let (_, html) = s.page(&c, &format!("/compliance/rules/{svc}")).await;
+    assert!(html.contains("適用於：Windows、Linux"), "{html}");
+    assert!(html.contains("value=\"mysql\" checked"), "{html}");
+    assert!(html.contains("value=\"telnet\" >"), "{html}");
+    let (_, html) = s.page(&c, &format!("/compliance/rules/{ssh}")).await;
+    assert!(html.contains("適用於：Linux"), "{html}");
 }

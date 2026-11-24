@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head"><div><div class="crumb"><a href="/exposure">對外服務</a></div><h1>{{ title }}</h1><div class="sub">{% if !service.is_empty() %}<span class="tag bad">{{ service }}</span> {% endif %}{{ rows.len() }} 台裝置</div></div></div>
+{% if rows.is_empty() %}<p class="muted">範圍內沒有裝置監聽這個連接埠。</p>{% else %}
+<table id="hosts">
+  <tr><th>裝置</th><th>監聽位址</th></tr>
+  {% for r in rows %}<tr><td><a href="/devices/{{ r.device }}">{{ r.hostname }}</a></td><td>{{ r.addr }}</td></tr>{% endfor %}
+</table>
+{% if truncated %}<p class="muted">只列出前 2,000 台。</p>{% endif %}
+{% endif %}
+{% endblock %}

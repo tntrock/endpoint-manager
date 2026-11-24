@@ -102,6 +102,29 @@
     <div class="row"><label class="field">例外服務名稱（每行一個，可用 <code>*</code>）
        <textarea name="p_except_names" rows="4" cols="40" placeholder="VendorUpdater*">{{ p.except_names }}</textarea></label></div>
     <p class="muted">服務的執行檔路徑沒有用引號包起來、路徑含有空白，而且不在 Windows 目錄底下時算違規。例如 <code>C:\Program Files\My App\svc.exe</code>：有權限在 <code>C:\</code> 建立 <code>Program.exe</code> 的人可以讓服務以 SYSTEM 身分執行它。修正方式是在服務設定的路徑前後加上引號。</p>
+  {% else if kind == "exposed_service" %}
+    <p class="checks">{% for s in presets %}<label><input type="checkbox" name="p_ex_service" value="{{ s.0 }}" {% if p.has_service(s.0) %}checked{% endif %}> {{ s.1 }}（{{ s.2 }}）</label>
+       {% endfor %}</p>
+    <div class="row"><label class="field">自訂連接埠（每行一個）
+       <textarea name="p_ex_ports" rows="3" cols="12" placeholder="8080">{{ p.ex_ports }}</textarea></label>
+       <label class="field">例外程式（每行一個，可用 <code>*</code>）
+       <textarea name="p_except_names" rows="3" cols="30" placeholder="mysqld">{{ p.except_names }}</textarea></label></div>
+    <p class="checks"><label><input type="checkbox" name="p_ex_any" value="1" {% if p.ex_any %}checked{% endif %}> 只算監聽在所有介面（<code>0.0.0.0</code>、<code>::</code>）的</label></p>
+    <p class="muted">監聽在這些連接埠、而且不是只監聽本機（127.0.0.1、::1）時算違規，TCP 與 UDP 都算。資料庫只綁定內部網卡時，可以勾選「只算監聽在所有介面」。</p>
+  {% else if kind == "firewall_allow_all" %}
+    <div class="row"><label class="field">例外規則名稱（每行一個，可用 <code>*</code>）
+       <textarea name="p_except_names" rows="4" cols="40">{{ p.except_names }}</textarea></label></div>
+    <p class="muted">Windows 防火牆裡「允許、輸入、啟用」，而且沒有限定遠端位址、本機連接埠、程式或服務的規則算違規（本機與群組原則的規則都看）。ICMP 規則不算。</p>
+  {% else if kind == "ssh_config" %}
+    <p class="checks"><label><input type="checkbox" name="p_ssh_root_pw" value="1" {% if p.ssh_root_pw %}checked{% endif %}> root 不能用密碼登入（<code>prohibit-password</code> 符合）</label>
+       <label><input type="checkbox" name="p_ssh_root" value="1" {% if p.ssh_root %}checked{% endif %}> root 完全不能登入</label>
+       <label><input type="checkbox" name="p_ssh_pw" value="1" {% if p.ssh_pw %}checked{% endif %}> 不允許密碼登入（只用金鑰）</label>
+       <label><input type="checkbox" name="p_ssh_empty" value="1" {% if p.ssh_empty %}checked{% endif %}> 不允許空密碼</label></p>
+    <p class="muted">以 <code>sshd -T</code> 的實際設定判斷（含 Include 的設定檔）。沒有安裝 sshd 的裝置算符合。</p>
+  {% else if kind == "rdp_users" %}
+    <div class="row"><label class="field">允許的 Remote Desktop Users 成員（每行一個）
+       <textarea name="p_admins_allowed" rows="6" cols="60">{{ p.admins_allowed }}</textarea></label></div>
+    <p class="muted">遠端桌面開啟時，Remote Desktop Users 群組裡清單外的成員算違規；可用 <code>*</code> 萬用字元，也可比對 SID（例如 <code>S-1-5-21-*-513</code>）。遠端桌面沒開的裝置算符合。Administrators 群組本來就能遠端登入，不在這個群組裡。</p>
   {% else if kind == "open_share" %}
     <p class="checks"><label><input type="checkbox" name="p_sh_anonymous" value="1" {% if p.sh_anonymous %}checked{% endif %}> 匿名（不登入）</label>
        <label><input type="checkbox" name="p_sh_all_users" value="1" {% if p.sh_all_users %}checked{% endif %}> 所有使用者（Everyone、Domain Users 等）</label>
